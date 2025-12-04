@@ -1,11 +1,7 @@
 # ファイルパス: scripts/run_active_inference_demo.py
-# Title: Active Inference & Embodiment Demo
+# Title: Active Inference & Embodiment Demo (Syntax Fixed)
 # Description:
 #   ROADMAP Phase 4 の主要機能である「能動的推論エージェント」の動作を検証するスクリプト。
-#   - 選好（ゴール）の設定
-#   - 倫理的制約（Ethical Preferences）の適用
-#   - 観測 -> 状態推論 -> 行動選択 (G最小化) のループ
-#   - 生成モデルの学習 (Update Model)
 #   - 修正: 末尾の不要な '}' を削除。
 
 import sys
