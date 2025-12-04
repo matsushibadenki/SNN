@@ -1,7 +1,11 @@
-# ファイルパス: snn_research/architectures/spiking_transformer_v2.py
-# Title: Spiking Transformer v2 (SDSA統合版)
+# ファイルパス: snn_research/models/transformer/spiking_transformer.py
+# Title: Spiking Transformer v2 (SDSA統合版・修正済み)
 # Description:
-# - 修正: forwardメソッド内で、get_total_spikes() を set_stateful(False) の前に移動。
+#   SDSAを使用したTransformerモデル。
+#   修正点:
+#   - SDSAEncoderLayer: 不要な input_spike_converter を削除し、
+#     標準的な残差接続 (x = src + attn_output) に変更して勾配フローを改善。
+#   - forwardメソッド内で、get_total_spikes() を set_stateful(False) の前に移動 (維持)。
 
 import torch
 import torch.nn as nn
@@ -19,7 +23,7 @@ from spikingjelly.activation_based import functional as SJ_F # type: ignore[impo
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- PatchEmbedding クラス (変更なし) ---
+# --- PatchEmbedding クラス ---
 class PatchEmbedding(nn.Module):
     """ 画像をパッチに分割し、線形射影する (ViTの入力層) """
     def __init__(self, img_size: int, patch_size: int, in_channels: int, embed_dim: int):
@@ -40,12 +44,11 @@ class PatchEmbedding(nn.Module):
         x = x.transpose(1, 2)
         return x
 
-# --- SDSAEncoderLayer クラス ---
+# --- SDSAEncoderLayer クラス (修正版) ---
 class SDSAEncoderLayer(sj_base.MemoryModule):
     """
     SDSAを使用したTransformerエンコーダーレイヤー。
     """
-    input_spike_converter: AdaptiveLIFNeuron
     neuron_ff: AdaptiveLIFNeuron
     neuron_ff2: AdaptiveLIFNeuron
     sdsa: SpikeDrivenSelfAttention
@@ -68,49 +71,38 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
         self.norm1 = SNNLayerNorm(d_model)
         self.norm2 = SNNLayerNorm(d_model)
 
-        # 入力をスパイク化するためのニューロン
-        lif_input_params = lif_params.copy() 
-        lif_input_params['base_threshold'] = lif_input_params.get('base_threshold', 0.5) 
-        self.input_spike_converter = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=d_model, **lif_input_params))
+        # 修正: input_spike_converter を削除
 
     def set_stateful(self, stateful: bool) -> None:
         self.stateful = stateful
         self.sdsa.set_stateful(stateful)
         self.neuron_ff.set_stateful(stateful)
         self.neuron_ff2.set_stateful(stateful)
-        self.input_spike_converter.set_stateful(stateful)
 
     def reset(self) -> None:
         super().reset()
         self.sdsa.reset()
         self.neuron_ff.reset()
         self.neuron_ff2.reset()
-        self.input_spike_converter.reset()
 
     def forward(self, src: torch.Tensor) -> torch.Tensor:
         # 1. SDSAによる自己注意
-        # src はアナログ値を想定
+        # src はアナログ値を想定 (LayerNorm後などの連続値)
         attn_output = self.sdsa(src)
 
         # 2. Residual Connection 1 + Norm 1
-        # 入力をスパイク化して加算（あるいはアナログのまま加算するかは設計による）
-        # ここでは入力をスパイク化して、SDSA出力（スパイクベースで計算されたアナログ値）と加算
-        src_spiked, _ = self.input_spike_converter(src)
-        
-        # Add
-        x = src_spiked + attn_output 
-        x = torch.clamp(x, 0, 1) # スパイクライクに制限
-        # Norm
-        x_norm1 = self.norm1(x)
+        # 修正: 入力をそのまま加算 (Standard Residual Connection)
+        x = src + attn_output 
+        x = self.norm1(x)
 
         # 3. Feedforward Network
-        ff_spikes, _ = self.neuron_ff(self.linear1(x_norm1))
+        ff_spikes, _ = self.neuron_ff(self.linear1(x))
         ff_output_analog = self.linear2(ff_spikes)
         ff_output_spikes, _ = self.neuron_ff2(ff_output_analog)
 
         # 4. Residual Connection 2 + Norm 2
-        x = x_norm1 + ff_output_spikes
-        x = torch.clamp(x, 0, 1)
+        # ここでも前段の出力(x)をそのまま加算
+        x = x + ff_output_spikes
         x = self.norm2(x)
 
         return x
@@ -195,11 +187,8 @@ class SpikingTransformerV2(BaseModel):
             raise ValueError("Either input_ids or input_images must be provided.")
 
         # 2. Cross-Modal Injection (コンテキストの結合)
-        # context_embeds がある場合、シーケンスの先頭に結合する (Prefix Tuning style)
         if context_embeds is not None:
-            # context_embeds: (B, CtxLen, D_model)
             if context_embeds.shape[0] != B:
-                 # バッチサイズが合わない場合の簡易対応 (ブロードキャスト)
                  if context_embeds.shape[0] == 1:
                       context_embeds = context_embeds.expand(B, -1, -1)
                  else:
@@ -208,8 +197,8 @@ class SpikingTransformerV2(BaseModel):
 
             if context_embeds is not None:
                 logging.debug(f"Injecting context: {context_embeds.shape} into input: {x.shape}")
-                x = torch.cat([context_embeds, x], dim=1) # (B, CtxLen + N, D_model)
-                N = x.shape[1] # シーケンス長を更新
+                x = torch.cat([context_embeds, x], dim=1) 
+                N = x.shape[1] 
 
         # --- 時間ステップループ ---
         outputs_over_time = []
@@ -219,20 +208,19 @@ class SpikingTransformerV2(BaseModel):
              layer = cast(SDSAEncoderLayer, layer_module)
              layer.set_stateful(True)
 
-        # レートコーディング入力: 毎ステップ、アナログ値 'x' を電流として入力
-        # (本来はDVS入力などでx自体が時間変化するが、ここでは静的入力を仮定)
         for t in range(self.time_steps):
+            # レートコーディング入力: 静的なアナログ値 'x' を毎ステップ入力
             x_step = x 
 
             for layer_module in self.layers:
                 layer = cast(SDSAEncoderLayer, layer_module)
-                x_step = layer(x_step) # スパイク出力
+                x_step = layer(x_step) 
 
             outputs_over_time.append(x_step)
 
-        x_final = torch.stack(outputs_over_time).mean(dim=0) # 時間平均 (アナログ)
+        x_final = torch.stack(outputs_over_time).mean(dim=0) # 時間平均
 
-        # --- 修正: リセット前にスパイクを集計 ---
+        # --- スパイク集計 (リセット前) ---
         avg_spikes_val = 0.0
         if return_spikes:
             avg_spikes_val = self.get_total_spikes() / (B * N * self.time_steps)
@@ -249,12 +237,10 @@ class SpikingTransformerV2(BaseModel):
         if output_hidden_states:
              output = x_final
         else:
-            # 画像タスクかつコンテキストがない場合のプーリング
             if input_images is not None and context_embeds is None:
                 pooled_output = x_final.mean(dim=1)
                 output = self.output_projection(pooled_output)
             else:
-                # テキストタスク または コンテキストあり
                 output = self.output_projection(x_final)
 
         avg_spikes = torch.tensor(avg_spikes_val, device=device)
