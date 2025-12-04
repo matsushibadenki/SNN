@@ -23,12 +23,13 @@ if runners_dir not in sys.path:
 
 from snn_research.core.snn_core import SNNCore
 
-# trainモジュールのインポート（データローダーなどのユーティリティ再利用のため）
 try:
-    import train
+    # --- ▼ 修正: type: ignore 追加 ▼ ---
+    import train # type: ignore[import-not-found]
+    # --- ▲ 修正 ▲ ---
 except ImportError:
-    logging.warning("Could not import 'train' module from scripts/runners. Data loading might fail if dependent on it.")
-
+    logging.warning("Could not import 'train' module...")
+    
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
