@@ -21,38 +21,57 @@
 
 変換時の閾値キャリブレーション（ANNの活性化をSNNの閾値にマッピングする処理）には、**少量の代表的なデータ**（キャリブレーションセット）が必要です。
 
-\# LLMタスクの場合: ダミーデータまたは検証データの一部  
-\# ANNモデルが処理できる形式のデータローダーを用意します  
+\# LLMタスクの場合: ダミーデータまたは検証データの一部
+
+\# ANNモデルが処理できる形式のデータローダーを用意します
+
 \# (scripts/convert\_model.py がデータローダーを自動生成することを想定)
 
 ### **2\. LLMモデルの変換と最適化**
 
 LLM変換 (convert\_llm\_weights) は、特に多くの最適化フラグをサポートします。
 
-\# LLM変換実行例:  
-python scripts/convert\_model.py \\  
-    \--ann\_model\_path "gpt2" \\\\  \# HuggingFace ID または .pth / .safetensors ファイル  
-    \--snn\_model\_config configs/models/spiking\_transformer.yaml \\  
-    \--output\_snn\_path runs/converted\_spiking\_llm.pth \\  
-    \--method llm-convert \\  
-    \--calibration\_loader\_stub \<データローダー引数\> \\  
-    \--use-ecl \\  \# ECL（誤差補償学習）を有効化  
-    \--prune-low-activity 0.15 \\\\ \# スパイク頻度の低いニューロンを15%プルーニング  
-    \--quantization-bits 4.0 \\\\ \# INT4/INT8量子化ヒントをメタデータに保存  
-    \--hardware-target "Loihi"  \# ハードウェア最適化ヒント
+\# LLM変換実行例:
+
+python scripts/convert\_model.py \\
+
+\--ann\_model\_path "gpt2" \\\\ \# HuggingFace ID または .pth / .safetensors ファイル
+
+\--snn\_model\_config configs/models/spiking\_transformer.yaml \\
+
+\--output\_snn\_path runs/converted\_spiking\_llm.pth \\
+
+\--method llm-convert \\
+
+\--calibration\_loader\_stub \<データローダー引数\> \\
+
+\--use-ecl \\ \# ECL（誤差補償学習）を有効化
+
+\--prune-low-activity 0.15 \\\\ \# スパイク頻度の低いニューロンを15%プルーニング
+
+\--quantization-bits 4.0 \\\\ \# INT4/INT8量子化ヒントをメタデータに保存
+
+\--hardware-target "Loihi" \# ハードウェア最適化ヒント
 
 ### **3\. CNNモデルの変換と最適化**
 
 画像モデル（CNN）の変換は、**BatchNorm Folding**を自動的に行います。
 
-\# CNN変換実行例:  
-python scripts/convert\_model.py \\  
-    \--ann\_model\_path runs/ann\_resnet18\_cifar10.pth \\  
-    \--snn\_model\_config configs/cifar10\_spikingcnn\_config.yaml \\  
-    \--output\_snn\_path runs/converted\_spiking\_cnn.pth \\  
-    \--method cnn-convert \\  
-    \--use-ecl \\  
-    \--prune-low-activity 0.05
+\# CNN変換実行例:
+
+python scripts/convert\_model.py \\
+
+\--ann\_model\_path runs/ann\_resnet18\_cifar10.pth \\
+
+\--snn\_model\_config configs/experiments/cifar10\_spikingcnn\_config.yaml \\
+
+\--output\_snn\_path runs/converted\_spiking\_cnn.pth \\
+
+\--method cnn-convert \\
+
+\--use-ecl \\
+
+\--prune-low-activity 0.05
 
 ## **⚙️ 変換後のモデルメタデータと活用（デプロイヒント）**
 
