@@ -1,0 +1,19 @@
+# ファイルパス: configs/models/small.yaml
+# Title: Small Spiking SNN (Predictive Coding)
+# Description: 小規模なデバッグ・開発用モデルのアーキテクチャ設定
+
+model:
+  path: "breakthrough_snn_model_small.pth" # モデルごとに保存パスを分ける
+  architecture_type: "predictive_coding" # モデルタイプを追加
+  d_model: 128
+  d_state: 64 # Predictive Codingに必要なd_stateを追加
+  num_layers: 4
+  time_steps: 20
+  n_head: 2
+  # ニューロン設定
+  neuron:
+    type: "lif" # "lif" または "dendritic"
+    # typeが "dendritic" の場合のみ使用されるパラメータ
+    num_branches: 4
+    branch_features: 32 # 例: d_model / num_branches
+    v_threshold: 1.2

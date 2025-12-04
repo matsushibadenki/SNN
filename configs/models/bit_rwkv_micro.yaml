@@ -1,0 +1,20 @@
+# ファイルパス: configs/models/bit_rwkv_micro.yaml
+model:
+  name: "bit_rwkv_micro"
+  path: "bit_rwkv_model.pth"
+  architecture_type: "bit_spiking_rwkv" 
+  
+  quantization:
+    weight_bits: 1.58
+  
+  d_model: 128
+  num_layers: 4
+  time_steps: 16
+  
+  neuron:
+    type: "lif"
+    base_threshold: 2.0 
+    tau_mem: 3.0
+    noise_intensity: 0.2
+    threshold_step: 0.0 
+    threshold_decay: 1.0

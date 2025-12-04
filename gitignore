@@ -1,0 +1,131 @@
+# .gitignore for Project SNN4
+
+# -------------------------------------------------------------------
+# Python
+# -------------------------------------------------------------------
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+# Usually these files are created by pyinstaller, if you are using it.
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Pyenv
+.python-version
+
+# Mypy cache
+.mypy_cache/
+
+# Pytest cache
+.pytest_cache/
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+.env/
+
+# -------------------------------------------------------------------
+# Project Specific
+# -------------------------------------------------------------------
+
+# Generated data, logs, models, and other artifacts
+runs/
+workspace/
+precomputed_data/
+
+# Downloaded or generated datasets
+data/wikitext-103_train.jsonl
+data/smoke_test_data.jsonl
+# Add other large data files here if necessary
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# -------------------------------------------------------------------
+# IDE / Editor
+# -------------------------------------------------------------------
+
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# JetBrains / PyCharm
+.idea/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# -------------------------------------------------------------------
+# OS Specific
+# -------------------------------------------------------------------
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+
+# benchmarks/ directory
+
+# Ignore markdown reports
+*.md
+
+# Ignore CSV files
+*.csv
+
+# Ignore other potential artifacts
+*.png
+*.jpg
+*.json
