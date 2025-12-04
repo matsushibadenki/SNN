@@ -1,13 +1,11 @@
 # ファイルパス: snn_research/core/networks/sequential_pc_network.py
-# Title: 予測符号化ネットワーク (PC Network) - バッチサイズ対応版
-# 機能説明:
+# Title: 予測符号化ネットワーク (PC Network) - 修正完了版
+# Description:
 #   PredictiveCodingLayer を積層したネットワーク。
-#   バッチサイズが動的に変化する場合（例：エポックの最後のバッチ）に対応するため、
-#   入力バッチサイズと保持している状態のサイズを比較し、不一致があれば状態をリセットする処理を追加。
-#
-# 修正 (mypy):
-#   - layer_states の型を明示的に List[torch.Tensor] とすることで、[has-type] エラーを解消。
-#   - inference_fc が None でないことを確認して [union-attr] エラーを解消。
+#   修正点:
+#   - forwardメソッドの状態初期化ロジックにおいて、weight_tying=True (inference_fc is None) の場合に
+#     RuntimeErrorが発生するバグを修正。generative_fc.in_features から次元を取得するように変更。
+#   - layer_states の型ヒントを明示。
 
 import torch
 import torch.nn as nn
@@ -22,21 +20,24 @@ class SequentialPCNetwork(AbstractSNNNetwork):
     BreakthroughSNNの内部ロジックをネットワークとしてカプセル化し、
     学習則へのインターフェースを提供する。
     """
-    # クラスレベルで型ヒントを与えることも可能だが、__init__内での初期化がベストプラクティス
-    # ここでは動的に生成されるため、forward内で管理するが、型アノテーションを追加する
-
+    
     def __init__(self, layers: List[PredictiveCodingLayer]):
         super().__init__()
         # ModuleListとして登録
         self.pc_layers = nn.ModuleList(layers)
         
         # 各層の状態(State)を保持するバッファ
-        # mypyエラー解消のため、明示的に型ヒント付きで初期化
         self.layer_states: List[torch.Tensor] = []
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        x: 入力データ (Batch, Dim)
+        順伝播処理。
+        
+        Args:
+            x: 入力データ (Batch, Dim)
+            
+        Returns:
+            torch.Tensor: 最終層の出力（状態）
         """
         bottom_up_input = x
         batch_size = x.shape[0]
@@ -48,18 +49,22 @@ class SequentialPCNetwork(AbstractSNNNetwork):
            self.layer_states[0].shape[0] != batch_size:
             
             # 既存の状態があれば破棄（明示的なリセット）して新しいリストを作成
-            # ここで型ヒントを明示する
             new_states: List[torch.Tensor] = []
             
             for layer in self.pc_layers:
                 pc_layer = cast(PredictiveCodingLayer, layer)
-                # 推論ニューロンの出力次元を取得
-                # inference_fc は nn.Linear なので out_features を持つ
-                # mypy エラー解消: None でないことを確認
-                if pc_layer.inference_fc is None:
-                    raise RuntimeError("PredictiveCodingLayer.inference_fc is None")
                 
-                d_state = pc_layer.inference_fc.out_features 
+                # --- 修正箇所: d_state の取得ロジック ---
+                d_state: int
+                if pc_layer.inference_fc is not None:
+                    # 推論用FC層がある場合 (weight_tying=False)
+                    d_state = pc_layer.inference_fc.out_features
+                else:
+                    # 重み共有の場合 (weight_tying=True)、生成用FC層の入力次元が状態次元
+                    if pc_layer.generative_fc is None:
+                         raise RuntimeError("PredictiveCodingLayer.generative_fc is None. Invalid layer configuration.")
+                    d_state = pc_layer.generative_fc.in_features
+                
                 new_states.append(torch.zeros(batch_size, d_state, device=x.device))
             
             self.layer_states = new_states
