@@ -1,11 +1,10 @@
 # ファイルパス: snn_research/core/layers/predictive_coding.py
-# Title: 予測符号化レイヤー (ニューロンパラメータ対応版)
+# Title: 予測符号化レイヤー (ニューロンパラメータ完全対応版)
 # Description:
 #   予測符号化（Predictive Coding）を行うSNNレイヤー。
 #   修正点:
-#     - _filter_params メソッドを拡張し、Izhikevich, GLIF, TC-LIF などの
-#       多様なニューロンモデルのパラメータを正しく通過させるように修正。
-#     - これにより、configで指定したニューロンタイプが正しく機能するようになる。
+#     - _filter_params メソッドに EvolutionaryLeakLIF と BistableIFNeuron を追加。
+#     - 多様なニューロンモデルでの動作を保証。
 
 import torch
 import torch.nn as nn
@@ -15,7 +14,8 @@ import logging
 
 from snn_research.core.neurons import (
     AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
-    TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron
+    TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron,
+    BistableIFNeuron, EvolutionaryLeakLIF
 )
 
 logger = logging.getLogger(__name__)
@@ -71,6 +71,12 @@ class PredictiveCodingLayer(nn.Module):
             valid_params = ['features', 'tau_mem', 'threshold_high_init', 'threshold_low_init', 'v_reset']
         elif neuron_class == ScaleAndFireNeuron:
             valid_params = ['features', 'num_levels', 'base_threshold']
+        # --- 追加 ---
+        elif neuron_class == BistableIFNeuron:
+            valid_params = ['features', 'v_threshold_high', 'v_reset', 'tau_mem', 'bistable_strength', 'v_rest', 'unstable_equilibrium_offset']
+        elif neuron_class == EvolutionaryLeakLIF:
+            valid_params = ['features', 'initial_tau', 'v_threshold', 'v_reset', 'detach_reset', 'learn_threshold']
+        # ------------
         else:
              # デフォルト (LIF互換)
              valid_params = ['features', 'tau_mem', 'base_threshold', 'v_reset']
@@ -84,23 +90,14 @@ class PredictiveCodingLayer(nn.Module):
         if self.sparsity >= 1.0 or self.sparsity <= 0.0:
             return x
             
-        # 活動の大きさ(絶対値)で評価
         x_abs = x.abs()
-        
         B, N = x.shape
         k = int(N * self.sparsity)
         if k == 0: k = 1
         
-        # 上位k個の値を取得
         topk_values, _ = torch.topk(x_abs, k, dim=1)
-        
-        # 閾値 (k番目の値)
         threshold = topk_values[:, -1].unsqueeze(1)
-        
-        # 閾値未満をゼロにする (元の符号は維持)
-        # 閾値が0の場合は全て通してしまうので、微小値を加える
         threshold = torch.max(threshold, torch.tensor(1e-6, device=x.device))
-        
         mask = (x_abs >= threshold).float()
         
         return x * mask
