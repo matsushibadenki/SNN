@@ -1,9 +1,8 @@
-# ファイルパス: snn_research/core/models/spiking_cnn_model.py
-# (修正: SyntaxError解消 - 末尾の不要な '}' を削除)
-# Title: Spiking CNN Model
+# ファイルパス: snn_research/models/cnn/spiking_cnn_model.py
+# Title: Spiking CNN Model - Stateful修正版
 # Description:
-# - CIFAR-10などの画像分類タスク用の基本的なSpiking CNNモデル。
-# - 修正: forwardメソッド内で、総ニューロン数を考慮した正確な平均発火率 (0.0-1.0) を返すように変更。
+# - 画像分類用のSpiking CNN。
+# - 修正: 時間ループ内で膜電位を保持するため、set_stateful(True) を適用するように修正。
 
 import torch
 import torch.nn as nn
@@ -85,10 +84,23 @@ class SpikingCNN(BaseModel):
         )
         self._init_weights()
 
+    def _set_stateful(self, stateful: bool):
+        """モデル内の全ニューロンのstatefulモードを切り替える"""
+        # Features内のニューロン
+        for layer in self.features:
+            if hasattr(layer, 'set_stateful'):
+                layer.set_stateful(stateful)
+        # Classifier内のニューロン
+        for layer in self.classifier:
+            if hasattr(layer, 'set_stateful'):
+                layer.set_stateful(stateful)
+
     def forward(self, input_images: torch.Tensor, return_spikes: bool = False, output_hidden_states: bool = False, return_full_hiddens: bool = False, return_full_mems: bool = False, **kwargs: Any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, C, H, W = input_images.shape
         device: torch.device = input_images.device
-        functional.reset_net(self)
+        
+        # ネットワークのリセット
+        SJ_F.reset_net(self)
         
         output_voltages: List[torch.Tensor] = []
         full_hiddens_list: List[torch.Tensor] = [] 
@@ -101,6 +113,7 @@ class SpikingCNN(BaseModel):
                 if isinstance(output, tuple) and len(output) > 1:
                     local_mems_history.append(output[1]) 
             
+            # フック登録ロジック（変更なし）
             target_module = None
             neuron_types = (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF, DualThresholdNeuron)
             for module in reversed(self.classifier):
@@ -116,6 +129,9 @@ class SpikingCNN(BaseModel):
                 hooks.append(target_module.register_forward_hook(_hook_mem))
 
         total_neurons_in_pass = 0
+
+        # --- 時間ループ開始前に Stateful モードを有効化 ---
+        self._set_stateful(True)
 
         # 時間ステップループ
         for _ in range(self.time_steps):
@@ -146,6 +162,8 @@ class SpikingCNN(BaseModel):
 
             output_voltages.append(x) 
         
+        # --- 時間ループ終了 ---
+
         full_mems: torch.Tensor
         if return_full_mems:
             for hook in hooks: hook.remove()
@@ -162,15 +180,21 @@ class SpikingCNN(BaseModel):
         full_hiddens: torch.Tensor = full_hiddens_stacked.unsqueeze(1) 
 
         if return_full_hiddens:
+             # stateful解除を忘れずに
+             self._set_stateful(False)
              return full_hiddens, torch.tensor(0.0, device=device), full_mems
 
         final_logits: torch.Tensor = torch.stack(output_voltages, dim=0).mean(dim=0)
         
         avg_spikes_val = 0.0
         if return_spikes and total_neurons_in_pass > 0:
+            # リセット前に集計
             total_spikes = self.get_total_spikes()
             avg_spikes_val = total_spikes / (B * self.time_steps * total_neurons_in_pass)
         
         avg_spikes: torch.Tensor = torch.tensor(avg_spikes_val, device=device)
+
+        # --- Stateful モードを解除 ---
+        self._set_stateful(False)
 
         return final_logits, avg_spikes, full_mems
