@@ -112,8 +112,9 @@ def main():
     print("\n🚀 学習を開始します...")
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
     
-    # import train module functions dynamically to avoid conflicts
-    from train import collate_fn
+    # --- ▼ 修正: type: ignore 追加 ▼ ---
+    from train import collate_fn # type: ignore[import-not-found]
+    # --- ▲ 修正 ▲ ---
     from snn_research.data.datasets import SimpleTextDataset
     
     dataset = SimpleTextDataset(conf.data.path, tokenizer, max_seq_len=16)
