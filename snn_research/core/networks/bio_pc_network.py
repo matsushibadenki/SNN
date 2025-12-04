@@ -1,15 +1,25 @@
 # ファイルパス: snn_research/core/networks/bio_pc_network.py
-# Title: Bio-PCNet (k-WTA対応・修正版)
+# Title: Bio-PCNet (ニューロン選択対応・修正版)
+# Description:
+#   生物学的妥当性を重視した予測符号化ネットワーク。
+#   修正点:
+#   - ニューロンクラスが AdaptiveLIFNeuron に固定されていた問題を修正。
+#     config の 'type' に基づいて Izhikevich, GLIF, TC_LIF などを選択可能にしました。
+#   - PredictiveCodingLayer の初期化時に、選択された neuron_class を渡すように変更。
 
 import torch
 import torch.nn as nn
-from typing import List, Dict, Any, Optional, Tuple, cast
+from typing import List, Dict, Any, Optional, Tuple, cast, Type, Union
 
 from snn_research.core.networks.abstract_snn_network import AbstractSNNNetwork
 from snn_research.core.layers.predictive_coding import PredictiveCodingLayer
-from snn_research.core.neurons import AdaptiveLIFNeuron
-# 修正: 誤ったインポート行を削除し、正しいRuleのみをインポート
 from snn_research.core.learning_rules.predictive_coding_rule import PredictiveCodingRule
+
+# 必要なニューロンクラスをすべてインポート
+from snn_research.core.neurons import (
+    AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
+    TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron
+)
 
 class BioPCNetwork(AbstractSNNNetwork):
     def __init__(
@@ -25,12 +35,37 @@ class BioPCNetwork(AbstractSNNNetwork):
         self.time_steps = time_steps
         self.layers = nn.ModuleList()
         
+        # --- ニューロンクラスの解決ロジックを追加 ---
+        neuron_type = neuron_config.get("type", "lif")
+        neuron_class: Type[nn.Module]
+        
+        if neuron_type == 'lif':
+            neuron_class = AdaptiveLIFNeuron
+        elif neuron_type == 'izhikevich':
+            neuron_class = IzhikevichNeuron
+        elif neuron_type == 'glif':
+            neuron_class = GLIFNeuron
+        elif neuron_type == 'tc_lif':
+            neuron_class = TC_LIF
+        elif neuron_type == 'dual_threshold':
+            neuron_class = DualThresholdNeuron
+        elif neuron_type == 'scale_and_fire':
+            neuron_class = ScaleAndFireNeuron
+        else:
+            # デフォルト
+            neuron_class = AdaptiveLIFNeuron
+            
+        # パラメータのコピー (PredictiveCodingLayer内でフィルタリングされるためそのまま渡す)
+        neuron_params = neuron_config.copy()
+        if 'type' in neuron_params:
+            del neuron_params['type']
+
         for i in range(len(layer_dims) - 1):
             layer = PredictiveCodingLayer(
                 d_model=layer_dims[i], 
                 d_state=layer_dims[i+1],
-                neuron_class=AdaptiveLIFNeuron, 
-                neuron_params=neuron_config, 
+                neuron_class=neuron_class, # 選択されたクラスを渡す
+                neuron_params=neuron_params, 
                 weight_tying=True,
                 sparsity=sparsity
             )
