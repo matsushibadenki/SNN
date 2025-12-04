@@ -1,8 +1,9 @@
-# ファイルパス: snn_research/core/models/predictive_coding_model.py
-# (修正: SyntaxError解消 - 末尾の不要な '}' を削除)
-# Title: Predictive Coding SNN (BreakthroughSNN)
+# ファイルパス: snn_research/models/experimental/predictive_coding_model.py
+# Title: Predictive Coding SNN (BreakthroughSNN) - Stateful修正版
 # Description:
-# - 修正: forwardメソッド内で、総ニューロン数を考慮した正確な平均発火率を返すように変更。
+# - 予測符号化を行うSNNモデル。
+# - 修正: forwardメソッド内で、時間ループの実行中にニューロンの状態（膜電位）を保持するように
+#   set_stateful(True) を呼び出すロジックを追加。これにより時間的統合が正しく機能する。
 
 import torch
 import torch.nn as nn
@@ -14,6 +15,7 @@ from snn_research.core.neurons import (
     AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
     TC_LIF, DualThresholdNeuron
 )
+from spikingjelly.activation_based import functional as SJ_F # type: ignore
 
 class BreakthroughSNN(BaseModel):
     """
@@ -94,6 +96,14 @@ class BreakthroughSNN(BaseModel):
         
         self._init_weights()
 
+    def _set_stateful(self, stateful: bool):
+        """モデル内の全ニューロンのstatefulモードを切り替える"""
+        for layer in self.pc_layers:
+            if hasattr(layer, 'generative_neuron') and hasattr(layer.generative_neuron, 'set_stateful'):
+                layer.generative_neuron.set_stateful(stateful)
+            if hasattr(layer, 'inference_neuron') and hasattr(layer.inference_neuron, 'set_stateful'):
+                layer.inference_neuron.set_stateful(stateful)
+
     def forward(
         self, 
         input_ids: torch.Tensor, 
@@ -108,6 +118,9 @@ class BreakthroughSNN(BaseModel):
         batch_size, seq_len = input_ids.shape
         device: torch.device = input_ids.device
         
+        # ネットワークのリセット
+        SJ_F.reset_net(self)
+        
         token_emb: torch.Tensor = self.token_embedding(input_ids)
         embedded_sequence: torch.Tensor = self.input_encoder(token_emb)
         
@@ -118,10 +131,14 @@ class BreakthroughSNN(BaseModel):
         else:
              inference_neuron_features = self.d_state
         
+        # 内部状態の初期化
         states: List[torch.Tensor] = [torch.zeros(batch_size, inference_neuron_features, device=device) for _ in range(self.num_layers)]
         
         all_timestep_outputs: List[torch.Tensor] = []
         all_timestep_mems: List[torch.Tensor] = []
+
+        # --- 時間ループ開始前に Stateful モードを有効化 ---
+        self._set_stateful(True)
 
         for _ in range(self.time_steps):
             sequence_outputs: List[torch.Tensor] = []
@@ -158,22 +175,25 @@ class BreakthroughSNN(BaseModel):
              output = final_hidden_states
         elif return_full_hiddens:
              mem_to_return = full_mems if return_full_mems else torch.tensor(0.0, device=device)
-             return full_hiddens, torch.tensor(0.0, device=device), mem_to_return
+             # ステートフル解除の前に返すわけにはいかないので、ここでは値を保持して後で返す
         else:
              output = self.output_projection(final_hidden_states)
         
+        # スパイク集計 (リセット前に行う)
         avg_spikes_val = 0.0
         if return_spikes:
             total_spikes = self.get_total_spikes()
-            # Predictive Coding Layer has d_model (Gen) + d_state (Inf) neurons per layer
-            # Total neurons = num_layers * (d_model + d_state)
             total_neurons = self.num_layers * (self.d_model + self.d_state)
-            
-            # total_spikes is sum over (B * Seq * T * TotalNeurons)
             avg_spikes_val = total_spikes / (batch_size * seq_len * self.time_steps * total_neurons)
         
         avg_spikes: torch.Tensor = torch.tensor(avg_spikes_val, device=device)
-        
         mem_to_return = full_mems if return_full_mems else torch.tensor(0.0, device=device)
         
+        # --- 時間ループ終了後に Stateful モードを解除 ---
+        self._set_stateful(False)
+        
+        # return_full_hiddens の場合の分岐処理
+        if return_full_hiddens and not output_hidden_states:
+             return full_hiddens, avg_spikes, mem_to_return
+
         return output, avg_spikes, mem_to_return
