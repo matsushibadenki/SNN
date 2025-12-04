@@ -1,5 +1,5 @@
-# ファイルパス: snn_research/architectures/spiking_ssm.py
-# Title: Spiking State Space Model (SpikingSSM) - 構文修正版
+# ファイルパス: snn_research/models/experimental/spiking_ssm.py
+# Title: Spiking State Space Model (SpikingSSM) - ロジック修正版
 # Description:
 # - 修正: forwardメソッド内で、get_total_spikes() を set_stateful(False) の前に移動。
 
@@ -140,19 +140,19 @@ class SpikingSSM(BaseModel):
 
         if neuron_type_str == 'lif':
             neuron_class = AdaptiveLIFNeuron
-            filtered_params = {k: v for k, v in neuron_params.items() if k in ['tau_mem', 'base_threshold']}
+            filtered_params = {k: v for k, v in neuron_params.items() if k in ['features', 'tau_mem', 'base_threshold']}
         elif neuron_type_str == 'izhikevich':
             neuron_class = IzhikevichNeuron
-            filtered_params = {k: v for k, v in neuron_params.items() if k in ['a', 'b', 'c', 'd']}
+            filtered_params = {k: v for k, v in neuron_params.items() if k in ['features', 'a', 'b', 'c', 'd']}
         elif neuron_type_str == 'glif':
             neuron_class = GLIFNeuron
-            filtered_params = {k: v for k, v in neuron_params.items() if k in ['base_threshold']}
+            filtered_params = {k: v for k, v in neuron_params.items() if k in ['features', 'base_threshold']}
         elif neuron_type_str == 'tc_lif':
             neuron_class = TC_LIF
-            filtered_params = {k: v for k, v in neuron_params.items() if k in ['tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']}
+            filtered_params = {k: v for k, v in neuron_params.items() if k in ['features', 'tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']}
         elif neuron_type_str == 'dual_threshold':
             neuron_class = DualThresholdNeuron
-            filtered_params = {k: v for k, v in neuron_params.items() if k in ['tau_mem', 'threshold_high_init', 'threshold_low_init', 'v_reset']}
+            filtered_params = {k: v for k, v in neuron_params.items() if k in ['features', 'tau_mem', 'threshold_high_init', 'threshold_low_init', 'v_reset']}
         else:
             raise ValueError(f"Unknown neuron type for SpikingSSM: {neuron_type_str}")
 
