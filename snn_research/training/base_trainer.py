@@ -1,38 +1,32 @@
-# ファイルパス: snn_research/core/trainer.py
-# (修正: AbstractSNNNetwork対応)
-# タイトル: 抽象学習トレーナー (PyTorch準拠)
-# 機能説明: 
-#   Project SNN4のロードマップ (Phase 3) に基づき、
-#   ネットワークの訓練および評価ループを抽象化・管理するクラス。
-#   AbstractSNNNetwork (SequentialSNNNetworkなど) と互換性を持つように更新。
+# ファイルパス: snn_research/training/base_trainer.py
+# Title: 抽象学習トレーナー (PyTorch準拠・修正版)
+# Description:
+#   AbstractTrainerクラス。
+#   mypyエラー [import-not-found] を修正するため、インポートパスを修正。
 
 import logging
-from typing import (
-    Dict, Any, Optional, Iterable, List, Tuple, Union,
-    Mapping,
-    Protocol,
-    cast
-)
+from typing import Dict, Any, Optional, Iterable, List, Tuple, Union, Mapping, Protocol
 
 import torch
 from torch import Tensor
 import torch.nn as nn
 
-# P2-2 (抽象ネットワーク) と 新しい AbstractSNNNetwork をインポート
+# --- ▼ 修正: 正しいパスからのインポートに変更 ▼ ---
 try:
-    from .network import AbstractNetwork
+    from snn_research.core.network import AbstractNetwork
 except ImportError:
     class AbstractNetwork(nn.Module): # type: ignore[no-redef]
         def forward(self, i: Tensor, t: Optional[Tensor] = None) -> Dict[str, Tensor]: return {}
         def update_model(self, i: Tensor, t: Optional[Tensor], s: Dict[str, Tensor]) -> Dict[str, Tensor]: return {}
 
 try:
-    from .networks.abstract_snn_network import AbstractSNNNetwork
+    from snn_research.core.networks.abstract_snn_network import AbstractSNNNetwork
 except ImportError:
     class AbstractSNNNetwork(nn.Module): # type: ignore[no-redef]
         def forward(self, x: Tensor) -> Tensor: return x
         def run_learning_step(self, inputs: Tensor, targets: Optional[Tensor] = None) -> Dict[str, Any]: return {}
         def reset_state(self) -> None: pass
+# --- ▲ 修正 ▲ ---
 
 # データローダーの型エイリアス
 Batch = Tuple[Tensor, Tensor]
@@ -84,9 +78,6 @@ class AbstractTrainer:
                 
                 # 2. Learning step (STDP / PC)
                 batch_metrics = self.model.run_learning_step(inputs, targets)
-                
-                # 必要に応じてoutputをmetricsに追加
-                # batch_metrics['loss'] = ... (もし計算していれば)
 
             # --- AbstractNetwork (Old) ---
             elif isinstance(self.model, AbstractNetwork):
