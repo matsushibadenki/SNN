@@ -27,11 +27,12 @@ runners_dir = os.path.join(project_root, 'scripts', 'runners')
 if runners_dir not in sys.path:
     sys.path.append(runners_dir)
 
-# これで train.py をモジュールとしてインポート可能になる
 try:
-    import train
+    # --- ▼ 修正: type: ignore 追加 ▼ ---
+    import train # type: ignore[import-not-found]
+    # --- ▲ 修正 ▲ ---
 except ImportError as e:
-    logger.error(f"trainモジュールのインポートに失敗しました。パス設定を確認してください: {runners_dir}")
+    logger.error(f"trainモジュールのインポートに失敗しました: {e}")
     raise e
 
 from snn_research.benchmark.tasks import TaskRegistry, BenchmarkTask
