@@ -1,11 +1,10 @@
 # ファイルパス: snn_research/core/base.py
-# (更新: 全ニューロンタイプ対応)
-# Title: SNNモデル 基底クラス
+# Title: SNNモデル 基底クラス (全ニューロン対応版)
 # Description:
-# - 複数のモデルアーキテクチャで共有される基底クラス(BaseModel)と共通レイヤー(SNNLayerNorm)。
-# - get_total_spikes および reset_spike_stats メソッドを更新し、
-#   プロジェクトで定義されたすべてのニューロンタイプ (LIF, Izhikevich, GLIF, TC_LIF, etc.)
-#   を正しく認識して処理できるようにする。
+# - BaseModelクラス。
+#   修正点:
+#   - get_total_spikes, reset_spike_stats の対象クラスに
+#     EvolutionaryLeakLIF を追加。
 
 import torch
 import torch.nn as nn
@@ -20,7 +19,8 @@ from .neurons import (
     TC_LIF,
     DualThresholdNeuron,
     ScaleAndFireNeuron,
-    BistableIFNeuron
+    BistableIFNeuron,
+    EvolutionaryLeakLIF # 追加
 )
 
 # 型エイリアス
@@ -32,15 +32,13 @@ SNNNeuronType = Union[
     TC_LIF,
     DualThresholdNeuron,
     ScaleAndFireNeuron,
-    BistableIFNeuron
+    BistableIFNeuron,
+    EvolutionaryLeakLIF
 ]
 
 class SNNLayerNorm(nn.Module):
     """
     SNN用のLayerNorm。
-    時間方向 (Time) とバッチ方向 (Batch) がある場合、
-    通常は (B, T, D) に対して D の正規化を行う。
-    nn.LayerNorm は最後の次元に対して正規化を行うため、そのまま使用可能。
     """
     def __init__(self, normalized_shape: Any, eps: float = 1e-5, elementwise_affine: bool = True):
         super().__init__()
@@ -52,12 +50,9 @@ class SNNLayerNorm(nn.Module):
 class BaseModel(nn.Module):
     """
     すべてのSNNモデルが継承する基底クラス。
-    重みの初期化やスパイク統計の共通メソッドを提供する。
     """
     def _init_weights(self) -> None:
-        """
-        重みの初期化を行うユーティリティ。
-        """
+        """重みの初期化"""
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
@@ -77,10 +72,9 @@ class BaseModel(nn.Module):
     def get_total_spikes(self) -> float:
         """
         モデル全体の総スパイク数を計算する。
-        各ニューロン層が持つ 'total_spikes' バッファを集計する。
         """
         total = 0.0
-        # 認識対象のニューロンクラス
+        # 認識対象のニューロンクラス (修正: EvolutionaryLeakLIFを追加)
         target_classes = (
             AdaptiveLIFNeuron, 
             IzhikevichNeuron, 
@@ -89,7 +83,8 @@ class BaseModel(nn.Module):
             TC_LIF,
             DualThresholdNeuron,
             ScaleAndFireNeuron,
-            BistableIFNeuron
+            BistableIFNeuron,
+            EvolutionaryLeakLIF
         )
         
         for module in self.modules():
@@ -110,7 +105,8 @@ class BaseModel(nn.Module):
             TC_LIF,
             DualThresholdNeuron,
             ScaleAndFireNeuron,
-            BistableIFNeuron
+            BistableIFNeuron,
+            EvolutionaryLeakLIF
         )
 
         for module in self.modules():
