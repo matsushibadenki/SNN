@@ -1,7 +1,5 @@
-# ファイルパス: snn_research/architectures/sew_resnet.py
-# (修正: スパイク集計順序の修正)
-#
-# Title: SEW (Spike-Element-Wise) ResNet
+# ファイルパス: snn_research/models/cnn/sew_resnet.py
+# Title: SEW (Spike-Element-Wise) ResNet - ロジック修正版
 # Description:
 # - 修正: forwardメソッド内で、get_total_spikes() を set_stateful(False) の前に移動。
 
@@ -43,7 +41,6 @@ class SEWResidualBlock(nn.Module):
         
         # 1. Main Path
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
-        # SpikingJellyの慣例に従いBatchNormを使用 (時間次元は外部ループで扱うため2dで可)
         self.norm1 = nn.BatchNorm2d(out_channels)
         self.lif1 = neuron_class(features=out_channels, **neuron_params)
         
@@ -53,109 +50,72 @@ class SEWResidualBlock(nn.Module):
         # 2. Shortcut Path (残差接続)
         self.downsample = None
         if stride != 1 or in_channels != out_channels:
-            # チャンネル数またはサイズが異なる場合、ショートカットも変換
             self.downsample = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
                 nn.BatchNorm2d(out_channels)
             )
             
-        # スパイクベースの恒等写像のためのLIF (ショートカットパス用)
         self.lif_shortcut = neuron_class(features=out_channels, **neuron_params)
         
         # 3. Final Activation (ADD -> FIRE)
-        # 最終的な加算後の発火を担当するLIF
         self.lif_out = neuron_class(features=out_channels, **neuron_params)
 
     def forward(self, x_spike: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x_spike (torch.Tensor): 入力スパイク (B, T, C_in, H, W)
-        
-        Returns:
-            torch.Tensor: ブロックの出力スパイク (B, T, C_out, H', W')
-        """
         B, T, C_in, H, W = x_spike.shape
         
-        # --- 1. ショートカットパス (Identity / Downsample) ---
+        # --- 1. ショートカットパス ---
         shortcut_spikes: List[torch.Tensor] = []
         
-        # ショートカット用のLIFをStatefulに設定
-        SJ_F.reset_net(self.lif_shortcut)
         neuron_sc: nn.Module = cast(nn.Module, self.lif_shortcut)
         if hasattr(neuron_sc, 'set_stateful'):
             getattr(neuron_sc, 'set_stateful')(True)
 
-        identity: torch.Tensor = x_spike # (B, T, C_in, H, W)
+        identity: torch.Tensor = x_spike 
         
-        # ダウンサンプル処理 (時間軸を考慮して一括適用するか、ループ内で適用するか)
-        # ここでは一括適用 (Conv2dは3次元入力を期待するため、TとBをマージ)
         if self.downsample:
-            # (B, T, C, H, W) -> (B*T, C, H, W)
             identity_flat = identity.reshape(B * T, C_in, H, W)
             identity_downsampled_flat = self.downsample(identity_flat)
             _, C_out, H_out, W_out = identity_downsampled_flat.shape
-            # (B*T, C, H, W) -> (B, T, C, H, W)
             identity_downsampled = identity_downsampled_flat.reshape(B, T, C_out, H_out, W_out)
         else:
             identity_downsampled = identity
             _, C_out, H_out, W_out = identity_downsampled.shape
 
-        # ショートカットパスのLIF (時間軸ループ)
-        # 入力が既にスパイクであっても、同期と整形の意味でLIFを通す
         for t_idx in range(T):
-            x_sc_t: torch.Tensor = identity_downsampled[:, t_idx, ...] # (B, C_out, H_out, W_out)
-            
-            # ニューロンに入力するために (B, C, H, W) -> (B*H*W, C) に変形
+            x_sc_t: torch.Tensor = identity_downsampled[:, t_idx, ...] 
             x_sc_t_flat: torch.Tensor = x_sc_t.permute(0, 2, 3, 1).reshape(-1, C_out)
-            
             spike_sc_t_flat, _ = self.lif_shortcut(x_sc_t_flat)
-            
-            # (B*H*W, C) -> (B, C, H, W)
             spike_sc_t: torch.Tensor = spike_sc_t_flat.reshape(B, H_out, W_out, C_out).permute(0, 3, 1, 2)
             shortcut_spikes.append(spike_sc_t)
             
         if hasattr(neuron_sc, 'set_stateful'):
             getattr(neuron_sc, 'set_stateful')(False)
 
-        # --- 2. メインパス (Conv -> LIF -> Conv) ---
+        # --- 2. メインパス ---
         main_path_spikes: List[torch.Tensor] = []
         
-        # メインパスのLIFをStatefulに設定
-        SJ_F.reset_net(self.lif1)
-        SJ_F.reset_net(self.lif_out)
         neuron1: nn.Module = cast(nn.Module, self.lif1)
         neuron_out: nn.Module = cast(nn.Module, self.lif_out)
         if hasattr(neuron1, 'set_stateful'): getattr(neuron1, 'set_stateful')(True)
         if hasattr(neuron_out, 'set_stateful'): getattr(neuron_out, 'set_stateful')(True)
 
         for t_idx in range(T):
-            x_t: torch.Tensor = x_spike[:, t_idx, ...] # (B, C_in, H, W)
-            
-            # Conv1 -> Norm1 -> LIF1
+            x_t: torch.Tensor = x_spike[:, t_idx, ...] 
             y_t: torch.Tensor = self.conv1(x_t)
             y_t = self.norm1(y_t)
             
-            # (B, C, H, W) -> (B*H*W, C)
             B_t, C_t, H_t, W_t = y_t.shape
             y_t_flat: torch.Tensor = y_t.permute(0, 2, 3, 1).reshape(-1, C_t)
             
             spike1_t_flat, _ = self.lif1(y_t_flat)
             spike1_t: torch.Tensor = spike1_t_flat.reshape(B_t, H_t, W_t, C_t).permute(0, 3, 1, 2)
 
-            # Conv2 -> Norm2
             y_t = self.conv2(spike1_t)
-            y_t = self.norm2(y_t) # (B, C_out, H', W')
+            y_t = self.norm2(y_t) 
 
-            # --- 3. 加算 (Add Gate) ---
-            # (設計思想.md 引用[9, 27] で指摘される非スパイク計算（加算）)
-            # メインパスの電流(y_t)とショートカットパスのスパイク(shortcut_spikes[t_idx])を加算
-            # SEW-ResNetでは、これらを加算したものを「膜電位」ではなく「入力電流」として次のLIFに渡す
             residual_input: torch.Tensor = y_t + shortcut_spikes[t_idx]
             
-            # 最終的なLIF (ADD -> FIRE)
-            # (B, C, H, W) -> (B*H*W, C)
             res_in_flat: torch.Tensor = residual_input.permute(0, 2, 3, 1).reshape(-1, C_out)
-            
             spike_out_t_flat, _ = self.lif_out(res_in_flat)
             spike_out_t: torch.Tensor = spike_out_t_flat.reshape(B_t, H_t, W_t, C_t).permute(0, 3, 1, 2)
             
@@ -164,14 +124,12 @@ class SEWResidualBlock(nn.Module):
         if hasattr(neuron1, 'set_stateful'): getattr(neuron1, 'set_stateful')(False)
         if hasattr(neuron_out, 'set_stateful'): getattr(neuron_out, 'set_stateful')(False)
 
-        # (T, B, C_out, H', W') -> (B, T, C_out, H', W')
         return torch.stack(main_path_spikes, dim=1)
 
 
 class SEWResNet(BaseModel):
     """
     SEW (Spike-Element-Wise) ResNet アーキテクチャ。
-    SpikingCNN (snn_core.py) をベースに、残差ブロックで深層化を可能にしたモデル。
     """
     def __init__(
         self,
@@ -193,7 +151,6 @@ class SEWResNet(BaseModel):
         neuron_class: Type[nn.Module]
         if neuron_type_str == 'lif':
             neuron_class = AdaptiveLIFNeuron
-            # パラメータフィルタリング
             neuron_params = {k: v for k, v in neuron_params.items() if k in ['tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']}
         elif neuron_type_str == 'izhikevich':
             neuron_class = IzhikevichNeuron
@@ -203,25 +160,16 @@ class SEWResNet(BaseModel):
 
         self.in_channels = 64
         
-        # --- 1. 入力層 (SpikingCNNと同様) ---
-        # 最初の層は標準的なConv-BN-LIF-Pool
         self.conv1 = nn.Conv2d(3, self.in_channels, kernel_size=7, stride=2, padding=3, bias=False)
         self.norm1 = nn.BatchNorm2d(self.in_channels)
         self.lif1 = neuron_class(features=self.in_channels, **neuron_params)
         self.pool1 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
-        # --- 2. 残差ブロック層 ---
-        # (ResNet-18/34風の構成)
-        # layer1: 64 channels, 2 blocks, stride 1
         self.layer1 = self._make_layer(self.in_channels, 64, 2, 1, neuron_class, neuron_params)
-        # layer2: 128 channels, 2 blocks, stride 2
         self.layer2 = self._make_layer(64, 128, 2, 2, neuron_class, neuron_params)
-        # layer3: 256 channels, 2 blocks, stride 2
         self.layer3 = self._make_layer(128, 256, 2, 2, neuron_class, neuron_params)
-        # layer4: 512 channels, 2 blocks, stride 2
         self.layer4 = self._make_layer(256, 512, 2, 2, neuron_class, neuron_params)
         
-        # --- 3. 分類層 ---
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512, num_classes)
         
@@ -239,10 +187,8 @@ class SEWResNet(BaseModel):
     ) -> nn.Sequential:
         
         layers: List[nn.Module] = []
-        # 最初のブロックでストライド（ダウンサンプリング）を適用
         layers.append(SEWResidualBlock(in_channels, out_channels, stride, neuron_class, neuron_params))
         
-        # 残りのブロック
         for _ in range(1, num_blocks):
             layers.append(SEWResidualBlock(out_channels, out_channels, 1, neuron_class, neuron_params))
             
@@ -258,26 +204,21 @@ class SEWResNet(BaseModel):
         B, C, H, W = input_images.shape
         device: torch.device = input_images.device
         
-        # (B, C, H, W) -> (B, T, C, H, W)
-        # レートコーディング (簡易版): 同じ画像をT回繰り返す
         x_spikes_t: torch.Tensor = input_images.unsqueeze(1).repeat(1, self.time_steps, 1, 1, 1)
         
-        # 状態リセット
         SJ_F.reset_net(self)
         
         # --- 1. 入力層 (時間軸ループ) ---
         spikes_history: List[torch.Tensor] = []
         
-        # 入力層のLIFをStatefulに設定
         neuron1: nn.Module = cast(nn.Module, self.lif1)
         if hasattr(neuron1, 'set_stateful'):
             getattr(neuron1, 'set_stateful')(True)
 
         for t in range(self.time_steps):
-            x_t: torch.Tensor = x_spikes_t[:, t, ...] # (B, C, H, W)
+            x_t: torch.Tensor = x_spikes_t[:, t, ...] 
             y_t: torch.Tensor = self.conv1(x_t)
             y_t = self.norm1(y_t)
-            # (B, C, H, W) -> (B*H*W, C)
             B_t, C_t, H_t, W_t = y_t.shape
             y_t_flat: torch.Tensor = y_t.permute(0, 2, 3, 1).reshape(-1, C_t)
             spike_t_flat, _ = self.lif1(y_t_flat)
@@ -287,17 +228,14 @@ class SEWResNet(BaseModel):
         if hasattr(neuron1, 'set_stateful'):
             getattr(neuron1, 'set_stateful')(False)
 
-        x_spikes: torch.Tensor = torch.stack(spikes_history, dim=1) # (B, T, C, H, W)
+        x_spikes: torch.Tensor = torch.stack(spikes_history, dim=1) 
         
-        # MaxPool (時間軸にも適用: B*Tにしてからプール)
-        # (B, T, C, H, W) -> (B*T, C, H, W)
         x_flat_time: torch.Tensor = x_spikes.reshape(B * self.time_steps, self.in_channels, H, W)
         pooled_flat: torch.Tensor = self.pool1(x_flat_time)
         _, C_pool, H_pool, W_pool = pooled_flat.shape
         x_spikes = pooled_flat.reshape(B, self.time_steps, C_pool, H_pool, W_pool)
 
         # --- 2. 残差ブロック層 ---
-        # (SEWResidualBlockは内部で時間ループを処理するため、5次元テンソルをそのまま渡す)
         x_spikes = self.layer1(x_spikes)
         x_spikes = self.layer2(x_spikes)
         x_spikes = self.layer3(x_spikes)
@@ -310,12 +248,11 @@ class SEWResNet(BaseModel):
         # ------------------------------------
 
         # --- 3. 分類層 ---
-        # (B, T, C, H, W) -> (B, C, H, W) (時間平均)
         x_analog: torch.Tensor = x_spikes.mean(dim=1) 
         
-        x_analog = self.avgpool(x_analog) # (B, C, 1, 1)
-        x_analog = torch.flatten(x_analog, 1) # (B, C)
-        logits: torch.Tensor = self.fc(x_analog) # (B, num_classes)
+        x_analog = self.avgpool(x_analog) 
+        x_analog = torch.flatten(x_analog, 1) 
+        logits: torch.Tensor = self.fc(x_analog) 
         
         avg_spikes = torch.tensor(avg_spikes_val, device=device)
         mem = torch.tensor(0.0, device=device)
