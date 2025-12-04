@@ -1,10 +1,11 @@
 # ファイルパス: snn_research/core/layers/predictive_coding.py
-# Title: 予測符号化レイヤー (Hard k-WTA版)
+# Title: 予測符号化レイヤー (ニューロンパラメータ対応版)
 # Description:
-#   絶対値に基づく厳格なk-WTAを適用し、スパース性を強制する。
-#   修正 (v20):
-#     - _apply_lateral_inhibition を修正: abs(x) で上位k%を選定。
-#     - デバッグ用のログ出力を追加 (一時的)。
+#   予測符号化（Predictive Coding）を行うSNNレイヤー。
+#   修正点:
+#     - _filter_params メソッドを拡張し、Izhikevich, GLIF, TC-LIF などの
+#       多様なニューロンモデルのパラメータを正しく通過させるように修正。
+#     - これにより、configで指定したニューロンタイプが正しく機能するようになる。
 
 import torch
 import torch.nn as nn
@@ -27,21 +28,24 @@ class PredictiveCodingLayer(nn.Module):
         neuron_class: Type[nn.Module], 
         neuron_params: Dict[str, Any],
         weight_tying: bool = True,
-        sparsity: float = 0.05 # 修正: より厳しく5%にする
+        sparsity: float = 0.05
     ):
         super().__init__()
         self.weight_tying = weight_tying
         self.sparsity = sparsity
         
+        # ニューロンパラメータのフィルタリング
+        filtered_params = self._filter_params(neuron_class, neuron_params)
+
         self.generative_fc = nn.Linear(d_state, d_model)
-        self.generative_neuron = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **self._filter_params(neuron_class, neuron_params)))
+        self.generative_neuron = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **filtered_params))
         
         if self.weight_tying:
             self.inference_fc = None
         else:
             self.inference_fc = nn.Linear(d_model, d_state)
             
-        self.inference_neuron = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_state, **self._filter_params(neuron_class, neuron_params)))
+        self.inference_neuron = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_state, **filtered_params))
         
         self.norm_state = nn.LayerNorm(d_state)
         self.norm_error = nn.LayerNorm(d_model)
@@ -49,9 +53,29 @@ class PredictiveCodingLayer(nn.Module):
         self.error_scale = nn.Parameter(torch.tensor(1.0))
         self.feedback_strength = nn.Parameter(torch.tensor(1.0))
 
-    def _filter_params(self, cls, params):
-        valid = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'threshold_decay', 'v_reset']
-        return {k: v for k, v in params.items() if k in valid}
+    def _filter_params(self, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        指定されたニューロンクラスの__init__が受け入れるパラメータのみをフィルタリングする。
+        """
+        valid_params: List[str] = []
+        
+        if neuron_class == AdaptiveLIFNeuron:
+            valid_params = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step', 'v_reset']
+        elif neuron_class == IzhikevichNeuron:
+            valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
+        elif neuron_class == GLIFNeuron:
+            valid_params = ['features', 'base_threshold', 'gate_input_features']
+        elif neuron_class == TC_LIF:
+            valid_params = ['features', 'tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']
+        elif neuron_class == DualThresholdNeuron:
+            valid_params = ['features', 'tau_mem', 'threshold_high_init', 'threshold_low_init', 'v_reset']
+        elif neuron_class == ScaleAndFireNeuron:
+            valid_params = ['features', 'num_levels', 'base_threshold']
+        else:
+             # デフォルト (LIF互換)
+             valid_params = ['features', 'tau_mem', 'base_threshold', 'v_reset']
+        
+        return {k: v for k, v in neuron_params.items() if k in valid_params}
 
     def _apply_lateral_inhibition(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -101,7 +125,9 @@ class PredictiveCodingLayer(nn.Module):
         if self.weight_tying:
             bu_input = F.linear(norm_error, self.generative_fc.weight.t())
         else:
-            bu_input = self.inference_fc(norm_error) # type: ignore
+            if self.inference_fc is None:
+                 raise RuntimeError("inference_fc is None but weight_tying is False")
+            bu_input = self.inference_fc(norm_error)
 
         total_input = bu_input - (top_down_error * self.feedback_strength) if top_down_error is not None else bu_input
         
