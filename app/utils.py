@@ -1,10 +1,10 @@
 # ファイルパス: app/utils.py
-# (Phase 3 Complete: Multimodal Batching & UI Restoration)
+# (Phase 3 Complete: Multimodal Batching & UI Restoration - Fixed Collate)
 #
 # 機能:
 # - Gradioアプリケーション用の共通ユーティリティ。
 # - collate_fn: テキスト(input_ids)と画像(pixel_values)のバッチ化に対応。
-# - build_gradio_ui: チャットUIの構築（削除されていた機能を復元）。
+# - 修正: スカラーラベル（分類タスク）のバッチ化に対応 (stack vs pad_sequence)。
 
 import gradio as gr  # type: ignore[import-untyped]
 from typing import Callable, Iterator, Tuple, List, Optional, Any, Dict
@@ -85,7 +85,16 @@ def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Cal
         
         # テキストのパディング
         padded_inputs = torch.nn.utils.rnn.pad_sequence(inputs, batch_first=True, padding_value=padding_val)
-        padded_targets = torch.nn.utils.rnn.pad_sequence(targets, batch_first=True, padding_value=-100)
+        
+        # --- ▼ 修正: ターゲットのバッチ化 (スカラー vs シーケンス) ▼ ---
+        if targets and targets[0].ndim == 0:
+            # スカラーラベル (分類タスク) -> stack
+            padded_targets = torch.stack(targets, dim=0)
+        else:
+            # シーケンスラベル (生成タスク) -> pad_sequence
+            padded_targets = torch.nn.utils.rnn.pad_sequence(targets, batch_first=True, padding_value=-100)
+        # --- ▲ 修正 ▲ ---
+
         attention_mask = torch.ones_like(padded_inputs)
         attention_mask[padded_inputs == padding_val] = 0
         
@@ -101,13 +110,15 @@ def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Cal
             padded_logits = torch.nn.utils.rnn.pad_sequence(logits, batch_first=True, padding_value=0.0)
             
             # ターゲットとロジットのシーケンス長を合わせる
-            seq_len = padded_inputs.shape[1]
-            if padded_targets.shape[1] < seq_len:
-                pad = torch.full((padded_targets.shape[0], seq_len - padded_targets.shape[1]), -100, dtype=padded_targets.dtype, device=padded_targets.device)
-                padded_targets = torch.cat([padded_targets, pad], dim=1)
-            if padded_logits.shape[1] < seq_len:
-                pad = torch.full((padded_logits.shape[0], seq_len - padded_logits.shape[1], padded_logits.shape[2]), 0.0, dtype=padded_logits.dtype, device=padded_logits.device)
-                padded_logits = torch.cat([padded_logits, pad], dim=1)
+            # (注: 分類タスクで蒸留を行う場合、ここのロジックも調整が必要になる可能性があるが、現状はテキスト生成蒸留を想定)
+            if padded_targets.ndim > 1: # シーケンスの場合のみ調整
+                seq_len = padded_inputs.shape[1]
+                if padded_targets.shape[1] < seq_len:
+                    pad = torch.full((padded_targets.shape[0], seq_len - padded_targets.shape[1]), -100, dtype=padded_targets.dtype, device=padded_targets.device)
+                    padded_targets = torch.cat([padded_targets, pad], dim=1)
+                if padded_logits.shape[1] < seq_len:
+                    pad = torch.full((padded_logits.shape[0], seq_len - padded_logits.shape[1], padded_logits.shape[2]), 0.0, dtype=padded_logits.dtype, device=padded_logits.device)
+                    padded_logits = torch.cat([padded_logits, pad], dim=1)
             
             return padded_inputs, attention_mask, padded_targets, padded_logits
 
