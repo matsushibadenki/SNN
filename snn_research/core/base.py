@@ -1,12 +1,13 @@
 # ファイルパス: snn_research/core/base.py
-# Title: SNNモデル 基底クラス (パフォーマンス最適化版)
+# Title: SNNモデル 基底クラス (DDP対応 & 最適化版)
 # Description:
 # - すべてのSNNモデルが継承する基底クラス。
-# - 修正: get_total_spikes メソッドでの頻繁な GPU-CPU 同期 (.item()) を廃止。
-#   Tensorとして合計し、最後に1回だけ同期することで、学習・推論速度を向上させる。
+# - 修正: get_total_spikes メソッドを分散学習 (DDP) に対応させ、
+#   全デバイスのスパイク数を正しく集計するように修正。
 
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 from typing import Any, Optional
 
 class SNNLayerNorm(nn.Module):
@@ -45,7 +46,7 @@ class BaseModel(nn.Module):
     def get_total_spikes(self) -> float:
         """
         モデル全体の総スパイク数を計算する。
-        最適化: Tensorとして加算し、最後に1回だけCPUへ転送(.item())する。
+        分散学習時は全プロセスのスパイク数を合計する。
         """
         total_spikes_tensor = torch.tensor(0.0)
         
@@ -56,12 +57,17 @@ class BaseModel(nn.Module):
         except StopIteration:
             pass # パラメータがない場合はCPUのまま
 
+        # ローカルのスパイク数を集計
         for module in self.modules():
             if hasattr(module, 'total_spikes') and isinstance(module.total_spikes, torch.Tensor):
-                # 加算 (GPU上で行われる)
                 total_spikes_tensor += module.total_spikes
         
-        # 最後に1回だけ同期して値を返す
+        # 分散学習環境での集計 (All-Reduce)
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(total_spikes_tensor, op=dist.ReduceOp.SUM)
+            # 平均発火率などの計算のために合計値が必要だが、
+            # ここでは単純合計を返す。平均化が必要なら呼び出し元で行う。
+
         return total_spikes_tensor.item()
     
     def reset_spike_stats(self) -> None:
@@ -73,7 +79,7 @@ class BaseModel(nn.Module):
             if hasattr(module, 'reset') and callable(module.reset):
                 module.reset()
             
-            # 明示的なカウンタリセット (reset() でクリアされない実装への保険)
+            # 明示的なカウンタリセット
             if hasattr(module, 'total_spikes') and isinstance(module.total_spikes, torch.Tensor):
                 with torch.no_grad():
                     module.total_spikes.zero_()
