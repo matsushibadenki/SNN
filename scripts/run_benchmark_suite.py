@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# (修正: モデル設定の読み込みを柔軟にし、確実な辞書渡しを行う)
+# (修正: mypy型エラー修正 - import-not-found, var-annotated, assignment)
 
 import argparse
 import logging
@@ -9,8 +9,8 @@ import yaml
 import json
 import torch
 import random
-from omegaconf import OmegaConf
-from typing import Any, Dict
+from omegaconf import OmegaConf, DictConfig, ListConfig
+from typing import Any, Dict, cast
 from PIL import Image
 import numpy as np
 
@@ -26,7 +26,7 @@ if runners_dir not in sys.path:
     sys.path.append(runners_dir)
 
 try:
-    import train
+    import train # type: ignore [import-not-found]
 except ImportError as e:
     logger.error(f"trainモジュールのインポートに失敗しました: {e}")
     pass
@@ -66,19 +66,18 @@ def ensure_image_benchmark_data(data_path: str) -> None:
 def run_experiment(args: argparse.Namespace) -> None:
     logger.info(f"Starting experiment: {args.experiment} with tag: {args.tag}")
 
-    model_conf_dict = {}
+    model_conf_dict: Dict[str, Any] = {} # 型アノテーションを追加
     if args.model_config and os.path.exists(args.model_config):
         model_conf_loaded = OmegaConf.load(args.model_config)
         
         # --- 修正: Config構造の正規化 ---
-        # architecture_type がルートにあるか確認
         if 'architecture_type' in model_conf_loaded:
-            model_conf_dict = OmegaConf.to_container(model_conf_loaded, resolve=True) # type: ignore
+            model_conf_dict = cast(Dict[str, Any], OmegaConf.to_container(model_conf_loaded, resolve=True))
         elif 'model' in model_conf_loaded:
-            model_conf_dict = OmegaConf.to_container(model_conf_loaded.model, resolve=True) # type: ignore
+            model_conf_dict = cast(Dict[str, Any], OmegaConf.to_container(model_conf_loaded.model, resolve=True)) # type: ignore
         else:
             logger.warning(f"Could not find 'architecture_type' or 'model' key in config. Using root.")
-            model_conf_dict = OmegaConf.to_container(model_conf_loaded, resolve=True) # type: ignore
+            model_conf_dict = cast(Dict[str, Any], OmegaConf.to_container(model_conf_loaded, resolve=True))
         
     arch_type = model_conf_dict.get("architecture_type", "unknown")
     logger.info(f"Detected architecture type: {arch_type}")
@@ -106,7 +105,7 @@ def run_experiment(args: argparse.Namespace) -> None:
                 "loss": {"ce_weight": 1.0}
             }
         },
-        "model": model_conf_dict, # 修正済み辞書を渡す
+        "model": model_conf_dict,
         "data": {
             "path": "data/benchmark_data.jsonl",
             "tokenizer_name": "gpt2",
@@ -117,9 +116,10 @@ def run_experiment(args: argparse.Namespace) -> None:
     # CLI override
     if args.epochs: base_config.training.epochs = args.epochs
     if args.batch_size: base_config.training.batch_size = args.batch_size
-    if args.config: # 外部Configがある場合はマージ
+    if args.config: 
         ext_conf = OmegaConf.load(args.config)
-        base_config = OmegaConf.merge(base_config, ext_conf)
+        # OmegaConf.mergeの戻り値をDictConfigにキャスト
+        base_config = cast(DictConfig, OmegaConf.merge(base_config, ext_conf))
 
     # データ準備
     data_path = str(base_config.data.path)
@@ -147,9 +147,10 @@ def run_experiment(args: argparse.Namespace) -> None:
             except: tokenizer = None
 
             try:
-                if not isinstance(base_config, (dict, OmegaConf.get_type("DictConfig"))): # type: ignore
+                if not isinstance(base_config, (dict, DictConfig)):
                      base_config = OmegaConf.create(base_config)
                 
+                # train関数の呼び出し（型チェックは動的なためignore）
                 train_module.train(MockArgs(), base_config, tokenizer) # type: ignore
                 logger.info("Training completed.")
             except Exception as e:
