@@ -1,5 +1,5 @@
 # ファイルパス: app/containers.py
-# (修正: BrainContainer に autonomous_agent を追加し、AttributeError を解消)
+# (修正: AgentContainer に active_inference_agent を追加し、DigitalLifeForm の依存解決を修正)
 
 import torch
 from dependency_injector import containers, providers
@@ -224,8 +224,8 @@ class AgentContainer(containers.DeclarativeContainer):
     
     # 読み込み済みPlannerモデル (Singleton)
     loaded_planner_snn = providers.Singleton(
-        load_planner_snn, # 関数名修正
-        planner_model=providers.Callable(lambda tc: tc.planner_snn(), tc=training_container), # 引数名修正
+        load_planner_snn,
+        planner_model=providers.Callable(lambda tc: tc.planner_snn(), tc=training_container),
         model_path=config.training.planner.model_path.or_none(),
         device=device
     )
@@ -262,7 +262,12 @@ class AgentContainer(containers.DeclarativeContainer):
         training_config_path=providers.Object("configs/templates/base_config.yaml")
     )
     
-    active_inference_agent = providers.Callable(lambda tc: tc.active_inference_agent(), tc=training_container)
+    # --- ▼ 追加: TrainingContainerからActiveInferenceAgentを受け取る ▼ ---
+    active_inference_agent = providers.Callable(
+        lambda tc: tc.active_inference_agent(),
+        tc=training_container
+    )
+    # --- ▲ 追加 ▲ ---
 
 class AppContainer(containers.DeclarativeContainer):
     config = providers.Configuration()
@@ -369,12 +374,10 @@ class BrainContainer(containers.DeclarativeContainer):
         ac=agent_container
     )
     
-    # --- ▼ 追加: autonomous_agent を追加 ▼ ---
     autonomous_agent = providers.Callable(
         lambda ac: ac.autonomous_agent(),
         ac=agent_container
     )
-    # --- ▲ 追加 ▲ ---
     
     digital_life_form = providers.Singleton(
         DigitalLifeForm,
