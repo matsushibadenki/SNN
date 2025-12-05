@@ -19,7 +19,7 @@
 
 **"Realizing next-generation AI that thinks, learns, and adapts autonomously with high efficiency, just like the human brain."**
 
-The **SNN5 Project** is an open-source initiative to build an "Artificial Brain" that combines biological plausibility with advanced cognitive functions, based on energy-efficient Spiking Neural Networks (SNN).
+The **SNN Project** is an open-source initiative to build an "Artificial Brain" that combines biological plausibility with advanced cognitive functions, based on energy-efficient Spiking Neural Networks (SNN).
 
 To overcome the issues of "power consumption due to massive scaling" and "difficulty in re-learning" faced by traditional ANNs, we have adopted an innovative architecture that combines **FrankenMoE** (Patchwork Mixture of Experts), **1.58-bit quantization**, and **GraphRAG**.
 
@@ -53,8 +53,8 @@ To overcome the issues of "power consumption due to massive scaling" and "diffic
 
 ```bash
 # Clone the repository
-git clone https://github.com/matsushibadenki/SNN5.git
-cd SNN5
+git clone https://github.com/matsushibadenki/SNN.git
+cd SNN
 
 # Create a virtual environment
 python -m venv .venv
@@ -144,7 +144,7 @@ For questions or collaboration inquiries, please open an issue or contact the ma
 
 **"ヒトの脳のように高効率で、自律的に思考・学習・適応する次世代人工知能の実現"**
 
-**SNN5プロジェクト**は、エネルギー効率に優れたスパイキングニューラルネットワーク (SNN) を基盤とし、生物学的妥当性と高度な認知機能を併せ持つ「人工脳」を構築するオープンソースプロジェクトです。
+**SNNプロジェクト**は、エネルギー効率に優れたスパイキングニューラルネットワーク (SNN) を基盤とし、生物学的妥当性と高度な認知機能を併せ持つ「人工脳」を構築するオープンソースプロジェクトです。
 
 従来のANNが抱える「巨大化による電力消費」と「再学習の困難さ」を克服するため、**FrankenMoE** (継ぎ接ぎモデル) と **1.58bit量子化**、そして **GraphRAG** を組み合わせた革新的なアーキテクチャを採用しています。
 
@@ -178,8 +178,8 @@ For questions or collaboration inquiries, please open an issue or contact the ma
 
 ```bash
 # リポジトリのクローン
-git clone https://github.com/matsushibadenki/SNN5.git
-cd SNN5
+git clone https://github.com/matsushibadenki/SNN.git
+cd SNN
 
 # 仮想環境の作成
 python -m venv .venv
@@ -225,7 +225,7 @@ python scripts/observe_brain_thought_process.py --model_config configs/models/mi
 ## 📂 ディレクトリ構造
 
 ```
-SNN5/
+SNN/
 ├── app/                    # アプリケーション層 (UI、DIコンテナ)
 ├── configs/                # 設定ファイル (モデル定義、MoE設定)
 ├── snn_research/           # コアライブラリ
