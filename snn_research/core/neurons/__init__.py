@@ -1,11 +1,12 @@
 # ファイルパス: snn_research/core/neurons/__init__.py
-# (修正: ScaleAndFireNeuronの3次元入力対応)
+# (修正: ScaleAndFireNeuronの3次元入力対応 & クラス定義の完全版)
 # Title: SNNニューロンモデル定義
 # Description:
 # - 4次元入力 (B, C, H, W) などの場合、チャネル次元(dim=1)に合わせてパラメータを
-#   (1, C, 1, 1) に変形する _view_params ヘルパーを追加。
+#   (1, C, 1, 1) に変形する _view_params ヘルパーを実装。
 # - AdaptiveLIFNeuron, ProbabilisticLIFNeuron, DualThresholdNeuron, GLIFNeuron, TC_LIF に適用。
-# - 【修正】ScaleAndFireNeuron が (B, L, C) の3次元入力を正しく処理できるように分岐を追加。
+# - ScaleAndFireNeuron が (B, L, C) の3次元入力を正しく処理できるように分岐を追加。
+# - BistableIFNeuron, EvolutionaryLeakLIF をエクスポート。
 
 from typing import Optional, Tuple, Any, List, cast
 import torch
@@ -14,8 +15,9 @@ import torch.nn.functional as F
 import math
 from spikingjelly.activation_based import surrogate, base # type: ignore[import-untyped]
 
+# 新しいニューロンのインポート
 from .bif_neuron import BistableIFNeuron
-from .feel_neuron import EvolutionaryLeakLIF # 追加
+from .feel_neuron import EvolutionaryLeakLIF
 
 __all__ = [
     "AdaptiveLIFNeuron",
@@ -26,7 +28,7 @@ __all__ = [
     "DualThresholdNeuron",
     "ScaleAndFireNeuron",
     "BistableIFNeuron",
-    "EvolutionaryLeakLIF" # 公開
+    "EvolutionaryLeakLIF"
 ]
 
 class AdaptiveLIFNeuron(base.MemoryModule):
@@ -45,6 +47,7 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         noise_intensity: float = 0.0,
         threshold_decay: float = 0.99,
         threshold_step: float = 0.05,
+        v_reset: float = 0.0, # 追加: 互換性のため
     ):
         super().__init__()
         self.features = features
@@ -109,7 +112,7 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         if self.adaptive_threshold is None or self.adaptive_threshold.shape != x.shape:
             self.adaptive_threshold = torch.zeros_like(x)
 
-        # --- ▼ 修正: パラメータのブロードキャスト対応 ▼ ---
+        # パラメータのブロードキャスト対応
         log_tau = self._view_params(self.log_tau_mem, x)
         base_thresh = self._view_params(self.base_threshold, x)
 
@@ -117,7 +120,6 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         mem_decay = torch.exp(-1.0 / current_tau_mem)
         
         self.mem = self.mem * mem_decay + x
-        # --- ▲ 修正 ▲ ---
         
         if self.training and self.noise_intensity > 0:
             self.mem += torch.randn_like(self.mem) * self.noise_intensity
@@ -254,6 +256,7 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
         threshold: float = 1.0,
         temperature: float = 0.5,
         noise_intensity: float = 0.0,
+        v_reset: float = 0.0,
     ):
         super().__init__()
         self.features = features
@@ -294,11 +297,10 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
         if self.mem is None or self.mem.shape != x.shape:
             self.mem = torch.zeros_like(x)
 
-        # --- ▼ 修正: パラメータのブロードキャスト対応 ▼ ---
+        # パラメータのブロードキャスト対応
         log_tau = self._view_params(self.log_tau_mem, x)
         current_tau_mem = torch.exp(log_tau) + 1.1
         mem_decay = torch.exp(-1.0 / current_tau_mem)
-        # --- ▲ 修正 ▲ ---
         
         self.mem = self.mem * mem_decay + x
 
@@ -397,10 +399,9 @@ class GLIFNeuron(base.MemoryModule):
         else:
             mem_decay_gate = torch.sigmoid(self.gate_tau_lin(gate_input))
         
-        # --- ▼ 修正: パラメータのブロードキャスト対応 ▼ ---
+        # パラメータのブロードキャスト対応
         v_reset_gated = self._view_params(self.v_reset, x)
         base_thresh = self._view_params(self.base_threshold, x)
-        # --- ▲ 修正 ▲ ---
 
         self.mem = self.mem * mem_decay_gate + (1.0 - mem_decay_gate) * x
         
@@ -484,14 +485,13 @@ class TC_LIF(base.MemoryModule):
         if self.v_d is None or self.v_d.shape != x.shape:
             self.v_d = torch.zeros_like(x)
 
-        # --- ▼ 修正: パラメータのブロードキャスト対応 ▼ ---
+        # パラメータのブロードキャスト対応
         log_tau_s = self._view_params(self.log_tau_s, x)
         log_tau_d = self._view_params(self.log_tau_d, x)
         w_ds = self._view_params(self.w_ds, x)
         w_sd = self._view_params(self.w_sd, x)
         base_thresh = self._view_params(self.base_threshold, x)
         v_res = self._view_params(self.v_reset, x)
-        # --- ▲ 修正 ▲ ---
 
         current_tau_s = torch.exp(log_tau_s) + 1.1
         decay_s = torch.exp(-1.0 / current_tau_s)
@@ -573,12 +573,11 @@ class DualThresholdNeuron(base.MemoryModule):
         if not self.stateful:
             self.mem = None
 
-        # --- ▼ 修正: パラメータのブロードキャスト対応 ▼ ---
+        # パラメータのブロードキャスト対応
         t_low = self._view_params(self.threshold_low, x)
         t_high = self._view_params(self.threshold_high, x)
         v_res = self._view_params(self.v_reset, x)
         log_tau = self._view_params(self.log_tau_mem, x)
-        # --- ▲ 修正 ▲ ---
 
         if self.mem is None or self.mem.shape != x.shape:
             self.mem = (t_low.detach() / 2.0).expand_as(x)
@@ -710,15 +709,3 @@ class ScaleAndFireNeuron(base.MemoryModule):
         
         else:
              raise ValueError(f"Unsupported input shape: {x.shape}")
-
-
-__all__ = [
-    "AdaptiveLIFNeuron",
-    "IzhikevichNeuron",
-    "ProbabilisticLIFNeuron",
-    "GLIFNeuron",
-    "TC_LIF",
-    "DualThresholdNeuron",
-    "ScaleAndFireNeuron",
-    "BistableIFNeuron"
-]
