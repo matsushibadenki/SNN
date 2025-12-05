@@ -1,5 +1,5 @@
 # ファイルパス: app/containers.py
-# (修正: load_planner_snn の関数名と引数名の不一致を解消)
+# (修正: BrainContainer に autonomous_agent を追加し、AttributeError を解消)
 
 import torch
 from dependency_injector import containers, providers
@@ -369,10 +369,17 @@ class BrainContainer(containers.DeclarativeContainer):
         ac=agent_container
     )
     
+    # --- ▼ 追加: autonomous_agent を追加 ▼ ---
+    autonomous_agent = providers.Callable(
+        lambda ac: ac.autonomous_agent(),
+        ac=agent_container
+    )
+    # --- ▲ 追加 ▲ ---
+    
     digital_life_form = providers.Singleton(
         DigitalLifeForm,
         planner=providers.Callable(lambda ac: ac.hierarchical_planner(), ac=agent_container), # type: ignore[name-defined]
-        autonomous_agent=providers.Callable(lambda ac: ac.autonomous_agent(), ac=agent_container), # type: ignore[name-defined]
+        autonomous_agent=autonomous_agent, # type: ignore[name-defined]
         rl_agent=rl_agent, # type: ignore[name-defined]
         self_evolving_agent=self_evolving_agent, # type: ignore[name-defined]
         motivation_system=motivation_system, # type: ignore[name-defined]
