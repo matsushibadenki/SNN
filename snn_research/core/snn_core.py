@@ -1,10 +1,10 @@
 # ファイルパス: snn_research/core/snn_core.py
-# Title: SNN Core Model Factory (循環参照回避 & キーワード引数対応版)
+# Title: SNN Core Model Factory (完全版)
 # Description:
 # - SNNモデルの構築を一手に引き受けるファクトリクラス。
 # - 修正1: モデルクラスのインポートを `_build_model` 内に移動し、循環参照を回避。
 # - 修正2: `forward` メソッドで `x` を省略可能にし、kwargsからの入力自動解決を実装。
-#   これにより `model(input_images=...)` のような呼び出しに対応。
+#   これにより `model(input_images=...)` のようなキーワード引数のみの呼び出しに対応。
 
 import torch
 import torch.nn as nn
@@ -48,7 +48,7 @@ class SNNCore(nn.Module):
         位置引数 x が省略された場合、kwargs から一般的な入力キーを探して解決する。
         """
         if x is None:
-            # kwargs から入力テンソルを探す
+            # kwargs から入力テンソルを探す（優先順位順）
             for key in ['input_ids', 'input_images', 'input_sequence', 'x']:
                 if key in kwargs:
                     x = kwargs[key]
@@ -58,7 +58,6 @@ class SNNCore(nn.Module):
         
         if x is None:
             # それでも見つからない場合は kwargs のみで呼び出す（モデル側が対応していることを期待）
-            # 例: 複数の入力を取るモデルなど
             return self.model(**kwargs)
         
         return self.model(x, **kwargs)
