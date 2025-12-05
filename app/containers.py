@@ -1,5 +1,5 @@
 # ファイルパス: app/containers.py
-# (修正: AppContainer の model_registry 設定を動的に変更し、整合性を確保)
+# (修正: AgentContainer 内の重複した autonomous_agent 定義を削除し、mypyエラーを解消)
 
 import torch
 from dependency_injector import containers, providers
@@ -113,6 +113,7 @@ class TrainingContainer(containers.DeclarativeContainer):
     device = providers.Factory(get_auto_device)
     tokenizer = providers.Factory(get_tokenizer, config_dict=config)
     
+    # SNNモデル (ファクトリ利用)
     snn_model = providers.Factory(
         SNNCore, 
         config=config.model, 
@@ -130,6 +131,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         warmup_epochs=config.training.gradient_based.warmup_epochs
     )
     
+    # トレーナー群
     standard_trainer = providers.Factory(
         BreakthroughTrainer, 
         criterion=providers.Factory(CombinedLoss, tokenizer=tokenizer, ce_weight=config.training.gradient_based.loss.ce_weight), 
@@ -148,6 +150,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         meta_cognitive_snn=meta_cognitive_snn
     )
     
+    # Bio-RL関連
     synaptic_rule = providers.Factory(get_bio_learning_rule, name=config.training.biologically_plausible.learning_rule, params=config.training.biologically_plausible.provided)
     homeostatic_rule = providers.Factory(get_bio_learning_rule, name="BCM", params=config.training.biologically_plausible.provided)
     
@@ -159,6 +162,7 @@ class TrainingContainer(containers.DeclarativeContainer):
     grid_world_env = providers.Factory(GridWorldEnv, device=device)
     bio_rl_trainer = providers.Factory(BioRLTrainer, agent=bio_rl_agent, env=grid_world_env)
     
+    # Plannerモデル (学習用)
     planner_snn = providers.Factory(
         PlannerSNN, 
         vocab_size=providers.Callable(len, tokenizer), 
@@ -206,6 +210,7 @@ class AgentContainer(containers.DeclarativeContainer):
     
     web_crawler = providers.Singleton(WebCrawler)
     
+    # Singletonに変更して状態共有と整合性を保証
     rag_system = providers.Singleton(
         RAGSystem, 
         vector_store_path=providers.Factory(get_vector_store_path, log_dir=config.training.log_dir)
@@ -217,9 +222,10 @@ class AgentContainer(containers.DeclarativeContainer):
         memory_path=providers.Factory(get_memory_path, log_dir=config.training.log_dir)
     )
     
+    # 読み込み済みPlannerモデル (Singleton)
     loaded_planner_snn = providers.Singleton(
-        load_planner_snn,
-        planner_model=providers.Callable(lambda tc: tc.planner_snn(), tc=training_container),
+        load_planner_snn, # 関数名修正
+        planner_model=providers.Callable(lambda tc: tc.planner_snn(), tc=training_container), # 引数名修正
         model_path=config.training.planner.model_path.or_none(),
         device=device
     )
@@ -260,16 +266,10 @@ class AgentContainer(containers.DeclarativeContainer):
         lambda tc: tc.active_inference_agent(),
         tc=training_container
     )
-    
-    autonomous_agent = providers.Callable(
-        lambda ac: ac.autonomous_agent(),
-        ac=agent_container
-    )
 
 class AppContainer(containers.DeclarativeContainer):
     config = providers.Configuration()
     
-    # 修正: 設定ファイルからパスを取得するように変更
     model_registry = providers.Singleton(
         SimpleModelRegistry, 
         registry_path=providers.Factory(get_registry_path, config=config)
@@ -285,11 +285,13 @@ class AppContainer(containers.DeclarativeContainer):
 class BrainContainer(containers.DeclarativeContainer):
     config = providers.Configuration()
     
+    # サブコンテナの統合
     agent_container = providers.Container(AgentContainer, config=config)
     app_container = providers.Container(AppContainer, config=config)
     
     device = providers.Factory(get_auto_device)
 
+    # Core Components
     global_workspace = providers.Singleton(
         GlobalWorkspace, 
         model_registry=agent_container.model_registry
@@ -297,10 +299,12 @@ class BrainContainer(containers.DeclarativeContainer):
     
     motivation_system = providers.Callable(lambda ag: ag.motivation_system, ag=agent_container.self_evolving_agent_master)
     
+    # I/O
     sensory_receptor = providers.Singleton(SensoryReceptor)
     spike_encoder = providers.Singleton(SpikeEncoder, num_neurons=256)
     actuator = providers.Singleton(Actuator, actuator_name="voice_synthesizer")
 
+    # Cognitive Modules
     cortical_column = providers.Factory(
         CorticalColumn, input_dim=256, output_dim=64, column_dim=128,
         neuron_config=config.training.biologically_plausible.neuron
@@ -335,6 +339,7 @@ class BrainContainer(containers.DeclarativeContainer):
     
     symbol_grounding = providers.Singleton(SymbolGrounding, rag_system=agent_container.rag_system)
 
+    # The Artificial Brain
     artificial_brain = providers.Singleton(
         ArtificialBrain, 
         global_workspace=global_workspace, 
@@ -355,6 +360,7 @@ class BrainContainer(containers.DeclarativeContainer):
         symbol_grounding=symbol_grounding 
     )
     
+    # Explicitly typed providers to help mypy
     rl_agent = providers.Callable(
         lambda ac: cast(TrainingContainer, ac.training_container()).bio_rl_agent(),
         ac=agent_container
