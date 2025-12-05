@@ -1,26 +1,20 @@
 # ファイルパス: snn_research/core/adaptive_neuron_selector.py
-# (新規作成・mypy修正)
-# Title: 適応的ニューロンセレクタ (Adaptive Neuron Selector)
+# Title: 適応的ニューロンセレクタ (Adaptive Neuron Selector) - パラメータ引継ぎ強化版
 # Description:
-# doc/Improvement-Plan.md (改善案1, Phase 2) に基づき、
-# SNNの学習中の振る舞いを監視し、ニューロンのタイプ（例: LIF, BIF）を
-# 動的に切り替えるためのメタコントローラを実装します。
-# これにより、安定性が求められる場面ではLIFを、表現力が必要な場面ではBIFを
-# 自動的に選択し、学習の安定性と性能を両立することを目指します。
-# mypy --strict 準拠。
-# 修正: mypy [name-defined] エラーを解消するため、Anyをインポート。
+#   SNNの学習中の振る舞いを監視し、ニューロンのタイプを動的に切り替えるメタコントローラ。
+#   修正点:
+#   - ニューロン置換時に、古いニューロンから新しいニューロンへ重みパラメータ（weight, bias等）を
+#     可能な限りコピーするように修正。これにより、切り替えによる急激な精度低下（忘却）を防ぐ。
+#   - 形状が一致しないパラメータは無視し、警告をログ出力する。
 
 import torch
 import torch.nn as nn
-# --- ▼ 修正 ▼ ---
-from typing import List, Deque, Dict, Tuple, Type, cast, Any
-# --- ▲ 修正 ▲ ---
+from typing import List, Deque, Dict, Tuple, Type, cast, Any, Optional
 from collections import deque
 import logging
 
 # 必要なニューロンクラスをインポート
-from .neurons import AdaptiveLIFNeuron
-from .neurons.bif_neuron import BistableIFNeuron
+from .neurons import AdaptiveLIFNeuron, IzhikevichNeuron, BistableIFNeuron
 
 # ロガー設定
 logger = logging.getLogger(__name__)
@@ -28,10 +22,7 @@ logger = logging.getLogger(__name__)
 class AdaptiveNeuronSelector(nn.Module):
     """
     学習中の振る舞い（損失、スパイク率）を監視し、
-    LIFとBIFニューロンを動的に切り替えるメタコントローラ。
-
-    このモジュール自体が学習するのではなく、ヒューリスティックに基づいて
-    下位層のニューロンモジュールを差し替えます。
+    LIFとBIFニューロンなどを動的に切り替えるメタコントローラ。
     """
 
     def __init__(
@@ -47,14 +38,14 @@ class AdaptiveNeuronSelector(nn.Module):
     ) -> None:
         """
         Args:
-            module_to_wrap (nn.Module): 内部のニューロンを切り替える対象のモジュール (例: SpikingCNN)。
-            layer_name_to_monitor (str): module_to_wrap内のニューロン層の名前 (例: "neuron2")。
+            module_to_wrap (nn.Module): 内部のニューロンを切り替える対象のモジュール。
+            layer_name_to_monitor (str): module_to_wrap内のニューロン層の名前。
             lif_params (Dict[str, Any]): LIFニューロンの初期化パラメータ。
             bif_params (Dict[str, Any]): BIFニューロンの初期化パラメータ。
-            monitor_window (int): 損失やスパイク率の監視ウィンドウサイズ。
-            loss_plateau_threshold (float): 損失の停滞とみなす標準偏差の閾値。
-            low_spike_rate_threshold (float): 低スパイク率とみなす閾値。
-            high_spike_rate_threshold (float): 高スパイク率とみなす閾値。
+            monitor_window (int): 監視ウィンドウサイズ。
+            loss_plateau_threshold (float): 損失停滞の閾値。
+            low_spike_rate_threshold (float): 低スパイク率の閾値。
+            high_spike_rate_threshold (float): 高スパイク率の閾値。
         """
         super().__init__()
         self.module_to_wrap: nn.Module = module_to_wrap
@@ -70,22 +61,18 @@ class AdaptiveNeuronSelector(nn.Module):
         self.loss_history: Deque[float] = deque(maxlen=monitor_window)
         self.spike_rate_history: Deque[float] = deque(maxlen=monitor_window)
         
-        self.current_neuron_type: Type[nn.Module] = AdaptiveLIFNeuron
-        
-        # 監視対象のニューロン層への参照を取得
+        # 初期状態の確認
         try:
             self.monitored_neuron: nn.Module = self._find_layer(layer_name_to_monitor)
-            self.current_neuron_type = type(self.monitored_neuron)
+            self.current_neuron_type: Type[nn.Module] = type(self.monitored_neuron)
             logger.info(f"✅ AdaptiveNeuronSelectorが層 '{layer_name_to_monitor}' ({self.current_neuron_type.__name__}) の監視を開始しました。")
         except AttributeError:
             logger.error(f"❌ '{layer_name_to_monitor}' が 'module_to_wrap' に見つかりません。")
-            # 実行を継続するためにダミーモジュールを設定
             self.monitored_neuron = nn.Identity() 
             self.current_neuron_type = nn.Identity
 
     def _find_layer(self, layer_name: str) -> nn.Module:
         """指定された名前のサブモジュールを見つける"""
-        # "conv2.neuron" のようなネストした名前を解決
         current_module: nn.Module = self.module_to_wrap
         for name in layer_name.split('.'):
             if not hasattr(current_module, name):
@@ -93,10 +80,36 @@ class AdaptiveNeuronSelector(nn.Module):
             current_module = getattr(current_module, name)
         return current_module
 
+    def _transfer_weights(self, old_module: nn.Module, new_module: nn.Module) -> None:
+        """
+        古いモジュールから新しいモジュールへ、形状が一致するパラメータをコピーする。
+        これにより、学習済みの特徴抽出能力を維持する。
+        """
+        old_state = old_module.state_dict()
+        new_state = new_module.state_dict()
+        
+        transferred_keys = []
+        
+        for key, old_param in old_state.items():
+            if key in new_state:
+                new_param = new_state[key]
+                if old_param.shape == new_param.shape:
+                    with torch.no_grad():
+                        new_param.copy_(old_param)
+                    transferred_keys.append(key)
+                else:
+                    logger.debug(f"Skipping parameter '{key}': Shape mismatch ({old_param.shape} vs {new_param.shape})")
+            else:
+                logger.debug(f"Skipping parameter '{key}': Not in new module")
+        
+        if transferred_keys:
+            logger.info(f"🔄 Transferred parameters: {transferred_keys}")
+        else:
+            logger.warning("⚠️ No parameters were transferred during neuron replacement. Weights are re-initialized.")
+
     def _replace_neuron_layer(self, target_class: Type[nn.Module], params: Dict[str, Any]) -> None:
         """監視対象のニューロン層を新しいクラスのインスタンスに置き換える"""
         if self.current_neuron_type == target_class:
-            logger.debug(f"層 '{self.layer_name_to_monitor}' は既に '{target_class.__name__}' です。")
             return
 
         try:
@@ -104,7 +117,7 @@ class AdaptiveNeuronSelector(nn.Module):
             original_features: int = 0
             if hasattr(self.monitored_neuron, 'features'):
                 original_features = cast(int, getattr(self.monitored_neuron, 'features'))
-            elif hasattr(self.monitored_neuron, 'n_neurons'): # BioLIFNeuronの場合
+            elif hasattr(self.monitored_neuron, 'n_neurons'): 
                 original_features = cast(int, getattr(self.monitored_neuron, 'n_neurons'))
             
             if original_features == 0:
@@ -112,22 +125,27 @@ class AdaptiveNeuronSelector(nn.Module):
                 return
 
             # 新しいニューロンインスタンスを作成
-            # paramsからfeaturesを削除 (AdaptiveLIFNeuron/BistableIFNeuronの引数名が異なるため)
             params_no_features: Dict[str, Any] = params.copy()
             params_no_features.pop('features', None)
             
-            # 'features'引数は両方のクラスで必須と仮定
             new_neuron: nn.Module = target_class(features=original_features, **params_no_features)
             
             # デバイスを合わせる
-            original_device: torch.device = next(self.monitored_neuron.parameters(), torch.tensor(0)).device
-            new_neuron.to(original_device)
+            device_param = next(self.monitored_neuron.parameters(), None)
+            if device_param is not None:
+                original_device = device_param.device
+                new_neuron.to(original_device)
+            else:
+                # パラメータがない場合（稀だが）はCPUデフォルトまたは前の親のデバイス
+                pass
+
+            # --- パラメータの引き継ぎ ---
+            self._transfer_weights(self.monitored_neuron, new_neuron)
 
             # 親モジュールを取得して属性を置き換え
             parent_module: nn.Module = self.module_to_wrap
             layer_name_parts: List[str] = self.layer_name_to_monitor.split('.')
             if len(layer_name_parts) > 1:
-                # ネストしたモジュールの場合、親を取得
                 for name in layer_name_parts[:-1]:
                     parent_module = getattr(parent_module, name)
             
@@ -157,8 +175,8 @@ class AdaptiveNeuronSelector(nn.Module):
         self.loss_history.append(current_loss)
         
         spike_rate: float = 0.0
-        if hasattr(self.monitored_neuron, 'spikes'): # AdaptiveLIFNeuron / BistableIFNeuron
-            spikes_tensor: torch.Tensor = getattr(self.monitored_neuron, 'spikes')
+        if hasattr(self.monitored_neuron, 'spikes'):
+            spikes_tensor: Optional[torch.Tensor] = getattr(self.monitored_neuron, 'spikes')
             if spikes_tensor is not None and spikes_tensor.numel() > 0:
                 spike_rate = spikes_tensor.mean().item()
         self.spike_rate_history.append(spike_rate)
@@ -167,46 +185,42 @@ class AdaptiveNeuronSelector(nn.Module):
         if len(self.loss_history) < self.monitor_window:
             return False, "Initializing history"
 
-        # 2. 状態の診断 (Improvement-Plan.mdのロジック)
+        # 2. 状態の診断
         avg_spike_rate: float = float(torch.tensor(list(self.spike_rate_history)).mean().item())
         loss_std_dev: float = float(torch.tensor(list(self.loss_history)).std().item())
+        
+        # 最近の平均損失
+        recent_loss_mean = float(torch.tensor(list(self.loss_history)[-5:]).mean().item())
 
         # 判定ロジック
         if avg_spike_rate < self.low_spike_rate_threshold:
-            # 症状: Dead Neuron 問題
-            # 対策: BIFの双安定性で活性化を試みる
+            # 症状: Dead Neuron (低発火)
+            # 対策: BIFの双安定性またはノイズ耐性で活性化を試みる
             if self.current_neuron_type != BistableIFNeuron:
                 self._replace_neuron_layer(BistableIFNeuron, self.bif_params)
-                return True, "low_spike_rate: Switched to BIF"
+                return True, f"Low spike rate ({avg_spike_rate:.3f} < {self.low_spike_rate_threshold}): Switched to BIF"
             
         elif avg_spike_rate > self.high_spike_rate_threshold:
             # 症状: Over-excitation (過剰発火)
-            # 対策: 安定したLIFに戻す
+            # 対策: 安定したLIFに戻す（閾値適応が働きやすい）
             if self.current_neuron_type != AdaptiveLIFNeuron:
                 self._replace_neuron_layer(AdaptiveLIFNeuron, self.lif_params)
-                return True, "high_spike_rate: Switched to LIF"
+                return True, f"High spike rate ({avg_spike_rate:.3f} > {self.high_spike_rate_threshold}): Switched to LIF"
 
-        elif loss_std_dev > self.loss_plateau_threshold * 10: # 閾値の10倍以上
+        elif loss_std_dev > self.loss_plateau_threshold * 5.0:
             # 症状: 学習が不安定・発散傾向
-            # 対策: 安定したLIFに戻す
             if self.current_neuron_type != AdaptiveLIFNeuron:
                 self._replace_neuron_layer(AdaptiveLIFNeuron, self.lif_params)
-                return True, "loss_diverging: Switched to LIF"
+                return True, f"Loss unstable (std={loss_std_dev:.4f}): Switched to LIF for stability"
 
-        elif loss_std_dev < self.loss_plateau_threshold:
-            # 症状: 停滞
-            # 対策: BIFで表現力を高め、停滞からの脱出を試みる
+        elif loss_std_dev < self.loss_plateau_threshold and recent_loss_mean > 0.5:
+            # 症状: 損失が高いまま停滞 (Local Minima)
+            # 対策: BIFで表現力を高め、ダイナミクスを変える
             if self.current_neuron_type != BistableIFNeuron:
                 self._replace_neuron_layer(BistableIFNeuron, self.bif_params)
-                return True, "loss_plateau: Switched to BIF"
+                return True, f"Loss plateau (std={loss_std_dev:.4f}): Switched to BIF for exploration"
         
         return False, "Stable"
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
-        """
-        セレクタはラッパーとして機能し、内部のモジュールを呼び出す。
-        """
-        # このモジュール自体は計算グラフの一部ではなく、
-        # 外部のトレーナーが step() メソッドを呼び出すことを想定している。
-        # もしラッパーとして機能させる場合は、ここで module_to_wrap を呼び出す。
         return self.module_to_wrap(*args, **kwargs)
