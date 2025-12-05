@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# (修正: learning_rate の位置を config.training.gradient_based 内に移動)
+# (修正: モデルタイプに応じて画像データまたはテキストデータを自動生成・切り替え)
 
 import argparse
 import logging
@@ -8,8 +8,11 @@ import sys
 import yaml
 import json
 import torch
+import random
 from omegaconf import OmegaConf
 from typing import Any, Dict
+from PIL import Image
+import numpy as np
 
 # ロギング設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -31,19 +34,11 @@ except ImportError as e:
     logger.error(f"trainモジュールのインポートに失敗しました: {e}")
     pass
 
-from snn_research.benchmark.tasks import TaskRegistry, BenchmarkTask
-from snn_research.benchmark.metrics import MetricRegistry
-
-def ensure_benchmark_data(data_path: str) -> None:
-    """
-    ベンチマーク用のデータファイルが存在することを確認し、なければ作成する。
-    """
-    if os.path.exists(data_path):
-        return
-
-    logger.info(f"Generating dummy benchmark data at: {data_path}")
+def ensure_text_benchmark_data(data_path: str) -> None:
+    """ベンチマーク用のダミーテキストデータを作成"""
+    if os.path.exists(data_path): return
+    logger.info(f"Generating dummy TEXT benchmark data at: {data_path}")
     os.makedirs(os.path.dirname(data_path), exist_ok=True)
-    
     try:
         with open(data_path, 'w', encoding='utf-8') as f:
             for i in range(100):
@@ -52,21 +47,67 @@ def ensure_benchmark_data(data_path: str) -> None:
                     "label": i % 2 
                 }
                 f.write(json.dumps(sample) + "\n")
-        logger.info("Dummy benchmark data generated successfully.")
+        logger.info("Dummy text data generated.")
     except Exception as e:
-        logger.error(f"Failed to generate dummy data: {e}")
+        logger.error(f"Failed to generate text data: {e}")
+
+def ensure_image_benchmark_data(data_path: str) -> None:
+    """ベンチマーク用のダミー画像データを作成"""
+    # data_path = data/benchmark_data.jsonl
+    if os.path.exists(data_path): return
+    
+    data_dir = os.path.dirname(data_path)
+    img_dir = os.path.join(data_dir, "images")
+    os.makedirs(img_dir, exist_ok=True)
+    
+    logger.info(f"Generating dummy IMAGE benchmark data at: {data_path}")
+    
+    try:
+        with open(data_path, 'w', encoding='utf-8') as f:
+            for i in range(20): # 20枚生成
+                img_name = f"dummy_{i}.jpg"
+                img_path = os.path.join(img_dir, img_name)
+                
+                # ランダム画像生成 (32x32 RGB)
+                arr = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
+                img = Image.fromarray(arr)
+                img.save(img_path)
+                
+                # JSONLには相対パスを記録
+                sample = {
+                    "text": f"Dummy caption for image {i}",
+                    "image": os.path.join("images", img_name),
+                    "label": i % 10
+                }
+                f.write(json.dumps(sample) + "\n")
+        logger.info("Dummy image data generated.")
+    except Exception as e:
+        logger.error(f"Failed to generate image data: {e}")
 
 def run_experiment(args: argparse.Namespace) -> None:
-    """
-    1つの実験設定を実行する
-    """
     logger.info(f"Starting experiment: {args.experiment} with tag: {args.tag}")
 
-    # 1. Configのロード
+    # 1. モデル設定のロードとアーキテクチャ判定
+    model_conf = {}
+    if args.model_config and os.path.exists(args.model_config):
+        model_conf = OmegaConf.load(args.model_config)
+    
+    arch_type = model_conf.get("architecture_type", "unknown")
+    if arch_type == "unknown" and "model" in model_conf: # 階層構造の場合
+        arch_type = model_conf.get("model", {}).get("architecture_type", "unknown")
+        
+    logger.info(f"Detected architecture type: {arch_type}")
+
+    # アーキテクチャに基づいてデータ形式を決定
+    is_vision = arch_type in ["spiking_cnn", "visual_cortex", "feel_snn", "sew_resnet", "hybrid_cnn_snn"]
+    data_format = "image_text" if is_vision else "simple_text"
+    
+    logger.info(f"Selected data format: {data_format}")
+
+    # 2. Configの構築
     if args.config:
         base_config = OmegaConf.load(args.config)
     else:
-        # デフォルト設定（configが無い場合）
         base_config = OmegaConf.create({
             "training": {
                 "epochs": args.epochs,
@@ -77,48 +118,44 @@ def run_experiment(args: argparse.Namespace) -> None:
                 "paradigm": "gradient_based",
                 "gradient_based": {
                     "type": "standard",
-                    # --- ▼ 修正: learning_rate をここに移動 ▼ ---
                     "learning_rate": 1e-3,
-                    # --- ▲ 修正 ▲ ---
                     "use_scheduler": False,
                     "grad_clip_norm": 1.0,
                     "use_amp": False,
-                    "warmup_epochs": 0, # コンテナで参照されるため追加推奨
+                    "warmup_epochs": 0,
                     "loss": {"ce_weight": 1.0}
                 }
             },
-            "model": OmegaConf.load(args.model_config) if args.model_config else {},
+            "model": model_conf,
             "data": {
                 "path": "data/benchmark_data.jsonl",
                 "tokenizer_name": "gpt2",
-                "format": "simple_text"
+                "format": data_format
             }
         })
 
     # CLI引数での上書き
-    if args.epochs:
-        base_config.training.epochs = args.epochs
-    if args.batch_size:
-        base_config.training.batch_size = args.batch_size
+    if args.epochs: base_config.training.epochs = args.epochs
+    if args.batch_size: base_config.training.batch_size = args.batch_size
     
-    # 2. 学習の実行 (train.py 連携)
-    if not args.eval_only:
-        # データの存在確認と生成
-        data_path = OmegaConf.select(base_config, "data.path")
-        if data_path:
-            ensure_benchmark_data(str(data_path))
+    # 3. データの準備
+    data_path = str(base_config.data.path)
+    if not os.path.exists(data_path):
+        if is_vision:
+            ensure_image_benchmark_data(data_path)
+        else:
+            ensure_text_benchmark_data(data_path)
 
+    # 4. 学習の実行
+    if not args.eval_only:
         logger.info("Running training via train.py...")
         
         if 'train' in sys.modules and hasattr(sys.modules['train'], 'train'):
             train_module = sys.modules['train']
             
-            # train.train(args, config, tokenizer) を呼び出すための準備
-            
-            # 2a. args (Namespace) のモック作成
             class MockArgs:
                 distributed = False
-                data_path = None # configから読み込まれる
+                data_path = None
                 task_name = args.experiment
                 resume_path = None
                 load_ewc_data = None
@@ -127,17 +164,13 @@ def run_experiment(args: argparse.Namespace) -> None:
                 
             train_args = MockArgs()
             
-            # 2b. Tokenizer の取得 (train.container から)
             try:
                 tokenizer = train_module.container.tokenizer()
-            except Exception as e:
-                logger.warning(f"Could not get tokenizer from container: {e}. Using AutoTokenizer fallback.")
+            except Exception:
                 from transformers import AutoTokenizer
                 tokenizer = AutoTokenizer.from_pretrained("gpt2")
 
-            # 2c. train 関数実行
             try:
-                # DictConfig 型であることを保証
                 if not isinstance(base_config, (dict, OmegaConf.get_type("DictConfig"))): # type: ignore
                      base_config = OmegaConf.create(base_config)
                 
@@ -151,11 +184,6 @@ def run_experiment(args: argparse.Namespace) -> None:
             logger.warning("train.train function not found. Skipping training execution.")
     else:
         logger.info("Skipping training (eval_only=True).")
-
-    # 3. 評価 (Evaluation) - 簡易実装
-    if args.eval_only:
-         logger.info("Performing evaluation-only steps...")
-         print(f"Evaluation for {args.experiment} completed (Simulated).")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='SNN Benchmark Suite')
