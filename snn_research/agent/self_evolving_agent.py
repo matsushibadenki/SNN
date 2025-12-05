@@ -1,9 +1,10 @@
 # ファイルパス: snn_research/agent/self_evolving_agent.py
-# Title: Master Self-Evolving Agent (Phase 5 Complete)
+# Title: Master Self-Evolving Agent (Async Fix)
 # Description: 
 #   メタ認知に基づく自己診断、HSEOを用いたハイパーパラメータ最適化、
 #   アーキテクチャ探索、および社会学習を統合したマスター進化エージェント。
-#   ニューロモーフィックコンパイラと連携し、ハードウェア効率も考慮した進化を行う。
+#   修正: 非同期処理のネスト問題（Running Loop内でのasyncio.run）を解決するため、
+#   evolveメソッド全体を非同期化し、awaitで制御するように変更。
 
 from typing import Dict, Any, Optional, List, Tuple, cast, Callable, Union
 import os
@@ -111,9 +112,9 @@ class SelfEvolvingAgentMaster(AutonomousAgent):
         
         print(f"🧬 Master Self-Evolving Agent initialized. (HSEO Enabled: {HSEO_AVAILABLE})")
 
-    def evolve(self, performance_eval: Dict[str, Any], internal_state: Dict[str, Any]) -> str:
+    async def evolve(self, performance_eval: Dict[str, Any], internal_state: Dict[str, Any]) -> str:
         """
-        進化サイクルを実行するメインメソッド。
+        進化サイクルを実行するメインメソッド（非同期版）。
         メタ認知評価に基づいて最適な進化戦略を選択し、実行する。
         """
         logging.info("--- Initiating **Master** Evolution Cycle ---")
@@ -130,8 +131,8 @@ class SelfEvolvingAgentMaster(AutonomousAgent):
              social_op_name = "apply_social_recipe"
              if social_op_name in self.evolution_operators and current_budget >= self.evolution_operators[social_op_name]["cost"]:
                  social_op = self.evolution_operators[social_op_name]
-                 # 非同期実行
-                 social_result_msg = asyncio.run(social_op["func"](performance_eval, internal_state))
+                 # 非同期実行 (await)
+                 social_result_msg = await social_op["func"](performance_eval, internal_state)
                  
                  success = "successfully" in social_result_msg.lower()
                  self._update_evolution_history(social_op_name, success)
@@ -165,9 +166,12 @@ class SelfEvolvingAgentMaster(AutonomousAgent):
             # 実行
             result_message: str
             try:
+                # 関数がコルーチンかどうかを判定して呼び出し分ける
                 if asyncio.iscoroutinefunction(evolution_func):
-                    result_message = asyncio.run(evolution_func(performance_eval, internal_state, **op_params))
+                    result_message = await evolution_func(performance_eval, internal_state, **op_params)
                 else:
+                    # 同期関数の場合はそのまま実行（ブロックするが、計算負荷の高い処理は別プロセスかスレッドが望ましい）
+                    # ここでは簡易的にメインスレッドで実行
                     result_message = evolution_func(performance_eval, internal_state, **op_params)
                 
                 success = "failed" not in result_message.lower()
