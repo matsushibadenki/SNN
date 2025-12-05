@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# (修正: model configの確実な辞書化)
+# (修正: モデル設定の階層構造を正規化し、SNNCoreに正しい辞書が渡るように修正)
 
 import argparse
 import logging
@@ -63,7 +63,7 @@ def ensure_image_benchmark_data(data_path: str) -> None:
     
     try:
         with open(data_path, 'w', encoding='utf-8') as f:
-            for i in range(20):
+            for i in range(20): # 20枚生成
                 img_name = f"dummy_{i}.jpg"
                 img_path = os.path.join(img_dir, img_name)
                 
@@ -87,14 +87,18 @@ def run_experiment(args: argparse.Namespace) -> None:
     # 1. モデル設定のロードとアーキテクチャ判定
     model_conf_dict = {}
     if args.model_config and os.path.exists(args.model_config):
-        # 修正: 確実にDictにする
         model_conf_loaded = OmegaConf.load(args.model_config)
-        model_conf_dict = OmegaConf.to_container(model_conf_loaded, resolve=True) # type: ignore
+        
+        # --- ▼ 修正: 階層構造の正規化 ▼ ---
+        if 'model' in model_conf_loaded:
+            # {model: {architecture_type: ...}} の場合、中身を取り出す
+            model_conf_dict = OmegaConf.to_container(model_conf_loaded.model, resolve=True) # type: ignore
+        else:
+            # フラットな構造の場合
+            model_conf_dict = OmegaConf.to_container(model_conf_loaded, resolve=True) # type: ignore
+        # --- ▲ 修正 ▲ ---
     
     arch_type = model_conf_dict.get("architecture_type", "unknown")
-    if arch_type == "unknown" and "model" in model_conf_dict:
-        arch_type = model_conf_dict.get("model", {}).get("architecture_type", "unknown")
-        
     logger.info(f"Detected architecture type: {arch_type}")
 
     is_vision = arch_type in ["spiking_cnn", "visual_cortex", "feel_snn", "sew_resnet", "hybrid_cnn_snn"]
@@ -124,7 +128,7 @@ def run_experiment(args: argparse.Namespace) -> None:
                     "loss": {"ce_weight": 1.0}
                 }
             },
-            "model": model_conf_dict, # 修正: 辞書を渡す
+            "model": model_conf_dict, # 修正済みの辞書を渡す
             "data": {
                 "path": "data/benchmark_data.jsonl",
                 "tokenizer_name": "gpt2",
@@ -163,9 +167,6 @@ def run_experiment(args: argparse.Namespace) -> None:
             train_args = MockArgs()
             
             try:
-                # このコンテナは使用されないが、型合わせのために一応取得
-                # 実際のトークナイザ取得は train 関数内でも行われるが、引数として渡す必要がある
-                # train.py のコンテナを使うと状態が混ざるため、ここでは新規にAutoTokenizerを作成して渡すのが安全
                 from transformers import AutoTokenizer
                 tokenizer = AutoTokenizer.from_pretrained("gpt2")
             except Exception:
