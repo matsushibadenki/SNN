@@ -1,4 +1,5 @@
 # ファイルパス: scripts/runners/train.py
+# (修正: train関数呼び出し時にコンテナ設定を初期化するように変更)
 
 import sys
 import os
@@ -12,9 +13,6 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 # ------------------------------------------------------------------------------
-
-# ファイルパス: train.py
-# (修正: collate_fn を app.utils からインポートし、マルチモーダル対応を統一)
 
 import argparse
 import os
@@ -39,7 +37,7 @@ from snn_research.training.quantization import apply_qat, convert_to_quantized_m
 from snn_research.training.pruning import apply_sbc_pruning, apply_spatio_temporal_pruning
 from scripts.data_preparation import prepare_wikitext_data
 from snn_research.core.snn_core import SNNCore
-from app.utils import get_auto_device, collate_fn # 修正: app.utils からインポート
+from app.utils import get_auto_device, collate_fn
 import logging
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -47,9 +45,15 @@ logger = logging.getLogger(__name__)
 
 container = TrainingContainer()
 
-# ローカルの collate_fn 定義を削除 (app.utils.collate_fn を使用)
-
 def train(args: argparse.Namespace, config: DictConfig, tokenizer: PreTrainedTokenizerBase) -> None:
+    # --- ▼ 追加: 外部から関数として呼ばれた場合のコンテナ初期化 ▼ ---
+    if config:
+        # OmegaConfオブジェクトを辞書に変換してコンテナに設定
+        # これを行わないと、container.snn_model() 内で config が空になりエラーになる
+        conf_dict = OmegaConf.to_container(config, resolve=True)
+        container.config.from_dict(conf_dict)
+    # --- ▲ 追加 ▲ ---
+
     is_distributed = args.distributed
     rank = int(os.environ.get("LOCAL_RANK", -1))
     device = f'cuda:{rank}' if is_distributed and torch.cuda.is_available() else get_auto_device()
@@ -133,7 +137,6 @@ def train(args: argparse.Namespace, config: DictConfig, tokenizer: PreTrainedTok
         train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
         train_sampler: Optional[DistributedSampler] = DistributedSampler(train_dataset) if is_distributed else None
         
-        # 修正: app.utils.collate_fn を使用
         collate_fn_instance = collate_fn(tokenizer, is_distillation)
         
         train_loader = DataLoader(train_dataset, batch_size=config.training.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, collate_fn=collate_fn_instance)
@@ -240,6 +243,7 @@ def main() -> None:
         if not isinstance(final_config_dict, dict):
              raise TypeError("Final config is not a dictionary.")
         
+        # main関数での初期化（こちらは既に実装済みだが、train関数への直接呼び出しには影響しない）
         container.config.from_dict(final_config_dict)
         
         if not isinstance(base_conf, DictConfig):
