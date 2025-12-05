@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# (修正: モデルタイプに応じて画像データまたはテキストデータを自動生成・切り替え)
+# (修正: model configの確実な辞書化)
 
 import argparse
 import logging
@@ -53,7 +53,6 @@ def ensure_text_benchmark_data(data_path: str) -> None:
 
 def ensure_image_benchmark_data(data_path: str) -> None:
     """ベンチマーク用のダミー画像データを作成"""
-    # data_path = data/benchmark_data.jsonl
     if os.path.exists(data_path): return
     
     data_dir = os.path.dirname(data_path)
@@ -64,16 +63,14 @@ def ensure_image_benchmark_data(data_path: str) -> None:
     
     try:
         with open(data_path, 'w', encoding='utf-8') as f:
-            for i in range(20): # 20枚生成
+            for i in range(20):
                 img_name = f"dummy_{i}.jpg"
                 img_path = os.path.join(img_dir, img_name)
                 
-                # ランダム画像生成 (32x32 RGB)
                 arr = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
                 img = Image.fromarray(arr)
                 img.save(img_path)
                 
-                # JSONLには相対パスを記録
                 sample = {
                     "text": f"Dummy caption for image {i}",
                     "image": os.path.join("images", img_name),
@@ -88,17 +85,18 @@ def run_experiment(args: argparse.Namespace) -> None:
     logger.info(f"Starting experiment: {args.experiment} with tag: {args.tag}")
 
     # 1. モデル設定のロードとアーキテクチャ判定
-    model_conf = {}
+    model_conf_dict = {}
     if args.model_config and os.path.exists(args.model_config):
-        model_conf = OmegaConf.load(args.model_config)
+        # 修正: 確実にDictにする
+        model_conf_loaded = OmegaConf.load(args.model_config)
+        model_conf_dict = OmegaConf.to_container(model_conf_loaded, resolve=True) # type: ignore
     
-    arch_type = model_conf.get("architecture_type", "unknown")
-    if arch_type == "unknown" and "model" in model_conf: # 階層構造の場合
-        arch_type = model_conf.get("model", {}).get("architecture_type", "unknown")
+    arch_type = model_conf_dict.get("architecture_type", "unknown")
+    if arch_type == "unknown" and "model" in model_conf_dict:
+        arch_type = model_conf_dict.get("model", {}).get("architecture_type", "unknown")
         
     logger.info(f"Detected architecture type: {arch_type}")
 
-    # アーキテクチャに基づいてデータ形式を決定
     is_vision = arch_type in ["spiking_cnn", "visual_cortex", "feel_snn", "sew_resnet", "hybrid_cnn_snn"]
     data_format = "image_text" if is_vision else "simple_text"
     
@@ -126,7 +124,7 @@ def run_experiment(args: argparse.Namespace) -> None:
                     "loss": {"ce_weight": 1.0}
                 }
             },
-            "model": model_conf,
+            "model": model_conf_dict, # 修正: 辞書を渡す
             "data": {
                 "path": "data/benchmark_data.jsonl",
                 "tokenizer_name": "gpt2",
@@ -165,15 +163,19 @@ def run_experiment(args: argparse.Namespace) -> None:
             train_args = MockArgs()
             
             try:
-                tokenizer = train_module.container.tokenizer()
-            except Exception:
+                # このコンテナは使用されないが、型合わせのために一応取得
+                # 実際のトークナイザ取得は train 関数内でも行われるが、引数として渡す必要がある
+                # train.py のコンテナを使うと状態が混ざるため、ここでは新規にAutoTokenizerを作成して渡すのが安全
                 from transformers import AutoTokenizer
                 tokenizer = AutoTokenizer.from_pretrained("gpt2")
+            except Exception:
+                tokenizer = None
 
             try:
                 if not isinstance(base_config, (dict, OmegaConf.get_type("DictConfig"))): # type: ignore
                      base_config = OmegaConf.create(base_config)
                 
+                # train関数呼び出し
                 train_module.train(train_args, base_config, tokenizer) # type: ignore
                 logger.info("Training completed via train.py.")
             except Exception as e:
