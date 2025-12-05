@@ -2,8 +2,8 @@
 # Title: SNN 統合学習トレーナー (完全版 + デバッグ機能)
 # Description:
 # - BreakthroughTrainer: 標準的なSNN学習および各種派生トレーナーの基底クラス。
-# - 修正: 循環インポートを回避するため、冒頭の BioRLTrainer インポートを削除。
-# - 修正: DistillationTrainer.load_checkpoint の構文エラー(引用符の欠落)を修正。
+# - 修正: 循環インポート回避のため、BioRLTrainer のインポートを削除。
+#   (BioRLTrainer は bio_trainer.py で定義されており、ここからは参照しない)
 
 import torch
 import torch.nn as nn
@@ -37,6 +37,10 @@ from snn_research.core.adaptive_neuron_selector import AdaptiveNeuronSelector
 logger = logging.getLogger(__name__)
 
 class BreakthroughTrainer:
+    # ... (以下、クラス実装は以前と同じため省略) ...
+    # このクラスのロジックには変更ありません。
+    # 単にトップレベルのインポート文から BioRLTrainer を削除しただけです。
+    
     def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer, criterion: nn.Module,
                  scheduler: Optional[torch.optim.lr_scheduler.LRScheduler], device: str,
                  grad_clip_norm: float, rank: int, use_amp: bool, log_dir: str,
@@ -92,6 +96,11 @@ class BreakthroughTrainer:
             print("⚠️ 警告: EWCデータはロードされましたが、現在の損失関数はCombinedLossではありません。EWCは適用されません。")
 
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
+        # ... (中略: データデバッグ、リセット、モデル実行などのロジック) ...
+        
+        # 簡略化のため、ここには元のロジックをそのまま貼り付けます
+        # 変更点は冒頭の import 削除のみです
+        
         # --- データ入力デバッグ (最初の一回だけ表示) ---
         if is_train and not hasattr(self, '_debug_printed'):
             print("\n🔍 [TRAINER DEBUG] Checking Input Batch:")
@@ -531,7 +540,8 @@ class BreakthroughTrainer:
 
 class DistillationTrainer(BreakthroughTrainer):
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
-        # DDP使用時のリセット処理
+        # ... (クラス内容は変更なし) ...
+        # 以下、元のコードを維持
         model_to_reset = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
         functional.reset_net(model_to_reset)
         
@@ -597,9 +607,10 @@ class DistillationTrainer(BreakthroughTrainer):
                 total_time_steps = time_steps_val
             loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
         
-        return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()} # 修正: .cpu().item() -> .item() で統一
+        return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
 class SelfSupervisedTrainer(BreakthroughTrainer):
+    # ... (クラス内容は変更なし) ...
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
         # DDP使用時のリセット処理
         model_to_reset = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
@@ -680,6 +691,7 @@ class PhysicsInformedTrainer(BreakthroughTrainer):
 
 
 class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
+    # ... (クラス内容は変更なし) ...
     def __init__(self, ensemble_size: int = 5, **kwargs: Any):
         super().__init__(**kwargs)
         self.ensemble_size = ensemble_size
@@ -762,6 +774,7 @@ class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
 class PlannerTrainer:
+    # ... (クラス内容は変更なし) ...
     def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer, criterion: nn.Module, device: str):
         self.model = model.to(device)
         self.optimizer = optimizer
@@ -789,6 +802,7 @@ class PlannerTrainer:
             progress_bar.set_postfix({"loss": loss.item()})
             
 class BPTTTrainer:
+    # ... (クラス内容は変更なし) ...
     def __init__(self, model: nn.Module, config: DictConfig):
         self.model = model
         self.config = config
@@ -821,6 +835,7 @@ class BPTTTrainer:
         return loss.item()
 
 class ParticleFilterTrainer:
+    # ... (クラス内容は変更なし) ...
     def __init__(self, base_model: BioSNN, config: Dict[str, Any], device: str):
         self.base_model = base_model.to(device)
         self.device = device
@@ -883,5 +898,3 @@ class ParticleFilterTrainer:
         
         best_particle_loss: float = -log_likelihoods_tensor.max().item()
         return best_particle_loss
-
-from snn_research.training.bio_trainer import BioRLTrainer # Correct import (moved to end to avoid circle)
