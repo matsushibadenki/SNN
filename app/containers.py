@@ -1,5 +1,5 @@
 # ファイルパス: app/containers.py
-# (修正: AgentContainerのコアコンポーネントをSingleton化し、状態共有と整合性を保証)
+# (修正: load_planner_snn の関数名と引数名の不一致を解消)
 
 import torch
 from dependency_injector import containers, providers
@@ -210,7 +210,7 @@ class AgentContainer(containers.DeclarativeContainer):
     
     web_crawler = providers.Singleton(WebCrawler)
     
-    # --- 修正: Singletonに変更して状態共有と整合性を保証 ---
+    # Singletonに変更して状態共有と整合性を保証
     rag_system = providers.Singleton(
         RAGSystem, 
         vector_store_path=providers.Factory(get_vector_store_path, log_dir=config.training.log_dir)
@@ -222,10 +222,10 @@ class AgentContainer(containers.DeclarativeContainer):
         memory_path=providers.Factory(get_memory_path, log_dir=config.training.log_dir)
     )
     
-    # 読み込み済みPlannerモデル
+    # 読み込み済みPlannerモデル (Singleton)
     loaded_planner_snn = providers.Singleton(
-        _load_planner_snn_factory,
-        planner_snn_instance=providers.Callable(lambda tc: tc.planner_snn(), tc=training_container),
+        load_planner_snn, # 関数名修正
+        planner_model=providers.Callable(lambda tc: tc.planner_snn(), tc=training_container), # 引数名修正
         model_path=config.training.planner.model_path.or_none(),
         device=device
     )
@@ -239,7 +239,6 @@ class AgentContainer(containers.DeclarativeContainer):
         tokenizer_name=config.data.tokenizer_name,
         device=device
     )
-    # --- 修正終了 ---
     
     autonomous_agent = providers.Singleton(
         AutonomousAgent,
