@@ -1,14 +1,13 @@
 # ファイルパス: snn_research/agent/active_inference_agent.py
-# Title: Deep Active Inference Agent (Neural SNN-based) - Phase 4 Complete
+# Title: Deep Active Inference Agent (Neural SNN-based) - Phase 4 Corrected
 # Description:
-#   ROADMAP Phase 4「能動的推論」の中核実装。
-#   学習済みSNNモデル（生成モデル）を用いて期待自由エネルギー（G）を最小化する行動選択を行う。
+#   ROADMAP Phase 4「能動的推論」の中核実装 (修正版)。
 #   
-#   更新内容:
-#   - update_model: 観測データに基づき、生成モデル（SNN）の重みを更新する学習ロジックを実装。
-#   - set_ethical_preference: 倫理的制約（危害回避など）を選好分布に反映させる機能を追加。
-#   - infer_state: SNNの出力を確率分布として解釈するロジックを強化。
-#   - 修正: 末尾の不要な '}' を削除。
+#   修正内容:
+#   - Transition Model (遷移モデル) を追加実装。ダミー計算を廃止し、
+#     (状態, 行動) -> 次の状態 をニューラルネットワークで予測するように変更。
+#   - update_model メソッドを拡張し、観測モデル(VAE的再構成)と遷移モデルの両方を学習するロジックに変更。
+#   - 前回の信念 (prev_belief) を保持し、時間発展的な学習を可能に。
 
 import torch
 import torch.nn as nn
@@ -25,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 class ActiveInferenceAgent:
     """
-    SNNを生成モデルとして使用する深層能動推論エージェント。
+    SNNを生成モデル（観測モデル）として使用し、別途遷移モデルを持つ深層能動推論エージェント。
     """
     def __init__(
         self,
@@ -39,9 +38,9 @@ class ActiveInferenceAgent:
     ):
         """
         Args:
-            generative_model (BaseModel): 世界モデルとして機能するSNN (Transition & Observation model)。
+            generative_model (BaseModel): 観測モデル p(o|s) として機能するSNN。
             num_actions (int): 離散的な行動の数。
-            action_dim (int): 行動の埋め込み次元 (SNNへの入力用)。
+            action_dim (int): 行動の埋め込み次元。
             observation_dim (int): 観測データの次元。
             hidden_dim (int): 隠れ状態(Belief)の次元。
             lr (float): 学習率。
@@ -57,88 +56,83 @@ class ActiveInferenceAgent:
         # 行動の埋め込み (Action Embedding)
         self.action_embedding = nn.Embedding(num_actions, action_dim)
         
-        # 選好分布 (Preference / C-matrix equivalent)
-        # 特定の観測状態に対する「好み」を定義。デフォルトは平坦。
+        # --- 追加: 遷移モデル (Transition Model) p(s_{t+1} | s_t, a_t) ---
+        # 以前のダミー計算 (+ mean * 0.1) を廃止し、学習可能なMLPに置き換え
+        self.transition_model = nn.Sequential(
+            nn.Linear(hidden_dim + action_dim, hidden_dim * 2),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_dim * 2, hidden_dim)
+        )
+        
+        # 選好分布 (Preference)
         self.preference_dist = torch.ones(observation_dim) / observation_dim
         
-        # 現在の信念状態 (Posterior Belief)
+        # 状態管理
         self.current_belief: Optional[torch.Tensor] = None
+        self.prev_belief: Optional[torch.Tensor] = None # 学習用に1ステップ前の信念を保持
         
         # オプティマイザの初期化
         if optimizer:
             self.optimizer = optimizer
         else:
-            # モデルと行動埋め込みの両方を最適化対象にする
-            self.optimizer = torch.optim.Adam(
-                list(self.model.parameters()) + list(self.action_embedding.parameters()), 
-                lr=lr
+            # モデル全体（観測モデル、遷移モデル、行動埋め込み）を最適化
+            params = (
+                list(self.model.parameters()) + 
+                list(self.action_embedding.parameters()) +
+                list(self.transition_model.parameters())
             )
+            self.optimizer = torch.optim.Adam(params, lr=lr)
         
-        logger.info("🤖 Deep Active Inference Agent initialized (Neural-based, Phase 4 Complete).")
+        logger.info("🤖 Deep Active Inference Agent initialized with Learnable Transition Model.")
 
     def reset(self):
         """エージェントの状態をリセットする。"""
         self.current_belief = torch.zeros(1, self.hidden_dim)
+        self.prev_belief = None
         logger.info("Agent belief reset.")
 
     def set_preference(self, target_obs_vector: torch.Tensor):
-        """
-        選好（ゴール）を設定する。
-        Args:
-            target_obs_vector: 望ましい観測分布 (確率分布または特徴ベクトル)。
-        """
         if target_obs_vector.shape[-1] != self.observation_dim:
             raise ValueError(f"Target dimension mismatch. Expected {self.observation_dim}, got {target_obs_vector.shape[-1]}")
-        
-        # 確率分布として正規化
         self.preference_dist = F.softmax(target_obs_vector, dim=-1)
         logger.info("Preference set: Updated target observation distribution.")
 
     def set_ethical_preference(self, avoid_indices: List[int], penalty_strength: float = 10.0):
-        """
-        倫理的選好を設定する。特定の観測状態（例：危害、エラー）を避けるように分布を調整する。
-        Args:
-            avoid_indices: 避けるべき観測状態のインデックスリスト。
-            penalty_strength: 回避の強さ。
-        """
         with torch.no_grad():
-            # 現在の選好をロジット空間へ
             logits = torch.log(self.preference_dist + 1e-8)
-            
             for idx in avoid_indices:
                 if 0 <= idx < self.observation_dim:
-                    logits[idx] -= penalty_strength # 避けるべき状態の確率を下げる
-            
+                    logits[idx] -= penalty_strength
             self.preference_dist = F.softmax(logits, dim=-1)
             logger.info(f"🛡️ Ethical preferences applied. Avoid indices: {avoid_indices}")
 
     def infer_state(self, observation: torch.Tensor) -> torch.Tensor:
         """
-        知覚 (Perception): 変分推論により、観測から現在の信念 q(s) を推定する。
-        Deep Active Inferenceでは、これは通常モデルのEncoder部分、または
-        誤差最小化プロセス（Predictive Coding）によって行われる。
+        知覚 (Perception): 観測から現在の信念 q(s) を推定する。
         """
+        # 前回の信念を保存（学習用）
+        if self.current_belief is not None:
+            self.prev_belief = self.current_belief.detach().clone()
+
         self.model.eval()
         with torch.no_grad():
-            # 観測を入力してモデルの隠れ状態を更新
             outputs = self.model(observation)
             
-            # モデルの出力仕様に合わせて調整
-            # タプル (logits, spikes, mem) の場合、mem (膜電位) または spikes を状態とする
+            # モデル出力のパース
             if isinstance(outputs, tuple):
-                # 3番目の要素(mem)を内部状態の近似として使用
+                # FEELSNNなどは (logits, spikes, mem) を返す
+                # 膜電位(mem)またはスパイク(spikes)を内部状態として採用
                 state_repr = outputs[2] 
-                if state_repr.numel() == 1: # ダミーの場合
-                     state_repr = outputs[0] # logitsを使用
+                if state_repr.numel() == 1: 
+                     state_repr = outputs[0]
             else:
                 state_repr = outputs
 
-            # 次元合わせ (簡易的な射影またはスライス)
+            # 次元合わせ
             if state_repr.shape[-1] != self.hidden_dim:
                  if state_repr.shape[-1] > self.hidden_dim:
                      state_repr = state_repr[..., :self.hidden_dim]
                  else:
-                     # パディング
                      pad = torch.zeros(*state_repr.shape[:-1], self.hidden_dim - state_repr.shape[-1], device=state_repr.device)
                      state_repr = torch.cat([state_repr, pad], dim=-1)
             
@@ -148,28 +142,28 @@ class ActiveInferenceAgent:
 
     def select_action(self, time_horizon: int = 1) -> int:
         """
-        行動選択 (Action Selection): 期待自由エネルギー G を最小化する行動を選ぶ。
-        Deep Active Inference: シミュレーションによる評価。
+        行動選択: 期待自由エネルギー G を最小化する行動を選ぶ。
+        学習済み遷移モデルを使用してシミュレーションを行う。
         """
         if self.current_belief is None:
-             return np.random.randint(0, self.num_actions)
+             return int(np.random.randint(0, self.num_actions))
 
         G_values = []
         
-        # 各行動候補についてシミュレーション
         for a in range(self.num_actions):
+            # 行動埋め込み
             action_idx = torch.tensor([a], device=self.current_belief.device)
-            action_emb = self.action_embedding(action_idx)
+            action_emb = self.action_embedding(action_idx) # (1, action_dim)
             
             # 1. 遷移予測: q(s_{t+1} | s_t, a_t)
-            # 簡易実装: 現在の信念にアクションの影響を加算
-            # (SNN自体がRecurrentなら、本来は hidden_state を更新して予測する)
-            predicted_next_state = self.current_belief + action_emb.mean() * 0.1 
+            # 修正: ニューラルネットワークによる遷移予測
+            transition_input = torch.cat([self.current_belief, action_emb], dim=-1)
+            predicted_next_state = self.transition_model(transition_input)
             
             # 2. 観測予測: q(o_{t+1} | s_{t+1})
-            with torch.no_grad():
-                 # モデルの出力層を利用したいが、簡易的に状態から予測
-                 predicted_obs_logits = predicted_next_state 
+            # ここでは簡易的に状態ベクトルをロジットとして扱う
+            # (本来は Decoder p(o|s) を通すべきだが、潜在空間での距離で近似)
+            predicted_obs_logits = predicted_next_state 
             
             # 次元調整
             if predicted_obs_logits.shape[-1] != self.observation_dim:
@@ -182,82 +176,75 @@ class ActiveInferenceAgent:
             predicted_obs_dist = F.softmax(predicted_obs_logits, dim=-1)
             
             # 3. 期待自由エネルギー G の計算
-            # G = Risk + Ambiguity
-            
-            # (A) リスク (Risk): D_KL( q(o) || p(o) )
-            # 選好分布（ゴール）からの乖離
+            # Risk: 選好分布とのKL乖離
             risk = F.kl_div(predicted_obs_dist.log(), self.preference_dist, reduction='batchmean')
             
-            # (B) 曖昧さ (Ambiguity): H(A)
-            # 状態のエントロピー（不確実性）。低いほど確信度が高い。
-            # ここでは「Ambiguityを減らす」＝「情報を得る」動機付けとして加算
+            # Ambiguity: エントロピー（不確実性）
             ambiguity = -torch.sum(predicted_obs_dist * torch.log(predicted_obs_dist + 1e-8))
             
-            # G = Risk + Ambiguity (係数でバランス調整可)
             G = risk + ambiguity
             G_values.append(G.item())
 
-        # Gを最小化する行動を選択
         selected_action_idx = int(np.argmin(G_values))
-        
         logger.info(f"Action selected: {selected_action_idx} (Min G={G_values[selected_action_idx]:.4f})")
         return selected_action_idx
 
     def update_model(self, observation: torch.Tensor, action: int, reward: float = 0.0):
         """
-        経験に基づく生成モデルの学習 (Variational Free Energy Minimization)。
-        観測データに対するサプライズ（予測誤差）を最小化するようにモデルを更新する。
-        
-        Args:
-            observation: 実際の観測データ。
-            action: 直前に取った行動。
-            reward: (オプション) 外部報酬。FEPでは通常、予測誤差の一部として扱うか、
-                    選好分布の更新に使用するが、ここでは補助的なシグナルとして利用可能。
+        学習ステップ:
+        1. 観測モデル (Observation Model): 入力観測の再構成誤差 (VAE/AutoEncoder Loss)
+        2. 遷移モデル (Transition Model): 予測した次状態と、実際に推論された次状態の誤差
         """
-        self.model.train()
-        self.optimizer.zero_grad()
-        
-        # 1. 現在の状態（信念）からの予測を計算
-        # 本来は (state, action) -> predicted_observation
-        if self.current_belief is None:
+        if self.prev_belief is None or self.current_belief is None:
+            # 履歴が足りない場合は学習できない
+            logger.debug("Skipping update: Insufficient belief history.")
             return
 
-        # 簡易的に、現在の信念から観測を再構成するタスクとして定式化
-        # (変分自由エネルギー F = D_KL(q(s)||p(s)) - E_q[ln p(o|s)])
-        
-        # モデルの出力（観測予測）
-        outputs = self.model(observation) # ここではAutoEncoder的に観測そのものを入力しているが、本来は直前の状態
-        
+        self.model.train()
+        self.transition_model.train()
+        self.optimizer.zero_grad()
+
+        # --- A. 観測モデルの学習 (Reconstruction Loss) ---
+        outputs = self.model(observation)
         if isinstance(outputs, tuple):
-            predicted_logits = outputs[0]
+            reconstructed_logits = outputs[0]
         else:
-            predicted_logits = outputs
+            reconstructed_logits = outputs
 
-        # 次元調整
-        if predicted_logits.shape[-1] != self.observation_dim:
-             # 次元が合わない場合の簡易対応
-             if predicted_logits.shape[-1] > self.observation_dim:
-                 predicted_logits = predicted_logits[..., :self.observation_dim]
-             else:
-                 # パディングなどで合わせる必要があるが、ここではスキップ
-                 pass
-
-        if predicted_logits.shape == observation.shape:
-             # MSE Loss (観測が連続値の場合)
-             loss = F.mse_loss(predicted_logits, observation)
+        # 次元調整 (Loss計算用)
+        if reconstructed_logits.shape[-1] > self.observation_dim:
+             reconstructed_logits = reconstructed_logits[..., :self.observation_dim]
+        
+        # Loss計算 (Obs vs Reconstructed)
+        if observation.shape == reconstructed_logits.shape:
+             obs_loss = F.mse_loss(reconstructed_logits, observation)
+        elif observation.dim() == reconstructed_logits.dim():
+             target_dist = F.softmax(observation, dim=-1)
+             pred_log_dist = F.log_softmax(reconstructed_logits, dim=-1)
+             obs_loss = F.kl_div(pred_log_dist, target_dist, reduction='batchmean')
         else:
-             # Cross Entropy (観測が離散値/分布の場合)
-             # observationをターゲットインデックスとみなすか、分布とみなすか
-             if observation.dim() == predicted_logits.dim():
-                 # 分布間のKL Divergence
-                 target_dist = F.softmax(observation, dim=-1)
-                 pred_log_dist = F.log_softmax(predicted_logits, dim=-1)
-                 loss = F.kl_div(pred_log_dist, target_dist, reduction='batchmean')
-             else:
-                 loss = torch.tensor(0.0, device=observation.device, requires_grad=True)
+             obs_loss = torch.tensor(0.0, device=observation.device, requires_grad=True)
 
-        # 2. 逆伝播と更新
-        loss.backward()
+        # --- B. 遷移モデルの学習 (Transition Consistency Loss) ---
+        # s_t (prev) と a_t から予測した s_{t+1} が、
+        # 実際の o_{t+1} から推論した s_{t+1} (current) に近いか？
+        
+        action_idx = torch.tensor([action], device=self.prev_belief.device)
+        action_emb = self.action_embedding(action_idx)
+        
+        transition_input = torch.cat([self.prev_belief, action_emb], dim=-1) # (B, hidden + action)
+        predicted_next_state = self.transition_model(transition_input)     # (B, hidden)
+        
+        # 現在の信念(観測から導かれたもの)をターゲットとする
+        # detachしてターゲットを固定し、遷移モデル側を近づける
+        target_state = self.current_belief.detach()
+        transition_loss = F.mse_loss(predicted_next_state, target_state)
+
+        # 総損失
+        total_loss = obs_loss + transition_loss
+
+        # --- 更新 ---
+        total_loss.backward()
         self.optimizer.step()
         
-        logger.info(f"Model updated via Active Inference. Variational Free Energy (Loss): {loss.item():.4f}")
+        logger.info(f"Model Updated. Total Loss: {total_loss.item():.4f} (Obs: {obs_loss.item():.4f}, Trans: {transition_loss.item():.4f})")
