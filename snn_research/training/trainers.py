@@ -1,9 +1,10 @@
 # ファイルパス: snn_research/training/trainers.py
-# Title: SNN 統合学習トレーナー (完全版 + デバッグ機能)
+# Title: SNN 統合学習トレーナー (完全版: ParticleFilter修正済み)
 # Description:
-# - BreakthroughTrainer: 標準的なSNN学習および各種派生トレーナーの基底クラス。
-# - 修正: 循環インポート回避のため、BioRLTrainer のインポートを削除。
-#   (BioRLTrainer は bio_trainer.py で定義されており、ここからは参照しない)
+# - BreakthroughTrainer: 標準的なSNN学習トレーナー。
+# - ParticleFilterTrainer: 粒子フィルタによるパラメータ推定。
+# - 修正: ParticleFilterTrainer が入力データを無視してランダムノイズを使用していたバグを修正。
+#   入力データに基づいたレートコーディング（ベルヌーイ試行）を行うように変更。
 
 import torch
 import torch.nn as nn
@@ -37,10 +38,6 @@ from snn_research.core.adaptive_neuron_selector import AdaptiveNeuronSelector
 logger = logging.getLogger(__name__)
 
 class BreakthroughTrainer:
-    # ... (以下、クラス実装は以前と同じため省略) ...
-    # このクラスのロジックには変更ありません。
-    # 単にトップレベルのインポート文から BioRLTrainer を削除しただけです。
-    
     def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer, criterion: nn.Module,
                  scheduler: Optional[torch.optim.lr_scheduler.LRScheduler], device: str,
                  grad_clip_norm: float, rank: int, use_amp: bool, log_dir: str,
@@ -96,11 +93,6 @@ class BreakthroughTrainer:
             print("⚠️ 警告: EWCデータはロードされましたが、現在の損失関数はCombinedLossではありません。EWCは適用されません。")
 
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
-        # ... (中略: データデバッグ、リセット、モデル実行などのロジック) ...
-        
-        # 簡略化のため、ここには元のロジックをそのまま貼り付けます
-        # 変更点は冒頭の import 削除のみです
-        
         # --- データ入力デバッグ (最初の一回だけ表示) ---
         if is_train and not hasattr(self, '_debug_printed'):
             print("\n🔍 [TRAINER DEBUG] Checking Input Batch:")
@@ -123,7 +115,6 @@ class BreakthroughTrainer:
             self._debug_printed = True
         # ------------------------------------------------
 
-        # DDP使用時のリセット処理
         model_to_reset = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
         functional.reset_net(model_to_reset)
 
@@ -540,8 +531,6 @@ class BreakthroughTrainer:
 
 class DistillationTrainer(BreakthroughTrainer):
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
-        # ... (クラス内容は変更なし) ...
-        # 以下、元のコードを維持
         model_to_reset = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
         functional.reset_net(model_to_reset)
         
@@ -610,9 +599,7 @@ class DistillationTrainer(BreakthroughTrainer):
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
 class SelfSupervisedTrainer(BreakthroughTrainer):
-    # ... (クラス内容は変更なし) ...
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
-        # DDP使用時のリセット処理
         model_to_reset = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
         functional.reset_net(model_to_reset)
         
@@ -672,7 +659,6 @@ class SelfSupervisedTrainer(BreakthroughTrainer):
             total_time_steps = time_steps_val
         loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
 
-
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
 class PhysicsInformedTrainer(BreakthroughTrainer):
@@ -691,7 +677,6 @@ class PhysicsInformedTrainer(BreakthroughTrainer):
 
 
 class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
-    # ... (クラス内容は変更なし) ...
     def __init__(self, ensemble_size: int = 5, **kwargs: Any):
         super().__init__(**kwargs)
         self.ensemble_size = ensemble_size
@@ -702,7 +687,6 @@ class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
         else:
             self.model.eval()
         
-        # DDP使用時のリセット処理
         model_to_reset = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
 
         input_ids, target_ids = [t.to(self.device) for t in batch[:2]]
@@ -770,11 +754,9 @@ class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
             total_time_steps = time_steps_val
         loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
 
-
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
 class PlannerTrainer:
-    # ... (クラス内容は変更なし) ...
     def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer, criterion: nn.Module, device: str):
         self.model = model.to(device)
         self.optimizer = optimizer
@@ -802,7 +784,6 @@ class PlannerTrainer:
             progress_bar.set_postfix({"loss": loss.item()})
             
 class BPTTTrainer:
-    # ... (クラス内容は変更なし) ...
     def __init__(self, model: nn.Module, config: DictConfig):
         self.model = model
         self.config = config
@@ -835,7 +816,6 @@ class BPTTTrainer:
         return loss.item()
 
 class ParticleFilterTrainer:
-    # ... (クラス内容は変更なし) ...
     def __init__(self, base_model: BioSNN, config: Dict[str, Any], device: str):
         self.base_model = base_model.to(device)
         self.device = device
@@ -862,23 +842,28 @@ class ParticleFilterTrainer:
                 else:
                     squeezed_data = data
 
-                input_spikes = (torch.rand_like(squeezed_data) > 0.5).float()
+                # --- ▼ 修正: ランダムノイズではなく、入力データのレートコーディングを行う ▼ ---
+                # 元のコード: input_spikes = (torch.rand_like(squeezed_data) > 0.5).float()
+                
+                # データを確率とみなし、[0, 1]にクランプしてベルヌーイ試行
+                probs = torch.clamp(squeezed_data, 0.0, 1.0)
+                input_spikes = torch.bernoulli(probs)
+                # --- ▲ 修正 ▲ ---
+
                 outputs, _ = particle(input_spikes) # type: ignore[operator]
                 
-                if targets is not None: # Check for None before access
-                     # Check dimensionality if it is a Tensor
+                if targets is not None:
                      if isinstance(targets, torch.Tensor) and targets.dim() > 1:
                         squeezed_targets = targets.squeeze(0)
                      else:
                         squeezed_targets = targets
                      
-                     if squeezed_targets is not None: # Double check
-                          # Ensure targets are on the correct device before use
+                     if squeezed_targets is not None:
                           squeezed_targets_device = squeezed_targets.to(self.device)
                           loss = F.mse_loss(outputs, squeezed_targets_device)
                           log_likelihoods.append(-loss.item())
                      else:
-                          log_likelihoods.append(0.0) # Or handle appropriately
+                          log_likelihoods.append(0.0)
                 else:
                      log_likelihoods.append(0.0)
         
