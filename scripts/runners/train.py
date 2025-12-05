@@ -1,5 +1,5 @@
 # ファイルパス: scripts/runners/train.py
-# (修正: mypy型エラー修正 - arg-type, union-attr に対するキャスト追加)
+# (修正: mypyエラー修正 - tokenizerのNoneチェックと型ナローイングを追加)
 
 import sys
 import os
@@ -36,21 +36,18 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 def train(args: argparse.Namespace, config: DictConfig, tokenizer: Optional[PreTrainedTokenizerBase]) -> None:
-    # --- ▼ 修正: コンテナをここで新規作成 ▼ ---
+    # --- コンテナをここで新規作成 ---
     container = TrainingContainer()
     
     if config:
         # Configを辞書に変換して適用。戻り値を明示的にキャスト
         conf_dict = cast(Dict[str, Any], OmegaConf.to_container(config, resolve=True))
         
-        # from_dictは Dict[str, Any] を期待している
         if isinstance(conf_dict, dict):
             container.config.from_dict(conf_dict)
             
             # デバッグ: モデル設定が正しく渡っているか確認
-            # conf_dictはdict型であることが保証されているので get が使える
             model_conf = conf_dict.get('model', {})
-            # model_conf も dict かどうか確認
             if isinstance(model_conf, dict):
                 arch = model_conf.get('architecture_type', 'NOT_FOUND')
             else:
@@ -61,8 +58,8 @@ def train(args: argparse.Namespace, config: DictConfig, tokenizer: Optional[PreT
                 logger.warning(f"⚠️ Model config looks empty! Keys: {conf_dict.keys()}")
         else:
             logger.error(f"❌ Config is not a dictionary, got {type(conf_dict)}")
-            return # または例外を送出
-    # --- ▲ 修正 ▲ ---
+            return
+    # -------------------------------
 
     is_distributed = args.distributed
     rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -118,6 +115,18 @@ def train(args: argparse.Namespace, config: DictConfig, tokenizer: Optional[PreT
         DatasetClass = get_dataset_class(DataFormat(config.data.format))
         max_seq_len = OmegaConf.select(config, "model.time_steps", default=128)
         dataset: SNNBaseDataset
+
+        # --- ▼ 修正: Tokenizerの安全確保 ▼ ---
+        if tokenizer is None:
+            logger.warning("Tokenizer is None. Attempting to load default 'gpt2' tokenizer.")
+            try:
+                tokenizer = AutoTokenizer.from_pretrained("gpt2")
+            except Exception as e:
+                raise ValueError("Tokenizer is required for dataset initialization but could not be loaded.") from e
+        
+        # 型ナローイング: これ以降 tokenizer は None ではないと扱われる
+        assert tokenizer is not None
+        # --- ▲ 修正 ▲ ---
 
         if is_distillation:
             data_dir = os.path.dirname(data_path) if os.path.isfile(data_path) else data_path
