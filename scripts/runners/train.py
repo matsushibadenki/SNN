@@ -1,5 +1,5 @@
 # ファイルパス: scripts/runners/train.py
-# (修正: TrainingContainer を関数内で初期化し、設定の確実な反映と汚染防止を図る)
+# (修正: mypy型エラー修正 - arg-type, union-attr に対するキャスト追加)
 
 import sys
 import os
@@ -9,12 +9,10 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 import argparse
-import os
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
-import sys
 from torch.utils.data import DataLoader, random_split, DistributedSampler, Dataset, Sampler
 from dependency_injector.wiring import inject, Provide
 from typing import Optional, Tuple, List, Dict, Any, Callable, cast, Union, TYPE_CHECKING
@@ -37,23 +35,33 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# グローバルコンテナ定義を削除
-# container = TrainingContainer() 
-
-def train(args: argparse.Namespace, config: DictConfig, tokenizer: PreTrainedTokenizerBase) -> None:
+def train(args: argparse.Namespace, config: DictConfig, tokenizer: Optional[PreTrainedTokenizerBase]) -> None:
     # --- ▼ 修正: コンテナをここで新規作成 ▼ ---
     container = TrainingContainer()
     
     if config:
-        # Configを辞書に変換して適用
-        conf_dict = OmegaConf.to_container(config, resolve=True)
-        container.config.from_dict(conf_dict)
+        # Configを辞書に変換して適用。戻り値を明示的にキャスト
+        conf_dict = cast(Dict[str, Any], OmegaConf.to_container(config, resolve=True))
         
-        # デバッグ: モデル設定が正しく渡っているか確認
-        arch = conf_dict.get('model', {}).get('architecture_type', 'NOT_FOUND')
-        logger.info(f"🔧 Train Config Loaded. Architecture: {arch}")
-        if arch == 'NOT_FOUND':
-            logger.warning(f"⚠️ Model config looks empty! Keys: {conf_dict.keys()}")
+        # from_dictは Dict[str, Any] を期待している
+        if isinstance(conf_dict, dict):
+            container.config.from_dict(conf_dict)
+            
+            # デバッグ: モデル設定が正しく渡っているか確認
+            # conf_dictはdict型であることが保証されているので get が使える
+            model_conf = conf_dict.get('model', {})
+            # model_conf も dict かどうか確認
+            if isinstance(model_conf, dict):
+                arch = model_conf.get('architecture_type', 'NOT_FOUND')
+            else:
+                arch = 'INVALID_MODEL_CONFIG'
+
+            logger.info(f"🔧 Train Config Loaded. Architecture: {arch}")
+            if arch == 'NOT_FOUND':
+                logger.warning(f"⚠️ Model config looks empty! Keys: {conf_dict.keys()}")
+        else:
+            logger.error(f"❌ Config is not a dictionary, got {type(conf_dict)}")
+            return # または例外を送出
     # --- ▲ 修正 ▲ ---
 
     is_distributed = args.distributed
@@ -176,7 +184,7 @@ def train(args: argparse.Namespace, config: DictConfig, tokenizer: PreTrainedTok
                 val_metrics = bt_trainer.evaluate(val_loader, epoch)
                 if epoch % config.training.log_interval == 0:
                     checkpoint_path = os.path.join(config.training.log_dir, f"checkpoint_epoch_{epoch}.pth")
-                    model_config_dict = OmegaConf.to_container(config.model, resolve=True) if isinstance(config.model, DictConfig) else config.model
+                    model_config_dict = cast(Dict[str, Any], OmegaConf.to_container(config.model, resolve=True)) if isinstance(config.model, DictConfig) else config.model
                     bt_trainer.save_checkpoint(path=checkpoint_path, epoch=epoch, metric_value=val_metrics.get('total', float('inf')), tokenizer_name=config.data.tokenizer_name, config=model_config_dict)
         
         if args.task_name and rank in [-1, 0]:
@@ -245,9 +253,6 @@ def main() -> None:
         if not isinstance(final_config_dict, dict):
              raise TypeError("Final config is not a dictionary.")
         
-        # main関数での初期化 (train関数内の初期化と二重になるが問題なし)
-        # container.config.from_dict(final_config_dict)
-        
         if not isinstance(base_conf, DictConfig):
             if isinstance(base_conf, ListConfig):
                  raise TypeError("Root config must be a dictionary (DictConfig), not a list (ListConfig).")
@@ -259,9 +264,6 @@ def main() -> None:
     except Exception as e:
         logger.error(f"Error loading/merging config: {e}")
         sys.exit(1)
-
-    # グローバルコンテナのワイヤリングは削除し、train関数に任せる
-    # container.wire(modules=[__name__])
     
     try:
         injected_tokenizer = AutoTokenizer.from_pretrained("gpt2")
