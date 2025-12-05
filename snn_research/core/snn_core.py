@@ -2,9 +2,8 @@
 # Title: SNN Core Model Factory (完全版)
 # Description:
 # - SNNモデルの構築を一手に引き受けるファクトリクラス。
-# - 修正1: モデルクラスのインポートを `_build_model` 内に移動し、循環参照を回避。
-# - 修正2: `forward` メソッドで `x` を省略可能にし、kwargsからの入力自動解決を実装。
-#   これにより `model(input_images=...)` のようなキーワード引数のみの呼び出しに対応。
+# - 修正: `forward` メソッドでの引数重複エラーを防止 (kwargs.popを使用)。
+# - 追加: `visual_cortex` (Bioモデル) と `spiking_vlm` のサポートを追加。
 
 import torch
 import torch.nn as nn
@@ -49,11 +48,10 @@ class SNNCore(nn.Module):
         """
         if x is None:
             # kwargs から入力テンソルを探す（優先順位順）
+            # 見つかった場合は pop して kwargs から削除し、重複エラーを防ぐ
             for key in ['input_ids', 'input_images', 'input_sequence', 'x']:
                 if key in kwargs:
-                    x = kwargs[key]
-                    # 内部モデルが kwargs の重複を許容するか不明なため、
-                    # ここでは x を特定するだけで、kwargs からは削除しないでおく
+                    x = kwargs.pop(key)
                     break
         
         if x is None:
@@ -252,6 +250,29 @@ class SNNCore(nn.Module):
                 num_experts=self.config.get('num_experts', 4),
                 top_k=self.config.get('top_k', 2),
                 neuron_config=neuron_config
+            )
+        
+        # --- 追加: Visual Cortex (Bio Model) ---
+        elif arch_type == "visual_cortex":
+            from snn_research.models.bio.visual_cortex import VisualCortex
+            return VisualCortex(
+                input_channels=self.config.get('in_channels', 2),
+                height=self.config.get('height', 32),
+                width=self.config.get('width', 32),
+                d_model=self.config.get('d_model', 128),
+                d_state=self.config.get('d_state', 64),
+                time_steps=time_steps,
+                neuron_config=neuron_config
+            )
+            
+        # --- 追加: Spiking VLM ---
+        elif arch_type == "spiking_vlm":
+            from snn_research.models.transformer.spiking_vlm import SpikingVLM
+            return SpikingVLM(
+                vocab_size=self.vocab_size,
+                vision_config=self.config.get('vision_config', {}),
+                language_config=self.config.get('language_config', {}),
+                projector_config=self.config.get('projector_config', {})
             )
 
         else:
