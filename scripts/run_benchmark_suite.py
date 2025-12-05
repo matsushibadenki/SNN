@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# (修正: data.format を有効な値 'simple_text' に変更)
+# (修正: learning_rate の位置を config.training.gradient_based 内に移動)
 
 import argparse
 import logging
@@ -71,16 +71,19 @@ def run_experiment(args: argparse.Namespace) -> None:
             "training": {
                 "epochs": args.epochs,
                 "batch_size": args.batch_size,
-                "learning_rate": 1e-3,
                 "optimizer": "adam",
                 "device": "cuda" if torch.cuda.is_available() else "cpu",
                 "log_dir": "runs/benchmark",
                 "paradigm": "gradient_based",
                 "gradient_based": {
                     "type": "standard",
+                    # --- ▼ 修正: learning_rate をここに移動 ▼ ---
+                    "learning_rate": 1e-3,
+                    # --- ▲ 修正 ▲ ---
                     "use_scheduler": False,
                     "grad_clip_norm": 1.0,
                     "use_amp": False,
+                    "warmup_epochs": 0, # コンテナで参照されるため追加推奨
                     "loss": {"ce_weight": 1.0}
                 }
             },
@@ -88,9 +91,7 @@ def run_experiment(args: argparse.Namespace) -> None:
             "data": {
                 "path": "data/benchmark_data.jsonl",
                 "tokenizer_name": "gpt2",
-                # --- ▼ 修正: 有効な Enum 値 'simple_text' に変更 ▼ ---
                 "format": "simple_text"
-                # --- ▲ 修正 ▲ ---
             }
         })
 
