@@ -1,14 +1,15 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# Title: ベンチマーク実行スイート (修正版)
+# Title: ベンチマーク実行スイート (データ自動生成対応版)
 # Description: 
 #   指定された実験設定に基づいて、SNN/ANNの学習・評価を実行するスクリプト。
-#   修正: train.py の train 関数を正しく呼び出すように修正し、学習プロセスを統合。
+#   修正: データファイルが存在しない場合に自動生成するロジックを追加し、FileNotFoundErrorを防止。
 
 import argparse
 import logging
 import os
 import sys
 import yaml
+import json
 import torch
 from omegaconf import OmegaConf
 from typing import Any, Dict
@@ -31,12 +32,33 @@ try:
     import train # type: ignore[import-not-found]
 except ImportError as e:
     logger.error(f"trainモジュールのインポートに失敗しました: {e}")
-    # trainモジュールがないと学習できないため、ここで停止するのが安全だが、
-    # ヘルスチェック等で続行させたい場合はpassする。今回はエラーを出して停止しない。
     pass
 
 from snn_research.benchmark.tasks import TaskRegistry, BenchmarkTask
 from snn_research.benchmark.metrics import MetricRegistry
+
+def ensure_benchmark_data(data_path: str) -> None:
+    """
+    ベンチマーク用のデータファイルが存在することを確認し、なければ作成する。
+    """
+    if os.path.exists(data_path):
+        return
+
+    logger.info(f"Generating dummy benchmark data at: {data_path}")
+    os.makedirs(os.path.dirname(data_path), exist_ok=True)
+    
+    try:
+        with open(data_path, 'w', encoding='utf-8') as f:
+            for i in range(100):
+                sample = {
+                    "text": f"This is a benchmark sample sentence number {i}. SNNs are efficient.",
+                    "label": i % 2 
+                }
+                f.write(json.dumps(sample) + "\n")
+        logger.info("Dummy benchmark data generated successfully.")
+    except Exception as e:
+        logger.error(f"Failed to generate dummy data: {e}")
+        # ファイル作成に失敗しても、後続の処理で明確なエラーが出るようにここでは落とさない
 
 def run_experiment(args: argparse.Namespace) -> None:
     """
@@ -49,6 +71,7 @@ def run_experiment(args: argparse.Namespace) -> None:
         base_config = OmegaConf.load(args.config)
     else:
         # デフォルト設定（configが無い場合）
+        # 修正: 明示的なファイルパスを指定
         base_config = OmegaConf.create({
             "training": {
                 "epochs": args.epochs,
@@ -68,7 +91,7 @@ def run_experiment(args: argparse.Namespace) -> None:
             },
             "model": OmegaConf.load(args.model_config) if args.model_config else {},
             "data": {
-                "path": "data/benchmark", # ダミー
+                "path": "data/benchmark_data.jsonl", # 修正: 拡張子付きのパスに変更
                 "tokenizer_name": "gpt2"
             }
         })
@@ -81,6 +104,11 @@ def run_experiment(args: argparse.Namespace) -> None:
     
     # 2. 学習の実行 (train.py 連携)
     if not args.eval_only:
+        # データの存在確認と生成
+        data_path = OmegaConf.select(base_config, "data.path")
+        if data_path:
+            ensure_benchmark_data(str(data_path))
+
         logger.info("Running training via train.py...")
         
         if 'train' in sys.modules and hasattr(sys.modules['train'], 'train'):
@@ -126,11 +154,8 @@ def run_experiment(args: argparse.Namespace) -> None:
         logger.info("Skipping training (eval_only=True).")
 
     # 3. 評価 (Evaluation) - 簡易実装
-    # train.py が評価も行っているため、ここでは追加のカスタム評価が必要な場合のみ記述
     if args.eval_only:
          logger.info("Performing evaluation-only steps...")
-         # ここにモデルロードと評価のロジックを追加可能
-         # 現状はログ出力のみ
          print(f"Evaluation for {args.experiment} completed (Simulated).")
 
 def main() -> None:
