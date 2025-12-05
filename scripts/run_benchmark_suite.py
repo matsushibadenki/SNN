@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# (修正: デフォルト設定に必須キー 'format' を追加)
+# (修正: data.format を有効な値 'simple_text' に変更)
 
 import argparse
 import logging
@@ -88,7 +88,9 @@ def run_experiment(args: argparse.Namespace) -> None:
             "data": {
                 "path": "data/benchmark_data.jsonl",
                 "tokenizer_name": "gpt2",
-                "format": "json"  # --- ▼ 追加: 必須キー format を指定 ▼ ---
+                # --- ▼ 修正: 有効な Enum 値 'simple_text' に変更 ▼ ---
+                "format": "simple_text"
+                # --- ▲ 修正 ▲ ---
             }
         })
 
