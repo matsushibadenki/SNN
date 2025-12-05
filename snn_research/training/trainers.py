@@ -1,13 +1,10 @@
 # ファイルパス: snn_research/training/trainers.py
-# Title: SNN 統合学習トレーナー (完全修正版)
+# Title: SNN 統合学習トレーナー (ビジョンモデル対応修正版)
 # Description:
 # - BreakthroughTrainer: 標準的なSNN学習トレーナー。
-# - 各種派生トレーナー (Distillation, SelfSupervised, etc.) を実装。
-# - 修正: ニューロンの動的置換 (AdaptiveNeuronSelector) が発生した際に、
-#   オプティマイザを再初期化して新しいパラメータを学習対象に含める `_reinitialize_optimizer` を実装。
-# - 修正: 可視化用フックの登録と解除を確実に行い、メモリリークやオーバーヘッドを防止。
-# - 修正: Subclassの _run_step にもニューロン置換時のオプティマイザ再初期化ロジックを適用。
-# - 修正: mypyエラー [call-arg] を解消するため、optim_class呼び出し時にキャストを追加。
+# - 修正: _run_step メソッドで、モデルアーキテクチャに応じて 'input_ids' と 'input_images' の
+#   どちらを優先するかを動的に決定するロジックを追加。これにより、マルチモーダルデータセット使用時の
+#   入力不整合（画像モデルにテキストを渡してしまうエラー）を解消。
 
 import torch
 import torch.nn as nn
@@ -102,21 +99,11 @@ class BreakthroughTrainer:
         """
         logger.info("🔄 Re-initializing optimizer due to model structure change...")
         
-        # 現在の学習率を取得 (最初のパラメータグループ)
         current_lr = self.optimizer.param_groups[0]['lr']
-        
-        # オプティマイザのクラスを取得 (AdamWなど)
         optim_class = type(self.optimizer)
         
-        # 新しいパラメータでオプティマイザを作り直す
-        # --- ▼ 修正: Anyにキャストしてmypyエラー [call-arg] を回避 ▼ ---
-        # Optimizerの基底クラスの__init__は lr を受け取らないが、具象クラスは受け取るため
         self.optimizer = cast(Any, optim_class)(self.model.parameters(), lr=current_lr)
-        # --- ▲ 修正 ▲ ---
         
-        # スケジューラが存在する場合、スケジューラも更新が必要だが、
-        # PyTorchのスケジューラはoptimizerインスタンスに紐付くため、本来は作り直しが必要。
-        # ここでは簡易的に警告を出すのみとする（またはスケジューラ再構築ロジックを追加する必要がある）
         if self.scheduler is not None:
             logger.warning("⚠️ Optimizer re-initialized. Scheduler might need manual reset or re-creation.")
             
@@ -127,14 +114,13 @@ class BreakthroughTrainer:
         if is_train and not hasattr(self, '_debug_printed'):
             print("\n🔍 [TRAINER DEBUG] Checking Input Batch:")
             if isinstance(batch, dict):
-                ids = batch.get('input_ids')
-                if ids is not None:
-                    print(f"   - Input Shape: {ids.shape}")
-                    if ids.numel() > 0:
-                        print(f"   - Input Sample: {ids[0, :10].tolist()}...")
-            elif isinstance(batch, (list, tuple)) and len(batch) > 0:
-                ids = batch[0]
-                print(f"   - Input Shape: {ids.shape}")
+                # バッチの中身をチェック
+                keys = list(batch.keys())
+                print(f"   - Keys: {keys}")
+                if 'input_images' in batch:
+                     print(f"   - input_images shape: {batch['input_images'].shape}")
+                if 'input_ids' in batch:
+                     print(f"   - input_ids shape: {batch['input_ids'].shape}")
             self._debug_printed = True
         # ------------------------------------------------
 
@@ -156,12 +142,28 @@ class BreakthroughTrainer:
                  raise ValueError("Batch dictionary must contain 'labels'.")
             target_ids = target_ids.to(self.device)
             
-            if 'input_ids' in batch:
+            # --- ▼ 修正: モデルタイプに基づく入力選択ロジック ▼ ---
+            # モデルのアーキテクチャタイプを取得
+            arch_type = "unknown"
+            if hasattr(model_to_reset, 'config') and isinstance(model_to_reset.config, dict):
+                arch_type = model_to_reset.config.get('architecture_type', 'unknown')
+            
+            # 画像モデルとみなすアーキテクチャリスト
+            vision_archs = ["spiking_cnn", "sew_resnet", "visual_cortex", "feel_snn", "hybrid_cnn_snn"]
+            is_vision_model = arch_type in vision_archs
+
+            if is_vision_model and 'input_images' in batch:
+                # 画像モデルかつ画像データがある場合は画像を優先
+                input_ids = batch['input_images'].to(self.device)
+            elif 'input_ids' in batch:
+                # それ以外（テキストモデル、または画像データがない）ならテキスト優先
                 input_ids = batch['input_ids'].to(self.device)
             elif 'input_images' in batch:
+                # テキストがないが画像がある場合（フォールバック）
                 input_ids = batch['input_images'].to(self.device)
             else:
-                 raise ValueError("Batch dictionary must contain 'input_ids' or 'input_images'.")
+                 raise ValueError(f"Batch dictionary must contain 'input_ids' or 'input_images'. (Arch: {arch_type})")
+            # --- ▲ 修正 ▲ ---
                  
         elif isinstance(batch, (list, tuple)) and len(batch) >= 2:
             input_ids, target_ids = [t.to(self.device) for t in batch[:2]]
@@ -201,7 +203,6 @@ class BreakthroughTrainer:
         return_full_hiddens_flag = isinstance(self.criterion, SelfSupervisedLoss)
         
         total_time_steps: int = 16
-        num_classes: int = 10
         logits_for_acc: Optional[torch.Tensor] = None
 
         # SNN Cutoff (Evaluation only)
@@ -222,7 +223,6 @@ class BreakthroughTrainer:
                 
                 logits_for_acc = eval_logits
                 
-                # 簡易的なCutoffシミュレーション (実際の推論打ち切りはDeployment側だが、ここではメトリクスとして計算)
                 if eval_logits.ndim == 3:
                     probs = F.softmax(eval_logits.view(-1, eval_logits.size(-1)), dim=-1)
                 else:
@@ -249,7 +249,6 @@ class BreakthroughTrainer:
                         logits_for_acc = logits_or_hiddens
                         loss_dict = self.criterion(logits_for_acc, target_ids, spikes, mem, self.model)
             
-            # 登録したフックを削除
             for hook in hooks:
                 hook.remove()
 
@@ -507,6 +506,16 @@ class DistillationTrainer(BreakthroughTrainer):
         model_to_reset = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
         functional.reset_net(model_to_reset)
         
+        # 蒸留ローダーは (student_input, attention_mask, student_target, teacher_logits) を返す
+        # バッチがタプルか辞書か確認
+        if isinstance(batch, dict):
+             # 辞書形式の場合 (修正版ラッパー)
+             # 通常のDistillationDatasetはタプルを返すが、ImageTextDataset+Distillationは辞書を返す可能性がある
+             # ここではタプル形式 (collate_fnの出力) を想定
+             # utils.pyの collate_fn は辞書を返さないため、タプルとして扱う
+             pass
+
+        # app/utils.pyのcollate_fnは is_distillation=True の場合タプルを返す
         student_input, attention_mask, student_target, teacher_logits = [t.to(self.device) for t in batch]
 
         if is_train:
