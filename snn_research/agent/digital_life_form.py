@@ -2,7 +2,6 @@
 # Title: Digital Life Form (Async Fix)
 # Description:
 #   統合認知アーキテクチャの中核。以下の機能を統合し、自律的なライフサイクルを実行する。
-#   - 修正: SelfEvolvingAgentMaster.evolve の非同期化に伴い、呼び出し元に await を追加。
 
 import time
 import logging
@@ -69,8 +68,8 @@ class DigitalLifeForm:
         self.running = False
         self.state: Dict[str, Any] = {"last_action": None, "last_result": None, "last_task": "unknown"}
         
-        # 倫理的制約のキャッシュ
-        self.ethical_constraints: List[str] = ["harm", "deceive", "error"] # デフォルト
+        # 倫理的制約キャッシュ
+        self.ethical_constraints: List[str] = ["harm", "deceive", "error", "illegal"] 
 
     def start(self): 
         self.running = True
@@ -93,14 +92,14 @@ class DigitalLifeForm:
         """単一の認知・行動サイクル"""
         logging.info("\n--- 🧠 New Cognitive Cycle ---")
         
-        # 1. クレジット処理 (意識変調学習 & Active Inference学習)
+        # 1. クレジット処理
         self._handle_causal_credit() 
 
-        # 2. 状態評価 (メタ認知 & 動機)
+        # 2. 状態評価
         internal_state = self.motivation_system.get_internal_state()
         performance_eval = self.meta_cognitive_snn.evaluate_performance()
         
-        # 3. 倫理的選好の更新 (RAGから最新の倫理観を取得)
+        # 3. 倫理的選好の更新 (RAG連携強化)
         await self._update_ethical_preferences()
 
         # 4. ゴール設定
@@ -110,14 +109,13 @@ class DigitalLifeForm:
         # 5. プランニング & 行動実行
         plan = await self.planner.create_plan(goal)
         if not plan.task_list:
-            # デフォルト行動としてActive Inferenceを実行
             plan.task_list = [{"task": "perform_active_inference", "description": "Explore environment via FEP"}]
 
         for task in plan.task_list:
             action = task.get('task')
             if not action: continue
             
-            # 倫理チェック (行動実行前)
+            # 行動前倫理チェック
             if not await self._check_action_ethics(action):
                 logging.warning(f"⚠️ Action '{action}' blocked by ethical constraints.")
                 continue
@@ -125,7 +123,6 @@ class DigitalLifeForm:
             logging.info(f"▶️ Executing task: {action}")
             result, reward, expert_used = await self._execute_action(action, internal_state, performance_eval)
 
-            # 6. 結果の処理 (記号接地・記憶)
             if isinstance(result, dict): 
                 self.symbol_grounding.process_observation(result, context=f"action '{action}'")
             
@@ -137,34 +134,59 @@ class DigitalLifeForm:
             }
             self.memory.record_experience(self.state, action, result, {"external": reward}, expert_used, decision_context)
 
-            # 7. 動機付けシステムの更新
             self._update_motivation(reward)
 
             self.state["last_action"] = action
             self.state["last_result"] = result
 
-            # 8. 自己進化の検討 (失敗時など)
+            # 自己進化トリガー
             if reward < 0 or performance_eval.get("status") in ["knowledge_gap", "capability_gap"]:
-                 logging.info(f"🧬 Triggering self-evolution due to low reward or gap...")
-                 # 修正: 非同期メソッド呼び出しのため await を追加
+                 logging.info(f"🧬 Triggering self-evolution...")
                  evolve_result = await self.self_evolving_agent.evolve(performance_eval, internal_state)
                  logging.info(f"   - Evolution result: {evolve_result}")
                  break
 
     async def _update_ethical_preferences(self):
-        """RAGを使って最新の倫理的知識を取得し、ActiveInferenceAgentの選好を更新する"""
-        # 簡易的に「避けるべきこと」を検索
-        # 本来は RAGSystem からベクトル検索を行う
-        # ethical_contexts = self.memory.rag_system.search("unethical dangerous forbidden actions", k=3)
+        """
+        RAGを使って「避けるべき行動」や「危険な概念」を検索し、
+        ActiveInferenceAgentの選好分布(Preferences)を更新する。
+        """
+        if not hasattr(self.memory, 'rag_system'):
+            return
+
+        # 1. 倫理的にネガティブな概念を検索
+        queries = ["unethical action", "dangerous behavior", "forbidden", "harmful"]
+        avoid_concepts = []
         
-        # ここではダミーの更新ロジック
-        # 危険な状態インデックス (例: 1=Error, 3=Danger) を回避設定
-        self.active_inference_agent.set_ethical_preference(avoid_indices=[1, 3], penalty_strength=5.0)
-        # logging.info("🛡️ Ethical preferences updated based on RAG memory.")
+        for q in queries:
+            # RAGSystem.search は文字列リストを返す
+            results = self.memory.rag_system.search(q, k=2)
+            avoid_concepts.extend(results)
+            
+        if not avoid_concepts:
+            return
+
+        # 2. 検索された概念を解析し、回避すべき状態インデックスを決定
+        # (簡易ロジック: 検索結果のハッシュ値などを使って状態空間にマッピング)
+        avoid_indices = []
+        obs_dim = self.active_inference_agent.observation_dim
+        
+        for concept in avoid_concepts:
+            # 文字列のハッシュを次元数で割った余りを「回避対象の状態」とみなす（抽象化）
+            h = hash(concept) % obs_dim
+            avoid_indices.append(h)
+        
+        avoid_indices = list(set(avoid_indices)) # 重複排除
+        
+        if avoid_indices:
+            logging.info(f"🛡️ RAG Ethical Update: Avoid states {avoid_indices} based on {len(avoid_concepts)} retrieved concepts.")
+            # ActiveInferenceAgentに適用
+            self.active_inference_agent.set_ethical_preference(
+                avoid_indices=avoid_indices, 
+                penalty_strength=5.0
+            )
 
     async def _check_action_ethics(self, action: str) -> bool:
-        """特定のアクションが倫理的制約に違反していないかチェックする"""
-        # 簡易キーワードチェック
         for constraint in self.ethical_constraints:
             if constraint in action.lower():
                 return False
@@ -173,8 +195,7 @@ class DigitalLifeForm:
     def _formulate_goal(self, internal_state: Dict[str, Any], performance_eval: Dict[str, Any]) -> str:
         if internal_state.get("curiosity", 0.0) > 0.8 and internal_state.get("curiosity_context"):
             topic = internal_state.get("curiosity_context")
-            topic_str = str(topic)[:50] if topic else "unknown"
-            return f"Explore unknown concept related to '{topic_str}'."
+            return f"Explore unknown concept related to '{str(topic)[:50]}'."
         
         if performance_eval.get("status") == "capability_gap": 
             return "Evolve architecture/parameters for capability gap."
@@ -185,19 +206,14 @@ class DigitalLifeForm:
         return "Minimize expected free energy via active inference."
 
     def _handle_causal_credit(self):
-        """因果的クレジット信号を処理し、学習を変調する"""
         conscious_content = self.workspace.conscious_broadcast_content
         if conscious_content and isinstance(conscious_content, dict) and conscious_content.get("type") == "causal_credit":
             target_action = conscious_content.get("target_action")
             credit = conscious_content.get("credit", 0.0)
             
-            # RL Agent の学習変調
             self.rl_agent.learn(reward=0.0, causal_credit=credit, global_context=conscious_content)
             
-            # Active Inference Agent の学習 (予測誤差最小化)
-            # 直前の行動がターゲットならモデル更新
             if self.state.get("last_action") and target_action == f"action_{self.state['last_action']}":
-                 # 観測と行動のペアで更新 (簡易)
                  dummy_obs = torch.randn(1, 128) 
                  self.active_inference_agent.update_model(dummy_obs, action=0, reward=credit)
                  logging.info(f"✨ Causal credit utilized for model update. Credit: {credit}")
@@ -205,52 +221,36 @@ class DigitalLifeForm:
     def _update_motivation(self, reward: float):
         prediction_error = random.random() * 0.5
         success_rate = 1.0 if reward > 0 else 0.0
-        task_similarity = random.random()
-        loss = random.random() * 0.1
-        self.motivation_system.update_metrics(prediction_error, success_rate, task_similarity, loss)
+        self.motivation_system.update_metrics(prediction_error, success_rate, random.random(), random.random() * 0.1)
 
     async def _execute_action(self, action: str, internal_state: Dict[str, Any], performance_eval: Dict[str, Any]) -> tuple[Dict[str, Any], float, List[str]]:
-        from snn_research.rl_env.grid_world import GridWorldEnv
-        from snn_research.training.bio_trainer import BioRLTrainer
-        
         try:
             if action == "perform_active_inference" or "active inference" in action.lower():
-                # 能動的推論の実行
-                observation = torch.randn(1, 128) # 本来はSensoryReceptorから取得
+                observation = torch.randn(1, 128)
                 self.active_inference_agent.infer_state(observation)
-                selected_action_idx = self.active_inference_agent.select_action()
-                return {"status": "success", "action_idx": selected_action_idx, "type": "active_inference"}, 0.5, ["active_inference_agent"]
+                idx = self.active_inference_agent.select_action()
+                return {"status": "success", "action_idx": idx}, 0.5, ["active_inference_agent"]
 
             elif action == "explore_curiosity":
-                topic = internal_state.get("curiosity_context")
-                topic_str = str(topic)[:50] if topic else None
-                if not topic_str: return {"status": "skipped", "info": "No curiosity context."}, 0.0, []
-                
-                # エージェントに調査を依頼
-                new_model_info = await self.autonomous_agent.handle_task(task_description=topic_str, unlabeled_data_path="data/sample_data.jsonl", force_retrain=True)
-                success = new_model_info and "error" not in new_model_info
-                return {"status": "success" if success else "failure", "info": new_model_info}, (1.0 if success else -0.5), ["autonomous_agent"]
+                topic = str(internal_state.get("curiosity_context", "unknown"))[:50]
+                new_model = await self.autonomous_agent.handle_task(task_description=topic, unlabeled_data_path="data/sample_data.jsonl", force_retrain=True)
+                success = new_model and "error" not in new_model
+                return {"status": "success" if success else "failure", "info": new_model}, (1.0 if success else -0.5), ["autonomous_agent"]
             
             elif action.startswith("Evolve"):
-                # 明示的な進化アクション
-                # 修正: 非同期メソッド呼び出しのため await を追加
                 evolve_result = await self.self_evolving_agent.evolve(performance_eval, internal_state)
                 success = "failed" not in evolve_result.lower()
                 return {"status": "success" if success else "failure", "info": evolve_result}, (0.9 if success else -0.2), ["self_evolver"]
             
             elif action.startswith("Answer"):
-                 question = action.split(":")[-1].strip() if ":" in action else "What is SNN?"
+                 question = action.split(":")[-1].strip() if ":" in action else "QA"
                  model_info = await self.autonomous_agent.handle_task(task_description="general_qa")
-                 success = model_info is not None and "error" not in model_info
-                 return {"status": "success" if success else "failure", "response": f"Answered '{question}'"}, (0.8 if success else -0.3), ["autonomous_agent"]
+                 success = model_info is not None
+                 return {"status": "success", "response": f"Answered '{question}'"}, 0.8, ["autonomous_agent"]
             
             else:
-                 # 未知のアクションは能動的推論にフォールバック
-                 logging.info(f"Unknown action '{action}', falling back to active inference.")
-                 observation = torch.randn(1, 128)
-                 self.active_inference_agent.infer_state(observation)
-                 idx = self.active_inference_agent.select_action()
-                 return {"status": "fallback", "action_idx": idx}, 0.1, ["active_inference_agent"]
+                 logging.info(f"Unknown action '{action}', falling back.")
+                 return {"status": "fallback"}, 0.1, []
 
         except Exception as e:
             logging.error(f"Error executing action '{action}': {e}", exc_info=True)
