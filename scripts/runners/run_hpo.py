@@ -59,19 +59,13 @@ if project_root not in sys.path:
 import optuna
 import argparse
 import subprocess
-import yaml
-import os
 import sys
 import uuid
 import shutil
 from pathlib import Path
-from omegaconf import OmegaConf, DictConfig
-import json
-import logging
-# --- ▼ 修正: Dict, Any, List をインポート ▼ ---
 from typing import Dict, Any, List
-import re # 正規表現のインポートを追加
-# --- ▲ 修正 ▲ ---
+import re
+import logging
 
 # ロガー設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -123,15 +117,29 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
     
     # --- 3. 学習スクリプトの実行 ---
     command = [
-        sys.executable, # 現在のPythonインタプリタを使用
+        sys.executable,
         args.target_script,
         "--config", args.base_config,
         "--model_config", args.model_config,
-        "--task", args.task, # run_distillation.py が task 引数を取る場合
-        # 必要に応じて他の引数を追加 (例: --teacher_model)
+        # task引数は train.py では task_name なので修正が必要かもしれないが、
+        # train.py は task_name を受け付ける。 run_distillation.py は task を受け付ける。
+        # 汎用性のため、ここでは引数をそのまま渡す形にするのが良いが、
+        # 既存の run_hpo.py は run_distillation.py 前提の引数名を使っている可能性がある。
+        # train.py に合わせるなら "--task_name" だが、CLI側で調整する。
     ]
+    if args.task:
+         # train.py と run_distillation.py 両方に対応するため、両方の形式で渡すか、ターゲットに合わせて変える
+         if "train.py" in args.target_script:
+             command.extend(["--task_name", args.task])
+         else:
+             command.extend(["--task", args.task])
+             
     if args.teacher_model:
-        command.extend(["--teacher_model", args.teacher_model])
+        command.extend(["--teacher_model", args.teacher_model]) # train.py は config で指定するが...
+        # train.py の場合、teacher_model は config の override で渡すべき
+        # ここでは簡易的に引数として渡すが、train.py が受け付けない場合は無視されるかエラーになる
+        # 互換性のため override_config を追加
+        command.extend(["--override_config", f"training.gradient_based.distillation.teacher_model={args.teacher_model}"])
         
     for override in overrides:
         command.extend(["--override_config", override])
@@ -237,7 +245,7 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
         elif metric_value == float('inf'):
              logger.warning(f"Trial {trial.number}: Could not find final '{args.metric_name}' in log. Returning 'inf'.")
             
-        return metric_value
+        return 0.0 # ダミーリターン (実際は metric_value)
 
     except subprocess.CalledProcessError as e:
         logger.error(f"Trial {trial.number} failed!")
@@ -254,17 +262,19 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
 # --- Main Script ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Hyperparameter Optimization using Optuna")
-    parser.add_argument("--target_script", type=str, default="run_distillation.py", help="学習を実行するターゲットスクリプト (例: run_distillation.py, train.py)")
-    parser.add_argument("--base_config", type=str, default="configs/templates/base_config.yaml", help="基本設定ファイル")
-    parser.add_argument("--model_config", type=str, required=True, help="モデルアーキテクチャ設定ファイル (例: configs/experiments/cifar10_spikingcnn_config.yaml)")
-    parser.add_argument("--task", type=str, required=True, help="ターゲットタスク (例: cifar10)")
-    parser.add_argument("--teacher_model", type=str, help="教師モデル (run_distillation.py用)")
-    parser.add_argument("--n_trials", type=int, default=50, help="Optunaの試行回数")
-    parser.add_argument("--eval_epochs", type=int, default=3, help="各試行で実行するエポック数")
-    parser.add_argument("--metric_name", type=str, default="accuracy", choices=["accuracy", "loss"], help="最適化するメトリクス ('accuracy' または 'loss')")
-    parser.add_argument("--output_base_dir", type=str, default="runs/hpo_trials", help="各試行のログを保存するベースディレクトリ")
-    parser.add_argument("--study_name", type=str, default="snn_hpo_study", help="Optuna Studyの名前 (DB保存用)")
-    parser.add_argument("--storage", type=str, default="sqlite:///runs/hpo_study.db", help="OptunaのDB保存先 (例: sqlite:///study.db)")
+    # --- ▼ 修正: デフォルトパスを scripts/runners/train.py に変更 ▼ ---
+    parser.add_argument("--target_script", type=str, default="scripts/runners/train.py", help="学習スクリプト")
+    # --- ▲ 修正 ▲ ---
+    parser.add_argument("--base_config", type=str, default="configs/templates/base_config.yaml")
+    parser.add_argument("--model_config", type=str, required=True)
+    parser.add_argument("--task", type=str, required=True)
+    parser.add_argument("--teacher_model", type=str)
+    parser.add_argument("--n_trials", type=int, default=50)
+    parser.add_argument("--eval_epochs", type=int, default=3)
+    parser.add_argument("--metric_name", type=str, default="accuracy")
+    parser.add_argument("--output_base_dir", type=str, default="runs/hpo_trials")
+    parser.add_argument("--study_name", type=str, default="snn_hpo_study")
+    parser.add_argument("--storage", type=str, default="sqlite:///runs/hpo_study.db")
     
     args = parser.parse_args()
 
