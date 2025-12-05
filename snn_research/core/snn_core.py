@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/snn_core.py
-# (修正: get_total_spikes の委譲追加 & デバッグ情報強化)
+# (修正済み完全版: get_total_spikes の委譲追加 & デバッグ情報強化)
 
 import torch
 import torch.nn as nn
@@ -51,9 +51,9 @@ class SNNCore(nn.Module):
         elif hasattr(self.model, 'reset'):
              self.model.reset() # type: ignore
 
-    # --- ▼ 追加: スパイク集計メソッドの委譲 ▼ ---
+    # --- ▼ 追加: スパイク集計メソッドの委譲（修正版） ▼ ---
     def get_total_spikes(self) -> float:
-        """内部モデルのスパイク総数を取得する"""
+        """内部モデルのスパイク総数を取得する。メソッドが存在しない場合は0を返す。"""
         if hasattr(self.model, 'get_total_spikes'):
             return self.model.get_total_spikes() # type: ignore
         return 0.0
