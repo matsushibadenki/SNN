@@ -1,9 +1,10 @@
 # ファイルパス: snn_research/core/snn_core.py
-# Title: SNN Core Model Factory (循環参照回避版)
+# Title: SNN Core Model Factory (循環参照回避 & キーワード引数対応版)
 # Description:
 # - SNNモデルの構築を一手に引き受けるファクトリクラス。
-# - 修正: すべての具体的なモデルクラスのインポートを `_build_model` メソッド内に移動（遅延インポート）。
-#   これにより、モデル定義ファイル側で `SNNCore` をインポートしても循環参照エラーが発生しないようにした。
+# - 修正1: モデルクラスのインポートを `_build_model` 内に移動し、循環参照を回避。
+# - 修正2: `forward` メソッドで `x` を省略可能にし、kwargsからの入力自動解決を実装。
+#   これにより `model(input_images=...)` のような呼び出しに対応。
 
 import torch
 import torch.nn as nn
@@ -41,8 +42,25 @@ class SNNCore(nn.Module):
         else:
             logger.info(f"✅ SNNCore built model '{arch_type}' with {param_count:,} parameters ({trainable_count:,} trainable).")
 
-    def forward(self, x: torch.Tensor, **kwargs: Any) -> Any:
-        """順伝播を内部モデルに委譲"""
+    def forward(self, x: Optional[torch.Tensor] = None, **kwargs: Any) -> Any:
+        """
+        順伝播を内部モデルに委譲する。
+        位置引数 x が省略された場合、kwargs から一般的な入力キーを探して解決する。
+        """
+        if x is None:
+            # kwargs から入力テンソルを探す
+            for key in ['input_ids', 'input_images', 'input_sequence', 'x']:
+                if key in kwargs:
+                    x = kwargs[key]
+                    # 内部モデルが kwargs の重複を許容するか不明なため、
+                    # ここでは x を特定するだけで、kwargs からは削除しないでおく
+                    break
+        
+        if x is None:
+            # それでも見つからない場合は kwargs のみで呼び出す（モデル側が対応していることを期待）
+            # 例: 複数の入力を取るモデルなど
+            return self.model(**kwargs)
+        
         return self.model(x, **kwargs)
     
     def reset_state(self) -> None:
@@ -66,9 +84,7 @@ class SNNCore(nn.Module):
         if self.backend != "spikingjelly":
              raise ValueError(f"Unsupported backend: {self.backend}. Only 'spikingjelly' is supported.")
 
-        # --- ニューロンクラスの解決 (ここでインポート) ---
-        # 頻繁に使われるためヘルパー的に解決しても良いが、ここではシンプルに記述
-        # (必要に応じて snn_research.core.neurons からインポート)
+        # --- アーキテクチャに応じたモデルのインポートと構築 ---
         
         if arch_type == "spiking_cnn":
             from snn_research.models.cnn.spiking_cnn_model import SpikingCNN
@@ -140,8 +156,6 @@ class SNNCore(nn.Module):
             )
         
         elif arch_type == "franken_moe":
-            # FrankenMoEは内部でエキスパートをロードするためにSNNCoreを使う可能性がある
-            # ここでのインポートは安全
             from snn_research.models.experimental.moe_model import SpikingFrankenMoE
             return SpikingFrankenMoE(
                 vocab_size=self.vocab_size,
