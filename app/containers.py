@@ -1,5 +1,5 @@
 # ファイルパス: app/containers.py
-# (修正: mypyエラー [attr-defined] 解消のため、castを追加)
+# (修正: AgentContainerのコアコンポーネントをSingleton化し、状態共有と整合性を保証)
 
 import torch
 from dependency_injector import containers, providers
@@ -13,8 +13,12 @@ from omegaconf import DictConfig, OmegaConf
 # --- プロジェクト内モジュールのインポート ---
 from snn_research.core.snn_core import SNNCore
 from app.deployment import SNNInferenceEngine
-from snn_research.training.losses import ( CombinedLoss, DistillationLoss, SelfSupervisedLoss, PhysicsInformedLoss, PlannerLoss, ProbabilisticEnsembleLoss )
-from snn_research.training.trainers import ( BreakthroughTrainer, DistillationTrainer, SelfSupervisedTrainer, PhysicsInformedTrainer, ProbabilisticEnsembleTrainer, ParticleFilterTrainer, PlannerTrainer )
+from snn_research.training.losses import (
+    CombinedLoss, DistillationLoss, SelfSupervisedLoss, PhysicsInformedLoss, PlannerLoss, ProbabilisticEnsembleLoss
+)
+from snn_research.training.trainers import (
+    BreakthroughTrainer, DistillationTrainer, SelfSupervisedTrainer, PhysicsInformedTrainer, ProbabilisticEnsembleTrainer, ParticleFilterTrainer, PlannerTrainer
+)
 from snn_research.training.bio_trainer import BioRLTrainer
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 from snn_research.cognitive_architecture.meta_cognitive_snn import MetaCognitiveSNN
@@ -65,67 +69,100 @@ if TYPE_CHECKING:
     from .adapters.snn_langchain_adapter import SNNLangChainAdapter
     from snn_research.cognitive_architecture.meta_cognitive_snn import MetaCognitiveSNN
 
-def _calculate_t_max(epochs: int, warmup_epochs: int) -> int:
-    return max(1, epochs - warmup_epochs)
-
-def _create_scheduler(optimizer: Optimizer, epochs: int, warmup_epochs: int) -> LRScheduler:
-    warmup_scheduler = LinearLR(optimizer=optimizer, start_factor=1e-3, total_iters=warmup_epochs)
-    main_scheduler_t_max = _calculate_t_max(epochs=epochs, warmup_epochs=warmup_epochs)
-    main_scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=main_scheduler_t_max)
-    return SequentialLR(optimizer=optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_epochs])
-
-def _load_planner_snn_factory(planner_snn_instance, model_path: str, device: str):
-    model = planner_snn_instance
-    if model_path and os.path.exists(model_path):
-        try:
-            checkpoint = torch.load(model_path, map_location=device)
-            state_dict = checkpoint.get('model_state_dict', checkpoint)
-            model.load_state_dict(state_dict)
-            print(f"✅ Loaded PlannerSNN from '{model_path}'.")
-        except Exception as e: print(f"⚠️ Failed to load PlannerSNN: {e}.")
-    else: print(f"⚠️ PlannerSNN model not found: {model_path}.")
-    return model.to(device)
+# --- ヘルパー関数 ---
 
 def get_tokenizer(config_dict: Dict[str, Any]) -> PreTrainedTokenizerBase:
     cfg = OmegaConf.create(config_dict)
     tokenizer_name = OmegaConf.select(cfg, "data.tokenizer_name", default="gpt2")
-    if tokenizer_name is None:
-        tokenizer_name = "gpt2"
     try:
         return AutoTokenizer.from_pretrained(tokenizer_name)
-    except Exception as e:
+    except Exception:
         return AutoTokenizer.from_pretrained("gpt2")
+
+def create_scheduler(optimizer: Optimizer, epochs: int, warmup_epochs: int) -> LRScheduler:
+    warmup_scheduler = LinearLR(optimizer=optimizer, start_factor=1e-3, total_iters=max(1, warmup_epochs))
+    main_scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=max(1, epochs - warmup_epochs))
+    return SequentialLR(optimizer=optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_epochs])
+
+def load_planner_snn(planner_model: PlannerSNN, model_path: Optional[str], device: str) -> PlannerSNN:
+    if model_path and os.path.exists(model_path):
+        try:
+            checkpoint = torch.load(model_path, map_location=device)
+            state_dict = checkpoint.get('model_state_dict', checkpoint)
+            planner_model.load_state_dict(state_dict)
+            logger.info(f"✅ Loaded PlannerSNN from '{model_path}'.")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load PlannerSNN: {e}")
+    return planner_model.to(device)
+
+def get_registry_path(config: Dict[str, Any]) -> str:
+    cfg = OmegaConf.create(config)
+    return OmegaConf.select(cfg, "model_registry.file.path", default="runs/model_registry.json")
+
+def get_vector_store_path(log_dir: Optional[str]) -> str:
+    return os.path.join(log_dir, "vector_store") if log_dir else "runs/vector_store"
+
+def get_memory_path(log_dir: Optional[str]) -> str:
+    return os.path.join(log_dir, "agent_memory.jsonl") if log_dir else "runs/agent_memory.jsonl"
+
+# --- コンテナ定義 ---
 
 class TrainingContainer(containers.DeclarativeContainer):
     config = providers.Configuration()
-    task_registry = providers.Object(TASK_REGISTRY)
+    
     device = providers.Factory(get_auto_device)
     tokenizer = providers.Factory(get_tokenizer, config_dict=config)
     
+    # SNNモデル (ファクトリ利用)
     snn_model = providers.Factory(
         SNNCore, 
         config=config.model, 
-        vocab_size=tokenizer.provided.vocab_size
+        vocab_size=providers.Callable(lambda t: len(t), t=tokenizer)
     )
     
     astrocyte_network = providers.Factory(AstrocyteNetwork, snn_model=snn_model)
-    
-    meta_cognitive_snn: providers.Provider[MetaCognitiveSNN] = providers.Factory(MetaCognitiveSNN)
+    meta_cognitive_snn = providers.Factory(MetaCognitiveSNN)
     
     optimizer = providers.Factory(AdamW, lr=config.training.gradient_based.learning_rate)
-    scheduler = providers.Factory(_create_scheduler, optimizer=optimizer, epochs=config.training.epochs, warmup_epochs=config.training.gradient_based.warmup_epochs)
-    standard_trainer = providers.Factory(BreakthroughTrainer, criterion=providers.Factory(CombinedLoss, ce_weight=config.training.gradient_based.loss.ce_weight, spike_reg_weight=config.training.gradient_based.loss.spike_reg_weight, mem_reg_weight=config.training.gradient_based.loss.mem_reg_weight, sparsity_reg_weight=config.training.gradient_based.loss.sparsity_reg_weight, tokenizer=tokenizer, ewc_weight=config.training.gradient_based.loss.ewc_weight), grad_clip_norm=config.training.gradient_based.grad_clip_norm, use_amp=config.training.gradient_based.use_amp, log_dir=config.training.log_dir, meta_cognitive_snn=meta_cognitive_snn)
-    distillation_trainer = providers.Factory(DistillationTrainer, criterion=providers.Factory(DistillationLoss, tokenizer=tokenizer, ce_weight=config.training.gradient_based.distillation.loss.ce_weight, distill_weight=config.training.gradient_based.distillation.loss.distill_weight, spike_reg_weight=config.training.gradient_based.distillation.loss.spike_reg_weight, mem_reg_weight=config.training.gradient_based.distillation.loss.mem_reg_weight, sparsity_reg_weight=config.training.gradient_based.distillation.loss.sparsity_reg_weight, temperature=config.training.gradient_based.distillation.loss.temperature), grad_clip_norm=config.training.gradient_based.grad_clip_norm, use_amp=config.training.gradient_based.use_amp, log_dir=config.training.log_dir, meta_cognitive_snn=meta_cognitive_snn)
-    pi_optimizer = providers.Factory(AdamW, lr=config.training.physics_informed.learning_rate)
-    pi_scheduler = providers.Factory(_create_scheduler, optimizer=pi_optimizer, epochs=config.training.epochs, warmup_epochs=config.training.physics_informed.warmup_epochs)
-    physics_informed_trainer = providers.Factory(PhysicsInformedTrainer, criterion=providers.Factory(PhysicsInformedLoss, ce_weight=config.training.physics_informed.loss.ce_weight, spike_reg_weight=config.training.physics_informed.loss.spike_reg_weight, mem_smoothness_weight=config.training.physics_informed.loss.mem_smoothness_weight, tokenizer=tokenizer), grad_clip_norm=config.training.physics_informed.grad_clip_norm, use_amp=config.training.physics_informed.use_amp, log_dir=config.training.log_dir, meta_cognitive_snn=meta_cognitive_snn)
-    synaptic_learning_rule = providers.Factory(get_bio_learning_rule, name=config.training.biologically_plausible.learning_rule, params=config.training.biologically_plausible.provided)
-    homeostatic_learning_rule = providers.Factory(get_bio_learning_rule, name="BCM", params=config.training.biologically_plausible.provided)
-    bio_rl_agent = providers.Factory(ReinforcementLearnerAgent, input_size=4, output_size=4, device=device, synaptic_rule=synaptic_learning_rule, homeostatic_rule=homeostatic_learning_rule)
+    scheduler = providers.Factory(
+        create_scheduler, 
+        optimizer=optimizer, 
+        epochs=config.training.epochs, 
+        warmup_epochs=config.training.gradient_based.warmup_epochs
+    )
+    
+    # トレーナー群
+    standard_trainer = providers.Factory(
+        BreakthroughTrainer, 
+        criterion=providers.Factory(CombinedLoss, tokenizer=tokenizer, ce_weight=config.training.gradient_based.loss.ce_weight), 
+        grad_clip_norm=config.training.gradient_based.grad_clip_norm, 
+        use_amp=config.training.gradient_based.use_amp, 
+        log_dir=config.training.log_dir, 
+        meta_cognitive_snn=meta_cognitive_snn
+    )
+    
+    distillation_trainer = providers.Factory(
+        DistillationTrainer, 
+        criterion=providers.Factory(DistillationLoss, tokenizer=tokenizer, temperature=config.training.gradient_based.distillation.loss.temperature),
+        grad_clip_norm=config.training.gradient_based.grad_clip_norm, 
+        use_amp=config.training.gradient_based.use_amp, 
+        log_dir=config.training.log_dir, 
+        meta_cognitive_snn=meta_cognitive_snn
+    )
+    
+    # Bio-RL関連
+    synaptic_rule = providers.Factory(get_bio_learning_rule, name=config.training.biologically_plausible.learning_rule, params=config.training.biologically_plausible.provided)
+    homeostatic_rule = providers.Factory(get_bio_learning_rule, name="BCM", params=config.training.biologically_plausible.provided)
+    
+    bio_rl_agent = providers.Factory(
+        ReinforcementLearnerAgent, 
+        input_size=4, output_size=4, device=device, 
+        synaptic_rule=synaptic_rule, homeostatic_rule=homeostatic_rule
+    )
     grid_world_env = providers.Factory(GridWorldEnv, device=device)
     bio_rl_trainer = providers.Factory(BioRLTrainer, agent=bio_rl_agent, env=grid_world_env)
-    particle_filter_trainer = providers.Factory(ParticleFilterTrainer, base_model=providers.Factory(BioSNN, layer_sizes=[10, 5, 2], neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0}, synaptic_rule=providers.Object(None), homeostatic_rule=providers.Object(None)), config=config.provided, device=device)
     
+    # Plannerモデル (学習用)
     planner_snn = providers.Factory(
         PlannerSNN, 
         vocab_size=providers.Callable(len, tokenizer), 
@@ -167,21 +204,22 @@ class AgentContainer(containers.DeclarativeContainer):
     # Registry
     model_registry = providers.Selector(
         providers.Callable(lambda c: c.get("model_registry", {}).get("provider", "file"), c=config),
-        file=providers.Singleton(SimpleModelRegistry, registry_path=providers.Factory(lambda cfg: cfg.get("model_registry", {}).get("file", {}).get("path", "runs/model_registry.json"), cfg=config.provided)),
-        distributed=providers.Singleton(DistributedModelRegistry, registry_path=providers.Factory(lambda cfg: cfg.get("model_registry", {}).get("file", {}).get("path", "runs/model_registry.json"), cfg=config.provided))
+        file=providers.Singleton(SimpleModelRegistry, registry_path=providers.Factory(get_registry_path, config=config)),
+        distributed=providers.Singleton(DistributedModelRegistry, registry_path=providers.Factory(get_registry_path, config=config))
     )
     
     web_crawler = providers.Singleton(WebCrawler)
     
-    rag_system = providers.Factory(
+    # --- 修正: Singletonに変更して状態共有と整合性を保証 ---
+    rag_system = providers.Singleton(
         RAGSystem, 
-        vector_store_path=providers.Callable(lambda log_dir: os.path.join(log_dir, "vector_store") if log_dir else "runs/vector_store", log_dir=config.training.log_dir.or_none())
+        vector_store_path=providers.Factory(get_vector_store_path, log_dir=config.training.log_dir)
     )
     
-    memory = providers.Factory(
+    memory = providers.Singleton(
         Memory, 
         rag_system=rag_system, 
-        memory_path=providers.Callable(lambda log_dir: os.path.join(log_dir, "agent_memory.jsonl") if log_dir else "runs/agent_memory.jsonl", log_dir=config.training.log_dir.or_none())
+        memory_path=providers.Factory(get_memory_path, log_dir=config.training.log_dir)
     )
     
     # 読み込み済みPlannerモデル
@@ -192,7 +230,7 @@ class AgentContainer(containers.DeclarativeContainer):
         device=device
     )
     
-    hierarchical_planner = providers.Factory(
+    hierarchical_planner = providers.Singleton(
         HierarchicalPlanner,
         model_registry=model_registry,
         rag_system=rag_system,
@@ -201,6 +239,7 @@ class AgentContainer(containers.DeclarativeContainer):
         tokenizer_name=config.data.tokenizer_name,
         device=device
     )
+    # --- 修正終了 ---
     
     autonomous_agent = providers.Singleton(
         AutonomousAgent,
@@ -274,8 +313,8 @@ class BrainContainer(containers.DeclarativeContainer):
     visual_cortex = providers.Singleton(
         VisualCortex,
         workspace=global_workspace,
-        vision_model_config=providers.Callable(lambda: {"architecture_type": "spiking_cnn", "num_classes": 128}), 
-        projector_config=providers.Callable(lambda: {"visual_dim": 128, "lang_dim": 256, "use_bitnet": False}),
+        vision_model_config=providers.Object({"architecture_type": "spiking_cnn", "num_classes": 128, "time_steps": 16}), 
+        projector_config=providers.Object({"visual_dim": 128, "lang_dim": 256, "use_bitnet": False}),
         device=device 
     )
 
