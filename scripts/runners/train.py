@@ -14,7 +14,7 @@ if project_root not in sys.path:
 # ------------------------------------------------------------------------------
 
 # ファイルパス: train.py
-# (修正: 設定ロード確認ログの追加)
+# (修正: collate_fn を app.utils からインポートし、マルチモーダル対応を統一)
 
 import argparse
 import os
@@ -34,12 +34,12 @@ from torch.optim.lr_scheduler import LRScheduler
 from app.containers import TrainingContainer
 from snn_research.data.datasets import get_dataset_class, DistillationDataset, DataFormat, SNNBaseDataset
 from snn_research.training.trainers import BreakthroughTrainer, ParticleFilterTrainer, DistillationTrainer
-from snn_research.training.bio_trainer import BioRLTrainer # Correct import
+from snn_research.training.bio_trainer import BioRLTrainer 
 from snn_research.training.quantization import apply_qat, convert_to_quantized_model, apply_spquant_quantization
 from snn_research.training.pruning import apply_sbc_pruning, apply_spatio_temporal_pruning
 from scripts.data_preparation import prepare_wikitext_data
 from snn_research.core.snn_core import SNNCore
-from app.utils import get_auto_device
+from app.utils import get_auto_device, collate_fn # 修正: app.utils からインポート
 import logging
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -47,73 +47,7 @@ logger = logging.getLogger(__name__)
 
 container = TrainingContainer()
 
-def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Callable[[List[Any]], Any]:
-    def collate(batch: List[Any]) -> Any:
-        padding_val = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
-        inputs: List[torch.Tensor] = []
-        targets: List[torch.Tensor] = []
-        logits: List[torch.Tensor] = []
-
-        for item in batch:
-            if isinstance(item, dict):
-                inp = item.get('input_ids')
-                tgt = item.get('labels')
-                if inp is None or tgt is None: continue
-                inputs.append(torch.tensor(inp) if not isinstance(inp, torch.Tensor) else inp)
-                targets.append(torch.tensor(tgt) if not isinstance(tgt, torch.Tensor) else tgt)
-                if is_distillation:
-                    lg = item.get('teacher_logits')
-                    if lg is not None: logits.append(torch.tensor(lg) if not isinstance(lg, torch.Tensor) else lg)
-                    else: logits.append(torch.empty(0))
-
-            elif isinstance(item, tuple) and len(item) >= 2:
-                inp = item[0]
-                tgt = item[1]
-                inputs.append(torch.tensor(inp) if not isinstance(inp, torch.Tensor) else inp)
-                targets.append(torch.tensor(tgt) if not isinstance(tgt, torch.Tensor) else tgt)
-                if is_distillation:
-                    if len(item) >= 3:
-                         lg = item[2]
-                         if lg is not None: logits.append(torch.tensor(lg) if not isinstance(lg, torch.Tensor) else lg)
-                         else: logits.append(torch.empty(0))
-                    else: logits.append(torch.empty(0))
-
-        if not inputs or not targets:
-            if is_distillation:
-                return torch.empty((0, 0), dtype=torch.long), torch.empty((0, 0), dtype=torch.long), torch.empty((0, 0), dtype=torch.long), torch.empty((0, 0, 0), dtype=torch.float32)
-            else:
-                return {
-                    "input_ids": torch.nn.utils.rnn.pad_sequence(inputs, batch_first=True, padding_value=padding_val),
-                    "attention_mask": torch.nn.utils.rnn.pad_sequence([torch.ones_like(i) for i in inputs], batch_first=True, padding_value=0),
-                    "labels": torch.nn.utils.rnn.pad_sequence(targets, batch_first=True, padding_value=-100)
-                }
-
-        padded_inputs = torch.nn.utils.rnn.pad_sequence(inputs, batch_first=True, padding_value=padding_val)
-        padded_targets = torch.nn.utils.rnn.pad_sequence(targets, batch_first=True, padding_value=-100)
-        attention_mask = torch.ones_like(padded_inputs)
-        attention_mask[padded_inputs == padding_val] = 0
-        
-        if not is_distillation:
-            return {
-                "input_ids": padded_inputs,
-                "attention_mask": attention_mask,
-                "labels": padded_targets
-            }
-        
-        padded_logits = torch.nn.utils.rnn.pad_sequence(logits, batch_first=True, padding_value=0.0)
-        
-        seq_len = padded_inputs.shape[1]
-        if padded_targets.shape[1] < seq_len:
-            pad = torch.full((padded_targets.shape[0], seq_len - padded_targets.shape[1]), -100, dtype=padded_targets.dtype, device=padded_targets.device)
-            padded_targets = torch.cat([padded_targets, pad], dim=1)
-        if padded_logits.shape[1] < seq_len:
-            pad = torch.full((padded_logits.shape[0], seq_len - padded_logits.shape[1], padded_logits.shape[2]), 0.0, dtype=padded_logits.dtype, device=padded_logits.device)
-            padded_logits = torch.cat([padded_logits, pad], dim=1)
-            
-        return padded_inputs, attention_mask, padded_targets, padded_logits
-    
-    return collate
-
+# ローカルの collate_fn 定義を削除 (app.utils.collate_fn を使用)
 
 def train(args: argparse.Namespace, config: DictConfig, tokenizer: PreTrainedTokenizerBase) -> None:
     is_distributed = args.distributed
@@ -199,7 +133,9 @@ def train(args: argparse.Namespace, config: DictConfig, tokenizer: PreTrainedTok
         train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
         train_sampler: Optional[DistributedSampler] = DistributedSampler(train_dataset) if is_distributed else None
         
+        # 修正: app.utils.collate_fn を使用
         collate_fn_instance = collate_fn(tokenizer, is_distillation)
+        
         train_loader = DataLoader(train_dataset, batch_size=config.training.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, collate_fn=collate_fn_instance)
         val_loader = DataLoader(val_dataset, batch_size=config.training.batch_size, shuffle=False, collate_fn=collate_fn_instance)
 
@@ -239,7 +175,6 @@ def train(args: argparse.Namespace, config: DictConfig, tokenizer: PreTrainedTok
                     bt_trainer.save_checkpoint(path=checkpoint_path, epoch=epoch, metric_value=val_metrics.get('total', float('inf')), tokenizer_name=config.data.tokenizer_name, config=model_config_dict)
         
         if args.task_name and rank in [-1, 0]:
-             # 継続学習のために、このタスクでの重要度（Fisher行列）を計算して保存
              ewc_weight = OmegaConf.select(config, "training.gradient_based.loss.ewc_weight", default=0.0)
              if ewc_weight > 0:
                  logger.info(f"🔒 Computing EWC Fisher Matrix for task '{args.task_name}'...")
@@ -298,10 +233,8 @@ def main() -> None:
         if args.paradigm:
             OmegaConf.update(base_conf, "training.paradigm", args.paradigm)
 
-        # --- 追加: モデル設定のロード確認 ---
         model_arch = OmegaConf.select(base_conf, "model.architecture_type")
         logger.info(f"🔍 Loaded Model Config: architecture_type = {model_arch}")
-        # -----------------------------------
 
         final_config_dict = cast(Dict[str, Any], OmegaConf.to_container(base_conf, resolve=True))
         if not isinstance(final_config_dict, dict):
@@ -309,7 +242,6 @@ def main() -> None:
         
         container.config.from_dict(final_config_dict)
         
-        # Ensure base_conf is a DictConfig before passing it to train
         if not isinstance(base_conf, DictConfig):
             if isinstance(base_conf, ListConfig):
                  raise TypeError("Root config must be a dictionary (DictConfig), not a list (ListConfig).")
