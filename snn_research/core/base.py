@@ -1,10 +1,9 @@
 # ファイルパス: snn_research/core/base.py
-# Title: SNNモデル 基底クラス (汎用化・拡張版)
+# Title: SNNモデル 基底クラス (パフォーマンス最適化版)
 # Description:
 # - すべてのSNNモデルが継承する基底クラス。
-# - 修正: 特定のニューロンクラス（AdaptiveLIFNeuron等）へのハードコーディング依存を排除。
-#   'total_spikes' バッファを持つ任意のモジュールを自動的に検出し、集計するように変更。
-#   これにより、新しいニューロンタイプを追加してもこのファイルを修正する必要がなくなる。
+# - 修正: get_total_spikes メソッドでの頻繁な GPU-CPU 同期 (.item()) を廃止。
+#   Tensorとして合計し、最後に1回だけ同期することで、学習・推論速度を向上させる。
 
 import torch
 import torch.nn as nn
@@ -46,13 +45,24 @@ class BaseModel(nn.Module):
     def get_total_spikes(self) -> float:
         """
         モデル全体の総スパイク数を計算する。
-        特定のクラスに依存せず、'total_spikes' 属性を持つすべてのサブモジュールを集計する。
+        最適化: Tensorとして加算し、最後に1回だけCPUへ転送(.item())する。
         """
-        total = 0.0
+        total_spikes_tensor = torch.tensor(0.0)
+        
+        # デバイスの特定（最初のパラメータがあればそれを使う）
+        try:
+            device = next(self.parameters()).device
+            total_spikes_tensor = total_spikes_tensor.to(device)
+        except StopIteration:
+            pass # パラメータがない場合はCPUのまま
+
         for module in self.modules():
             if hasattr(module, 'total_spikes') and isinstance(module.total_spikes, torch.Tensor):
-                total += module.total_spikes.item()
-        return total
+                # 加算 (GPU上で行われる)
+                total_spikes_tensor += module.total_spikes
+        
+        # 最後に1回だけ同期して値を返す
+        return total_spikes_tensor.item()
     
     def reset_spike_stats(self) -> None:
         """
