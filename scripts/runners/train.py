@@ -1,18 +1,12 @@
 # ファイルパス: scripts/runners/train.py
-# (修正: train関数呼び出し時にコンテナ設定を初期化するように変更)
+# (修正: TrainingContainer を関数内で初期化し、設定の確実な反映と汚染防止を図る)
 
 import sys
 import os
 
-# ------------------------------------------------------------------------------
-# [Auto-inserted by fix_script_paths.py]
-# プロジェクトルートディレクトリをsys.pathに追加して、snn_researchモジュールを解決可能にする
-# このファイルは scripts/runners/ に配置されていることを想定しています (ルートから2階層下)
-# ------------------------------------------------------------------------------
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
-# ------------------------------------------------------------------------------
 
 import argparse
 import os
@@ -43,16 +37,24 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-container = TrainingContainer()
+# グローバルコンテナ定義を削除
+# container = TrainingContainer() 
 
 def train(args: argparse.Namespace, config: DictConfig, tokenizer: PreTrainedTokenizerBase) -> None:
-    # --- ▼ 追加: 外部から関数として呼ばれた場合のコンテナ初期化 ▼ ---
+    # --- ▼ 修正: コンテナをここで新規作成 ▼ ---
+    container = TrainingContainer()
+    
     if config:
-        # OmegaConfオブジェクトを辞書に変換してコンテナに設定
-        # これを行わないと、container.snn_model() 内で config が空になりエラーになる
+        # Configを辞書に変換して適用
         conf_dict = OmegaConf.to_container(config, resolve=True)
         container.config.from_dict(conf_dict)
-    # --- ▲ 追加 ▲ ---
+        
+        # デバッグ: モデル設定が正しく渡っているか確認
+        arch = conf_dict.get('model', {}).get('architecture_type', 'NOT_FOUND')
+        logger.info(f"🔧 Train Config Loaded. Architecture: {arch}")
+        if arch == 'NOT_FOUND':
+            logger.warning(f"⚠️ Model config looks empty! Keys: {conf_dict.keys()}")
+    # --- ▲ 修正 ▲ ---
 
     is_distributed = args.distributed
     rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -243,8 +245,8 @@ def main() -> None:
         if not isinstance(final_config_dict, dict):
              raise TypeError("Final config is not a dictionary.")
         
-        # main関数での初期化（こちらは既に実装済みだが、train関数への直接呼び出しには影響しない）
-        container.config.from_dict(final_config_dict)
+        # main関数での初期化 (train関数内の初期化と二重になるが問題なし)
+        # container.config.from_dict(final_config_dict)
         
         if not isinstance(base_conf, DictConfig):
             if isinstance(base_conf, ListConfig):
@@ -258,12 +260,14 @@ def main() -> None:
         logger.error(f"Error loading/merging config: {e}")
         sys.exit(1)
 
-    container.wire(modules=[__name__])
+    # グローバルコンテナのワイヤリングは削除し、train関数に任せる
+    # container.wire(modules=[__name__])
     
     try:
-        injected_tokenizer = container.tokenizer()
-    except Exception:
         injected_tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    except Exception:
+        logger.warning("Could not load AutoTokenizer, using simple fallback.")
+        injected_tokenizer = None
 
     train(args, config=base_conf_typed, tokenizer=injected_tokenizer)
 
