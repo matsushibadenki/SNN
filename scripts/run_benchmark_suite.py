@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# (修正: mypy型エラー修正 - import-not-found, var-annotated, assignment)
+# (修正: training configに不足していた eval_interval, log_interval を追加)
 
 import argparse
 import logging
@@ -66,11 +66,11 @@ def ensure_image_benchmark_data(data_path: str) -> None:
 def run_experiment(args: argparse.Namespace) -> None:
     logger.info(f"Starting experiment: {args.experiment} with tag: {args.tag}")
 
-    model_conf_dict: Dict[str, Any] = {} # 型アノテーションを追加
+    model_conf_dict: Dict[str, Any] = {}
     if args.model_config and os.path.exists(args.model_config):
         model_conf_loaded = OmegaConf.load(args.model_config)
         
-        # --- 修正: Config構造の正規化 ---
+        # Config構造の正規化
         if 'architecture_type' in model_conf_loaded:
             model_conf_dict = cast(Dict[str, Any], OmegaConf.to_container(model_conf_loaded, resolve=True))
         elif 'model' in model_conf_loaded:
@@ -94,6 +94,8 @@ def run_experiment(args: argparse.Namespace) -> None:
             "optimizer": "adam",
             "device": "cuda" if torch.cuda.is_available() else "cpu",
             "log_dir": "runs/benchmark",
+            "eval_interval": 1, # 追加: デフォルトの評価間隔
+            "log_interval": 1,  # 追加: デフォルトのログ間隔
             "paradigm": "gradient_based",
             "gradient_based": {
                 "type": "standard",
@@ -118,7 +120,6 @@ def run_experiment(args: argparse.Namespace) -> None:
     if args.batch_size: base_config.training.batch_size = args.batch_size
     if args.config: 
         ext_conf = OmegaConf.load(args.config)
-        # OmegaConf.mergeの戻り値をDictConfigにキャスト
         base_config = cast(DictConfig, OmegaConf.merge(base_config, ext_conf))
 
     # データ準備
@@ -150,7 +151,6 @@ def run_experiment(args: argparse.Namespace) -> None:
                 if not isinstance(base_config, (dict, DictConfig)):
                      base_config = OmegaConf.create(base_config)
                 
-                # train関数の呼び出し（型チェックは動的なためignore）
                 train_module.train(MockArgs(), base_config, tokenizer) # type: ignore
                 logger.info("Training completed.")
             except Exception as e:
