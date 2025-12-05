@@ -1,11 +1,8 @@
 # ファイルパス: snn_research/agent/digital_life_form.py
-# Title: Digital Life Form (Phase 5 Complete Integration)
+# Title: Digital Life Form (Async Fix)
 # Description:
 #   統合認知アーキテクチャの中核。以下の機能を統合し、自律的なライフサイクルを実行する。
-#   1. 倫理的選好 (Ethical Preferences): 知識グラフ(RAG)から禁止事項を取得し、行動を抑制。
-#   2. 能動的推論 (Active Inference): 期待自由エネルギー最小化による行動選択。
-#   3. ニューロシンボリック進化: メタ認知に基づく自己進化。
-#   4. 睡眠と記憶: ArtificialBrainとの連携による記憶の固定化。
+#   - 修正: SelfEvolvingAgentMaster.evolve の非同期化に伴い、呼び出し元に await を追加。
 
 import time
 import logging
@@ -149,7 +146,8 @@ class DigitalLifeForm:
             # 8. 自己進化の検討 (失敗時など)
             if reward < 0 or performance_eval.get("status") in ["knowledge_gap", "capability_gap"]:
                  logging.info(f"🧬 Triggering self-evolution due to low reward or gap...")
-                 evolve_result = self.self_evolving_agent.evolve(performance_eval, internal_state)
+                 # 修正: 非同期メソッド呼び出しのため await を追加
+                 evolve_result = await self.self_evolving_agent.evolve(performance_eval, internal_state)
                  logging.info(f"   - Evolution result: {evolve_result}")
                  break
 
@@ -235,7 +233,8 @@ class DigitalLifeForm:
             
             elif action.startswith("Evolve"):
                 # 明示的な進化アクション
-                evolve_result = self.self_evolving_agent.evolve(performance_eval, internal_state)
+                # 修正: 非同期メソッド呼び出しのため await を追加
+                evolve_result = await self.self_evolving_agent.evolve(performance_eval, internal_state)
                 success = "failed" not in evolve_result.lower()
                 return {"status": "success" if success else "failure", "info": evolve_result}, (0.9 if success else -0.2), ["self_evolver"]
             
