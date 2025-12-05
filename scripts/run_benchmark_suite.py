@@ -1,8 +1,5 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# Title: ベンチマーク実行スイート (データ自動生成対応版)
-# Description: 
-#   指定された実験設定に基づいて、SNN/ANNの学習・評価を実行するスクリプト。
-#   修正: データファイルが存在しない場合に自動生成するロジックを追加し、FileNotFoundErrorを防止。
+# (修正: デフォルト設定に必須キー 'format' を追加)
 
 import argparse
 import logging
@@ -58,7 +55,6 @@ def ensure_benchmark_data(data_path: str) -> None:
         logger.info("Dummy benchmark data generated successfully.")
     except Exception as e:
         logger.error(f"Failed to generate dummy data: {e}")
-        # ファイル作成に失敗しても、後続の処理で明確なエラーが出るようにここでは落とさない
 
 def run_experiment(args: argparse.Namespace) -> None:
     """
@@ -71,7 +67,6 @@ def run_experiment(args: argparse.Namespace) -> None:
         base_config = OmegaConf.load(args.config)
     else:
         # デフォルト設定（configが無い場合）
-        # 修正: 明示的なファイルパスを指定
         base_config = OmegaConf.create({
             "training": {
                 "epochs": args.epochs,
@@ -91,8 +86,9 @@ def run_experiment(args: argparse.Namespace) -> None:
             },
             "model": OmegaConf.load(args.model_config) if args.model_config else {},
             "data": {
-                "path": "data/benchmark_data.jsonl", # 修正: 拡張子付きのパスに変更
-                "tokenizer_name": "gpt2"
+                "path": "data/benchmark_data.jsonl",
+                "tokenizer_name": "gpt2",
+                "format": "json"  # --- ▼ 追加: 必須キー format を指定 ▼ ---
             }
         })
 
