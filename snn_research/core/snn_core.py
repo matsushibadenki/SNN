@@ -1,9 +1,5 @@
 # ファイルパス: snn_research/core/snn_core.py
-# Title: SNN Core Model Factory (完全版)
-# Description:
-# - SNNモデルの構築を一手に引き受けるファクトリクラス。
-# - 修正: `forward` メソッドでの引数重複エラーを防止 (kwargs.popを使用)。
-# - 追加: `visual_cortex` (Bioモデル) と `spiking_vlm` のサポートを追加。
+# (修正: 不明なアーキテクチャタイプの場合にエラーを発生させ、問題を明確にする)
 
 import torch
 import torch.nn as nn
@@ -13,10 +9,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class SNNCore(nn.Module):
-    """
-    SNNモデルの統合インターフェース（ファクトリクラス）。
-    設定辞書を受け取り、適切なアーキテクチャのモデルを構築してラップする。
-    """
+    # ... (init, forward, reset_state は変更なし) ...
     def __init__(
         self,
         config: Dict[str, Any],
@@ -28,10 +21,8 @@ class SNNCore(nn.Module):
         self.vocab_size = vocab_size
         self.backend = backend
         
-        # モデル構築 (遅延インポートにより循環参照を回避)
         self.model: nn.Module = self._build_model()
         
-        # パラメータ数のチェックとログ出力
         param_count = sum(p.numel() for p in self.model.parameters())
         trainable_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         
@@ -42,26 +33,18 @@ class SNNCore(nn.Module):
             logger.info(f"✅ SNNCore built model '{arch_type}' with {param_count:,} parameters ({trainable_count:,} trainable).")
 
     def forward(self, x: Optional[torch.Tensor] = None, **kwargs: Any) -> Any:
-        """
-        順伝播を内部モデルに委譲する。
-        位置引数 x が省略された場合、kwargs から一般的な入力キーを探して解決する。
-        """
         if x is None:
-            # kwargs から入力テンソルを探す（優先順位順）
-            # 見つかった場合は pop して kwargs から削除し、重複エラーを防ぐ
             for key in ['input_ids', 'input_images', 'input_sequence', 'x']:
                 if key in kwargs:
                     x = kwargs.pop(key)
                     break
         
         if x is None:
-            # それでも見つからない場合は kwargs のみで呼び出す（モデル側が対応していることを期待）
             return self.model(**kwargs)
         
         return self.model(x, **kwargs)
     
     def reset_state(self) -> None:
-        """状態のリセットを内部モデルに委譲"""
         if hasattr(self.model, 'reset_state'):
             self.model.reset_state() # type: ignore
         elif hasattr(self.model, 'reset_spike_stats'):
@@ -72,12 +55,15 @@ class SNNCore(nn.Module):
     def _build_model(self) -> nn.Module:
         """
         設定に基づきモデルを構築する。
-        ImportErrorや循環参照を防ぐため、このメソッド内でクラスをインポートする。
         """
-        arch_type = self.config.get('architecture_type', 'spiking_cnn')
+        # デフォルト値を削除し、設定不備を検出
+        arch_type = self.config.get('architecture_type')
         neuron_config = self.config.get('neuron', {})
         time_steps = self.config.get('time_steps', 16)
         
+        if not arch_type:
+            raise ValueError("SNNCore: 'architecture_type' is missing in the configuration. Cannot build model.")
+
         if self.backend != "spikingjelly":
              raise ValueError(f"Unsupported backend: {self.backend}. Only 'spikingjelly' is supported.")
 
@@ -104,6 +90,8 @@ class SNNCore(nn.Module):
                 neuron_config=neuron_config
             )
         
+        # ... (他のモデルタイプは省略せずそのまま維持してください。変更なし) ...
+        # (以下のelifブロックは全て以前の回答と同じ内容を維持)
         elif arch_type == "hybrid_cnn_snn":
             from snn_research.models.cnn.hybrid_cnn_snn_model import HybridCnnSnnModel
             return HybridCnnSnnModel(
@@ -252,7 +240,6 @@ class SNNCore(nn.Module):
                 neuron_config=neuron_config
             )
         
-        # --- 追加: Visual Cortex (Bio Model) ---
         elif arch_type == "visual_cortex":
             from snn_research.models.bio.visual_cortex import VisualCortex
             return VisualCortex(
@@ -265,7 +252,6 @@ class SNNCore(nn.Module):
                 neuron_config=neuron_config
             )
             
-        # --- 追加: Spiking VLM ---
         elif arch_type == "spiking_vlm":
             from snn_research.models.transformer.spiking_vlm import SpikingVLM
             return SpikingVLM(
@@ -276,11 +262,5 @@ class SNNCore(nn.Module):
             )
 
         else:
-            logger.warning(f"Unknown architecture type '{arch_type}'. Falling back to SpikingCNN.")
-            from snn_research.models.cnn.spiking_cnn_model import SpikingCNN
-            num_classes = self.config.get('num_classes', self.vocab_size)
-            return SpikingCNN(
-                vocab_size=num_classes,
-                time_steps=time_steps,
-                neuron_config=neuron_config
-            )
+            # --- 修正: 不明なタイプはエラーにする ---
+            raise ValueError(f"Unknown architecture type '{arch_type}'. Please check your model config file.")
