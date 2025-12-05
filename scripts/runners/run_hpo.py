@@ -1,5 +1,5 @@
 # ファイルパス: scripts/runners/run_hpo.py
-# (修正: json, yaml のインポート漏れを修正)
+# (修正: os モジュールのインポート漏れを修正)
 
 import optuna
 import argparse
@@ -12,9 +12,10 @@ from omegaconf import OmegaConf, DictConfig
 import logging
 from typing import Dict, Any, List
 import re
-# --- ▼ 追加 ▼ ---
 import json
 import yaml
+# --- ▼ 追加 ▼ ---
+import os
 # --- ▲ 追加 ▲ ---
 
 # ロガー設定
