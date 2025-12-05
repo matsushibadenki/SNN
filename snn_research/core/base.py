@@ -1,40 +1,14 @@
 # ファイルパス: snn_research/core/base.py
-# Title: SNNモデル 基底クラス (全ニューロン対応版)
+# Title: SNNモデル 基底クラス (汎用化・拡張版)
 # Description:
-# - BaseModelクラス。
-#   修正点:
-#   - get_total_spikes, reset_spike_stats の対象クラスに
-#     EvolutionaryLeakLIF を追加。
+# - すべてのSNNモデルが継承する基底クラス。
+# - 修正: 特定のニューロンクラス（AdaptiveLIFNeuron等）へのハードコーディング依存を排除。
+#   'total_spikes' バッファを持つ任意のモジュールを自動的に検出し、集計するように変更。
+#   これにより、新しいニューロンタイプを追加してもこのファイルを修正する必要がなくなる。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Union, Type
-
-# すべてのニューロンクラスをインポート
-from .neurons import (
-    AdaptiveLIFNeuron, 
-    IzhikevichNeuron, 
-    ProbabilisticLIFNeuron,
-    GLIFNeuron,
-    TC_LIF,
-    DualThresholdNeuron,
-    ScaleAndFireNeuron,
-    BistableIFNeuron,
-    EvolutionaryLeakLIF # 追加
-)
-
-# 型エイリアス
-SNNNeuronType = Union[
-    AdaptiveLIFNeuron, 
-    IzhikevichNeuron, 
-    ProbabilisticLIFNeuron,
-    GLIFNeuron,
-    TC_LIF,
-    DualThresholdNeuron,
-    ScaleAndFireNeuron,
-    BistableIFNeuron,
-    EvolutionaryLeakLIF
-]
+from typing import Any, Optional
 
 class SNNLayerNorm(nn.Module):
     """
@@ -72,47 +46,28 @@ class BaseModel(nn.Module):
     def get_total_spikes(self) -> float:
         """
         モデル全体の総スパイク数を計算する。
+        特定のクラスに依存せず、'total_spikes' 属性を持つすべてのサブモジュールを集計する。
         """
         total = 0.0
-        # 認識対象のニューロンクラス (修正: EvolutionaryLeakLIFを追加)
-        target_classes = (
-            AdaptiveLIFNeuron, 
-            IzhikevichNeuron, 
-            ProbabilisticLIFNeuron,
-            GLIFNeuron,
-            TC_LIF,
-            DualThresholdNeuron,
-            ScaleAndFireNeuron,
-            BistableIFNeuron,
-            EvolutionaryLeakLIF
-        )
-        
         for module in self.modules():
-            if isinstance(module, target_classes):
-                if hasattr(module, 'total_spikes'):
-                    total += module.total_spikes.item()
+            if hasattr(module, 'total_spikes') and isinstance(module.total_spikes, torch.Tensor):
+                total += module.total_spikes.item()
         return total
     
     def reset_spike_stats(self) -> None:
         """
         スパイク関連の統計情報をリセットする。
         """
-        target_classes = (
-            AdaptiveLIFNeuron, 
-            IzhikevichNeuron, 
-            ProbabilisticLIFNeuron,
-            GLIFNeuron,
-            TC_LIF,
-            DualThresholdNeuron,
-            ScaleAndFireNeuron,
-            BistableIFNeuron,
-            EvolutionaryLeakLIF
-        )
-
         for module in self.modules():
-            if isinstance(module, target_classes):
-                if hasattr(module, 'reset'):
-                    module.reset()
-                # total_spikes が reset() でクリアされない実装の場合に備えて明示的にゼロ化
-                if hasattr(module, 'total_spikes'):
+            # spikingjelly準拠の reset()
+            if hasattr(module, 'reset') and callable(module.reset):
+                module.reset()
+            
+            # 明示的なカウンタリセット (reset() でクリアされない実装への保険)
+            if hasattr(module, 'total_spikes') and isinstance(module.total_spikes, torch.Tensor):
+                with torch.no_grad():
                     module.total_spikes.zero_()
+            
+            if hasattr(module, 'spikes') and isinstance(module.spikes, torch.Tensor):
+                with torch.no_grad():
+                    module.spikes.zero_()
