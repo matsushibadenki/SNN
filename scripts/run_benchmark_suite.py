@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# (修正: training configに不足していた eval_interval, log_interval を追加)
+# (修正: model_config未指定時のデフォルト設定追加)
 
 import argparse
 import logging
@@ -66,6 +66,15 @@ def ensure_image_benchmark_data(data_path: str) -> None:
 def run_experiment(args: argparse.Namespace) -> None:
     logger.info(f"Starting experiment: {args.experiment} with tag: {args.tag}")
 
+    # --- 修正: model_config のデフォルトフォールバック ---
+    if not args.model_config:
+        if "cifar10" in args.experiment:
+            args.model_config = "configs/experiments/cifar10_spikingcnn_config.yaml"
+        else:
+            args.model_config = "configs/models/micro.yaml"
+        logger.info(f"No model config provided. Using default: {args.model_config}")
+    # -------------------------------------------------
+
     model_conf_dict: Dict[str, Any] = {}
     if args.model_config and os.path.exists(args.model_config):
         model_conf_loaded = OmegaConf.load(args.model_config)
@@ -78,6 +87,10 @@ def run_experiment(args: argparse.Namespace) -> None:
         else:
             logger.warning(f"Could not find 'architecture_type' or 'model' key in config. Using root.")
             model_conf_dict = cast(Dict[str, Any], OmegaConf.to_container(model_conf_loaded, resolve=True))
+    
+    if not model_conf_dict:
+        logger.error(f"Failed to load model config from {args.model_config}. Dictionary is empty.")
+        return
         
     arch_type = model_conf_dict.get("architecture_type", "unknown")
     logger.info(f"Detected architecture type: {arch_type}")
@@ -94,8 +107,8 @@ def run_experiment(args: argparse.Namespace) -> None:
             "optimizer": "adam",
             "device": "cuda" if torch.cuda.is_available() else "cpu",
             "log_dir": "runs/benchmark",
-            "eval_interval": 1, # 追加: デフォルトの評価間隔
-            "log_interval": 1,  # 追加: デフォルトのログ間隔
+            "eval_interval": 1,
+            "log_interval": 1,
             "paradigm": "gradient_based",
             "gradient_based": {
                 "type": "standard",
