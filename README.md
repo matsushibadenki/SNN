@@ -1,7 +1,6 @@
 <div align="center">
-<img src="https://via.placeholder.com/150?text=SNN5+Logo" alt="SNN5 Project Logo" width="120" height="120">
 
-# SNN5 Project
+# SNN Project
 
 **Next-Generation High-Efficiency Spiking Neural Networks and Artificial Brain**
 
