@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/snn_core.py
-# (修正: 不明なアーキテクチャタイプの場合にエラーを発生させ、問題を明確にする)
+# (修正: get_total_spikes の委譲追加 & デバッグ情報強化)
 
 import torch
 import torch.nn as nn
@@ -9,7 +9,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 class SNNCore(nn.Module):
-    # ... (init, forward, reset_state は変更なし) ...
     def __init__(
         self,
         config: Dict[str, Any],
@@ -52,23 +51,29 @@ class SNNCore(nn.Module):
         elif hasattr(self.model, 'reset'):
              self.model.reset() # type: ignore
 
+    # --- ▼ 追加: スパイク集計メソッドの委譲 ▼ ---
+    def get_total_spikes(self) -> float:
+        """内部モデルのスパイク総数を取得する"""
+        if hasattr(self.model, 'get_total_spikes'):
+            return self.model.get_total_spikes() # type: ignore
+        return 0.0
+    # --- ▲ 追加 ▲ ---
+
     def _build_model(self) -> nn.Module:
-        """
-        設定に基づきモデルを構築する。
-        """
-        # デフォルト値を削除し、設定不備を検出
         arch_type = self.config.get('architecture_type')
         neuron_config = self.config.get('neuron', {})
         time_steps = self.config.get('time_steps', 16)
         
         if not arch_type:
+            # エラー時に現在のConfigキーを表示してデバッグを支援
+            logger.error(f"SNNCore Config keys: {list(self.config.keys())}")
+            if 'model' in self.config:
+                logger.error(f"Did you mean to pass config['model']? Found 'model' key in config.")
             raise ValueError("SNNCore: 'architecture_type' is missing in the configuration. Cannot build model.")
 
         if self.backend != "spikingjelly":
              raise ValueError(f"Unsupported backend: {self.backend}. Only 'spikingjelly' is supported.")
 
-        # --- アーキテクチャに応じたモデルのインポートと構築 ---
-        
         if arch_type == "spiking_cnn":
             from snn_research.models.cnn.spiking_cnn_model import SpikingCNN
             num_classes = self.config.get('num_classes', self.vocab_size)
@@ -90,8 +95,6 @@ class SNNCore(nn.Module):
                 neuron_config=neuron_config
             )
         
-        # ... (他のモデルタイプは省略せずそのまま維持してください。変更なし) ...
-        # (以下のelifブロックは全て以前の回答と同じ内容を維持)
         elif arch_type == "hybrid_cnn_snn":
             from snn_research.models.cnn.hybrid_cnn_snn_model import HybridCnnSnnModel
             return HybridCnnSnnModel(
@@ -262,5 +265,4 @@ class SNNCore(nn.Module):
             )
 
         else:
-            # --- 修正: 不明なタイプはエラーにする ---
             raise ValueError(f"Unknown architecture type '{arch_type}'. Please check your model config file.")
