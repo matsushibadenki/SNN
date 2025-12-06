@@ -2,14 +2,12 @@
 # (修正)
 # Title: Spiking-MAMBAモデル コア実装
 # Description:
-# - 修正: AdaptiveLIFNeuron の全パラメータ (decay, noise, adaptation等) を
-#   正しく通過させるようにフィルタリングを修正。
+# - 修正: AdaptiveLIFNeuron の全パラメータを正しく通過させるようにフィルタリングを修正。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple, Dict, Any, Optional, Type, Union, cast
-from omegaconf import DictConfig
 import math
 
 from .neurons import (
@@ -75,7 +73,14 @@ class SpikingMambaBlock(nn.Module):
         
         # LIF Conv
         x_conv_flat = x_conv.reshape(B * L, -1)
-        x_conv_spikes, _ = self.lif_conv(x_conv_flat) # type: ignore[operator]
+        
+        # --- 修正: タプル戻り値に対応 ---
+        output = self.lif_conv(x_conv_flat) # type: ignore[operator]
+        if isinstance(output, tuple):
+            x_conv_spikes = output[0]
+        else:
+            x_conv_spikes = output
+            
         x_conv_spikes = x_conv_spikes.reshape(B, L, -1)
         
         # SSM Parameters
@@ -104,7 +109,13 @@ class SpikingMambaBlock(nn.Module):
         out = self.norm(x + self.out_proj(y))
         
         # Output LIF
-        out_spikes, _ = self.lif_out(out.reshape(B * L, -1)) # type: ignore[operator]
+        # --- 修正: タプル戻り値に対応 ---
+        out_output = self.lif_out(out.reshape(B * L, -1)) # type: ignore[operator]
+        if isinstance(out_output, tuple):
+            out_spikes = out_output[0]
+        else:
+            out_spikes = out_output
+            
         return out_spikes.reshape(B, L, -1)
 
 class SpikingMamba(BaseModel):
