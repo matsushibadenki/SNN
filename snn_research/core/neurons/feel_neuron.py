@@ -2,15 +2,13 @@
 # Title: Evolutionary Leak LIF (EL-LIF) ニューロン (修正版)
 # Description:
 #   FEEL-SNN (NeurIPS 2024) に基づく、学習可能な漏れ係数 (Evolutionary Leak) を持つLIFニューロン。
-#   修正: mypy型エラーの解消 (import-untyped, assignment)。
+#   修正: spikes バッファの更新ロジックをベクトル対応に修正。
 
 import torch
 import torch.nn as nn
 import math
 from typing import Tuple, Optional, Union
-# --- ▼ 修正: type: ignore[import-untyped] を追加 ▼ ---
 from spikingjelly.activation_based import base, surrogate # type: ignore[import-untyped]
-# --- ▲ 修正 ▲ ---
 
 class EvolutionaryLeakLIF(base.MemoryModule):
     """
@@ -91,13 +89,11 @@ class EvolutionaryLeakLIF(base.MemoryModule):
         decay = torch.sigmoid(self.decay_logit)
         decay_expanded = self._view_params(decay, x)
         
-        # --- ▼ 修正: 明示的な型アノテーションと代入 ▼ ---
         threshold_expanded: torch.Tensor
         if isinstance(self.v_threshold, nn.Parameter):
             threshold_expanded = self._view_params(self.v_threshold, x)
         else:
             threshold_expanded = self._view_params(self.v_threshold, x)
-        # --- ▲ 修正 ▲ ---
 
         # 2. 膜電位の更新 (Leak + Input)
         self.mem = self.mem * decay_expanded + x
@@ -114,8 +110,21 @@ class EvolutionaryLeakLIF(base.MemoryModule):
         # Hard Reset: 発火したら v_reset に戻す
         self.mem = self.mem * (1.0 - spike_d) + self.v_reset * spike_d
 
-        # 統計更新
-        self.spikes = spike.mean() if spike.numel() > 0 else torch.tensor(0.0).to(spike.device)
+        # 統計更新 (ベクトルとして保持)
+        if spike.ndim > 1:
+            if x.ndim == 4: # (B, C, H, W)
+                 self.spikes = spike.mean(dim=(0, 2, 3))
+            elif x.ndim == 3 and x.shape[2] == self.features: # (B, T, C)
+                 self.spikes = spike.mean(dim=(0, 1))
+            elif x.ndim == 3 and x.shape[1] == self.features: # (B, C, L)
+                 self.spikes = spike.mean(dim=(0, 2))
+            elif x.ndim == 2: # (B, C)
+                 self.spikes = spike.mean(dim=0)
+            else:
+                 self.spikes = spike.mean()
+        else:
+            self.spikes = spike
+            
         with torch.no_grad():
             self.total_spikes += spike.detach().sum()
 
