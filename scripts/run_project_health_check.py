@@ -1,9 +1,10 @@
 # ファイルパス: scripts/run_project_health_check.py
-# Title: SNNプロジェクト 統合健全性チェック (高精度版 v2.1)
+# Title: SNNプロジェクト 統合健全性チェック (高精度版 v2.2)
 # Description: 
 #   各コンポーネントの実行だけでなく、生成された成果物やログ内容を検証し、
 #   システムの健全性をより厳密に診断する。
 #   修正: check_log_contains で大文字小文字を無視するように変更。
+#   修正 (v2.2): 標準出力(stdout)だけでなく標準エラー出力(stderr)も結合して検証するように変更。
 
 import subprocess
 import sys
@@ -25,18 +26,31 @@ def run_command(command: List[str], description: str, validator: Optional[Callab
     logger.info(f"コマンド: {' '.join(command)}")
     
     try:
-        # 実行
+        # 実行 (stdoutとstderrの両方をキャプチャ)
         result = subprocess.run(command, check=True, text=True, capture_output=True)
+        
+        # --- 修正: 検証用に stdout と stderr を結合 ---
+        # 多くのスクリプトはログを stderr に出すため、両方チェックすることで判定漏れを防ぐ
+        combined_output = result.stdout + "\n" + result.stderr
+        # -----------------------------------------
         
         # 標準出力の一部をログに記録（デバッグ用）
         if len(result.stdout) > 500:
-            logger.info(f"出力抜粋: {result.stdout[:200]} ... {result.stdout[-200:]}")
-        else:
-            logger.info(f"出力: {result.stdout}")
+            logger.info(f"出力抜粋(stdout): {result.stdout[:200]} ... {result.stdout[-200:]}")
+        elif result.stdout.strip():
+            logger.info(f"出力(stdout): {result.stdout}")
+            
+        # エラー出力があれば記録
+        if result.stderr.strip():
+            if len(result.stderr) > 500:
+                 logger.info(f"出力抜粋(stderr): {result.stderr[:200]} ...")
+            else:
+                 logger.info(f"出力(stderr): {result.stderr}")
 
         # 追加の検証ロジック
         if validator:
-            if not validator(result.stdout):
+            # 結合した出力に対して検証を行う
+            if not validator(combined_output):
                 logger.error(f"--- ❌ 検証失敗: {description} (出力内容または成果物が期待と異なります) ---")
                 return False
 
@@ -66,11 +80,11 @@ def check_file_exists(filepath: str) -> Callable[[str], bool]:
 
 def check_log_contains(keyword: str, case_sensitive: bool = False) -> Callable[[str], bool]:
     """ログに指定されたキーワードが含まれているかチェックする (デフォルトは大文字小文字無視)"""
-    def _check(stdout: str) -> bool:
+    def _check(output: str) -> bool:
         if case_sensitive:
-            contains = keyword in stdout
+            contains = keyword in output
         else:
-            contains = keyword.lower() in stdout.lower()
+            contains = keyword.lower() in output.lower()
             
         if not contains:
             logger.error(f"  [Check] ログにキーワード '{keyword}' が見つかりません。")
@@ -79,9 +93,9 @@ def check_log_contains(keyword: str, case_sensitive: bool = False) -> Callable[[
 
 def check_training_success(log_dir: str) -> Callable[[str], bool]:
     """学習が正常に進行し、モデルが保存されたかチェックする"""
-    def _check(stdout: str) -> bool:
+    def _check(output: str) -> bool:
         # 1. 損失がNaNになっていないか
-        if "nan" in stdout.lower():
+        if "nan" in output.lower():
             logger.error("  [Check] 損失(Loss)が NaN になっています。")
             return False
         
@@ -97,18 +111,14 @@ def check_training_success(log_dir: str) -> Callable[[str], bool]:
 
 def main():
     logger.info("="*60)
-    logger.info("🩺 SNNプロジェクト 高精度健全性チェック (v2.1)")
+    logger.info("🩺 SNNプロジェクト 高精度健全性チェック (v2.2)")
     logger.info("="*60)
     logger.info(f"📂 作業ディレクトリ: {os.getcwd()}")
-
-    # 前回の実行結果をクリーンアップ（オプション）
-    # shutil.rmtree("runs/smoke_tests", ignore_errors=True)
 
     results = {}
     python_cmd = sys.executable
     
     # --- 1. Train (Gradient) ---
-    # 期待: 学習が完了し、runs/smoke_tests/best_model.pth が生成されること
     log_dir_1 = "runs/smoke_tests"
     results["1. 代理勾配学習 (gradient_based)"] = run_command(
         [python_cmd, "scripts/runners/train.py", 
@@ -122,7 +132,6 @@ def main():
     )
 
     # --- 2. Benchmark ---
-    # 期待: "Accuracy" という単語がログに含まれること (大文字小文字無視)
     results["2. ベンチマーク実行 (Train+Eval)"] = run_command(
         [python_cmd, "scripts/run_benchmark_suite.py", 
          "--experiment", "health_check_comparison",
@@ -135,7 +144,6 @@ def main():
     )
 
     # --- 3. Bio-RL ---
-    # 期待: 報酬履歴を含む出力ディレクトリが作成されること
     rl_out_dir = "runs/health_check_rl"
     results["3. 生物学的学習 (Bio-RL)"] = run_command(
         [python_cmd, "scripts/runners/run_rl_agent.py", 
@@ -146,7 +154,6 @@ def main():
     )
 
     # --- 4. Brain Simulation ---
-    # 期待: "認知サイクル完了" というログが出ること
     results["4. 認知アーキテクチャ (ArtificialBrain)"] = run_command(
         [python_cmd, "scripts/runners/run_brain_simulation.py", 
          "--prompt", "Health check prompt", 
@@ -156,7 +163,6 @@ def main():
     )
 
     # --- 5. Efficiency Report ---
-    # 期待: "Total Spikes" というログが出ること
     results["5. 効率レポート (Sparsity & T)"] = run_command(
         [python_cmd, "scripts/report_sparsity_and_T.py", 
          "--model_config", "configs/models/micro.yaml", 
@@ -166,7 +172,6 @@ def main():
     )
 
     # --- 6. BitNet ---
-    # 期待: 学習が成功すること
     bitnet_log_dir = "runs/smoke_tests_bitnet"
     results["6. 1.58bit BitNet学習 (BitRWKV)"] = run_command(
         [python_cmd, "scripts/runners/train.py", 
@@ -180,14 +185,12 @@ def main():
         validator=check_training_success(bitnet_log_dir)
     )
 
-    # エキスパート登録（依存関係のため実行、検証は簡易）
+    # エキスパート登録
     run_command([python_cmd, "scripts/register_demo_experts.py"], "  (MoE Setup: エキスパート登録)")
 
     # --- 7. FrankenMoE ---
-    # 期待: health_check_moe.yaml が configs/models/ に生成されること
     moe_config_name = "health_check_moe.yaml"
     moe_config_path = os.path.join("configs", "models", moe_config_name)
-    
     if os.path.exists(moe_config_path): os.remove(moe_config_path)
 
     results["7. FrankenMoE 構成ビルド"] = run_command(
@@ -199,9 +202,7 @@ def main():
     )
 
     # --- 8. ANN-SNN Conversion ---
-    # 期待: 変換後のモデルファイルが生成されること
     conv_snn_path = "runs/converted_snn.pth"
-    # ダミーANNのパス（存在チェック）
     dummy_ann_path = "runs/dummy_ann.pth"
     if not os.path.exists(dummy_ann_path):
         import torch
@@ -215,11 +216,11 @@ def main():
          "--method", "cnn-convert", 
          "--dry-run"], 
         "8. ANN-SNN 変換 (Dry Run)",
+        # 修正: バリデータが stderr も含めてチェックするようになったため、これでパスするはず
         validator=lambda x: "SNNモデルと設定の準備が完了しました" in x
     )
 
     # --- 9. GraphRAG ---
-    # 期待: ベクトルストアディレクトリが生成されること
     vec_store_path = "runs/health_check_vec_store"
     results["9. GraphRAG 知識追加"] = run_command(
         [python_cmd, "snn-cli.py", "knowledge", "add", 
@@ -230,7 +231,6 @@ def main():
     )
 
     # --- 10. Hardware Compiler ---
-    # 期待: ハードウェア設定YAMLが生成されること
     hw_config_path = "runs/health_check_hardware.yaml"
     hw_compile_code = """
 from snn_research.core.snn_core import SNNCore
@@ -258,16 +258,15 @@ compiler.compile(model, 'runs/health_check_hardware.yaml')
         validator=check_log_contains("Verification Complete")
     )
     
-    # --- その他のデモ系 (簡易チェック) ---
+    # --- 12. 自律エージェント ---
     results["12. 自律エージェント (Task Solver)"] = run_command(
         [python_cmd, "scripts/runners/run_agent.py", "--task_description", "health_check_task", "--force_retrain", "--model_config", "configs/models/micro.yaml", "--unlabeled_data_path", "data/smoke_test_data.jsonl"], 
         "12. 自律エージェント (Task Solver)",
         validator=check_log_contains("TASK COMPLETED")
     )
 
-    # 最終結果集計
     logger.info("="*60)
-    logger.info("🩺 統合健全性チェック完了 (高精度版 v2.1)")
+    logger.info("🩺 統合健全性チェック完了 (高精度版 v2.2)")
     logger.info("="*60)
     
     passed_count = sum(1 for v in results.values() if v)
