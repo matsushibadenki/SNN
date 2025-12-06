@@ -1,262 +1,238 @@
-<div align="center">
+\<div align="center"\>
 
-# SNN Project
+# **SNN Project: The Artificial Brain**
 
-**Next-Generation High-Efficiency Spiking Neural Networks and Artificial Brain**
+**Next-Generation Neuromorphic AI & Neuro-Symbolic OS**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[🇺🇸 English](https://www.google.com/search?q=%23english) | [🇯🇵 日本語](https://www.google.com/search?q=%23japanese)
 
-[🇺🇸 English](#english) | [🇯🇵 日本語](#japanese)
+\</div\>
 
-</div>
+\<a id="english"\>\</a\>
 
----
+## **🚀 Vision: "The Brain as an Operating System"**
 
-<a id="english"></a>
+**"Realizing an Artificial Brain that learns, sleeps, and evolves."**
 
-## 🚀 Project Overview
+The **SNN Project** is an open-source initiative to build a comprehensive "Artificial Brain" architecture. We are moving beyond simple neural network models to create a **Neuromorphic OS** where multiple cognitive modules (Vision, Language, Motor control) compete for resources and consciousness, just like in biological brains.
 
-**"Realizing next-generation AI that thinks, learns, and adapts autonomously with high efficiency, just like the human brain."**
+Our goal is to overcome the limitations of traditional ANNs (massive energy consumption, catastrophic forgetting) by combining **Spiking Neural Networks (SNN)**, **Neuro-Symbolic AI**, and **Biologically Plausible Learning**.
 
-The **SNN Project** is an open-source initiative to build an "Artificial Brain" that combines biological plausibility with advanced cognitive functions, based on energy-efficient Spiking Neural Networks (SNN).
+### **🏆 Key Achievements & Features**
 
-To overcome the issues of "power consumption due to massive scaling" and "difficulty in re-learning" faced by traditional ANNs, we have adopted an innovative architecture that combines **FrankenMoE** (Patchwork Mixture of Experts), **1.58-bit quantization**, and **GraphRAG**.
+* **🧠 Cognitive Architecture:** Implements the Global Workspace Theory (GWT). Modules for perception, emotion, and memory compete for the "seat of consciousness."  
+* **💤 Sleep & Consolidation:** A system where short-term memories (Hippocampus) are transferred to long-term synaptic weights (Cortex) during "sleep cycles," converting explicit knowledge into intuition.  
+* **🧟 Spiking FrankenMoE:** A dynamic "Patchwork" architecture that integrates existing small models (MicroLMs) to act as a single massive brain.  
+* **📚 GraphRAG Memory:** A neuro-symbolic memory system that allows for instant knowledge correction and logical reasoning via Knowledge Graphs.  
+* **⚡ High-Efficiency SNN:** Achieved **5.38%** spike rate with **1.58-bit quantization** (BitNet), enabling extreme energy efficiency suitable for edge devices.
 
-### 🏆 Key Achievements
+## **🛠️ Core Components**
 
-- **Spiking FrankenMoE:** Established an architecture that dynamically combines existing small models (MicroLMs) as components to behave like a single massive model.
-- **Neuro-symbolic GraphRAG:** Extracts knowledge triples (Subject-Predicate-Object) from natural language and stores them in a structured knowledge graph. Allows for knowledge correction without re-training.
-- **1.58-bit Spiking RWKV:** An ultra-lightweight expert model that quantizes weights to {-1, 0, 1}, achieving sparsity and extreme energy efficiency.
-- **High-Efficiency SNN:** Achieved a spike rate of **5.38%** (clearing the SOTA standard of < 7%).
+### **1\. Artificial Brain Kernel**
 
-## 🛠️ Key Features
+* **Global Workspace:** The central hub where information is broadcasted.  
+* **Astrocyte Network:** A resource manager that monitors energy (spike rates) and regulates module activity (Homeostasis).  
+* **Self-Evolving Agent:** An autonomous agent that rewrites its own code and parameters based on meta-cognition.
 
-### 1. FrankenMoE & Model Management
+### **2\. Learning & Plasticity**
 
-- **Expert Integration:** Integrates MicroLMs with different areas of expertise, such as calculation, history, and science.
-- **Lifecycle Management:** `manage_models.py` automatically organizes and selects models as they increase in number.
-- **1.58-bit Quantization:** Creates "disposable" ultra-lightweight models dedicated to specific tasks.
+* **Deep Bio-Calibration:** Translates ANN weights to SNNs for high-performance initialization.  
+* **Causal Trace Learning:** A gradient-free learning rule that captures causal relationships in spike trains.  
+* **Active Inference:** Agents minimize "Free Energy" (Surprise) to explore and adapt to the environment.
 
-### 2. Cognitive Architecture (Artificial Brain)
+### **3\. Neuro-Symbolic Integration**
 
-- **Global Workspace Theory (GWT):** Modules for perception, emotion, and memory compete for the "seat of consciousness."
-- **GraphRAG Memory System:** Combines vector search and graph structures to realize accurate memory recall and modification aligned with context.
-- **Intrinsic Motivation:** Autonomously determines behavioral goals based on curiosity and boredom.
+* **Symbol Grounding:** Connects neural patterns (attractors) to symbolic concepts in the Knowledge Graph.  
+* **Neuro-Symbolic Feedback Loop:** A cycle where language interaction updates the graph, and sleep updates the neural weights.
 
-### 3. High-Efficiency SNN Learning Infrastructure
+## **📦 Installation**
 
-- **Predictive Coding SNN:** Unique layer structure incorporating predictive coding theory.
-- **Hybrid Learning:** Supports biological learning rules such as Surrogate Gradient Method, Knowledge Distillation, and STDP/BCM.
-
-## 📦 Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/matsushibadenki/SNN.git
+\# Clone the repository  
+git clone \[https://github.com/matsushibadenki/SNN.git\](https://github.com/matsushibadenki/SNN.git)  
 cd SNN
 
-# Create a virtual environment
-python -m venv .venv
+\# Create a virtual environment  
+python \-m venv .venv
 
-# Activate the virtual environment
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+\# Activate the virtual environment  
+source .venv/bin/activate  \# Windows: .venv\\Scripts\\activate
 
-# Install dependencies
-pip install -r requirements.txt
-```
+\# Install dependencies  
+pip install \-r requirements.txt
 
-## 🚦 Quick Start
+## **🚦 Quick Start**
 
-### 1. Building and Running FrankenMoE
+### **1\. Launch the Artificial Brain (Simulation)**
 
-```bash
-# Register expert models (for demo purposes)
-python scripts/register_bitnet_expert.py
-python scripts/register_demo_experts.py
+Run a cognitive simulation where the brain perceives, thinks, and acts.
 
-# Create FrankenMoE configuration file
-python scripts/manage_models.py build-moe --keywords "science,history,calculation" --output my_moe.yaml
+\# Register expert models (for demo purposes)  
+python scripts/register\_bitnet\_expert.py  
+python scripts/register\_demo\_experts.py
 
-# Launch the Artificial Brain (Request a calculation task)
-python scripts/runners/run_brain_simulation.py --model_config configs/models/my_moe.yaml --prompt "Calculate 1+1"
-```
+\# Create FrankenMoE configuration  
+python scripts/manage\_models.py build-moe \--keywords "science,history,calculation" \--output my\_moe.yaml
 
-### 2. Dialogue with the Artificial Brain (GraphRAG Experience)
+\# Run the Brain Simulation  
+python scripts/runners/run\_brain\_simulation.py \--model\_config configs/models/my\_moe.yaml \--prompt "Calculate 1+1"
 
-```bash
-python scripts/observe_brain_thought_process.py --model_config configs/models/micro.yaml
+### **2\. Experience GraphRAG & Consciousness**
 
-# Input example: "Cats are felines." (Knowledge will be stored in the graph)
-```
+Interact with the brain and observe its internal thought process.
 
-## 🗺️ Roadmap
+python scripts/observe\_brain\_thought\_process.py \--model\_config configs/models/micro.yaml
 
-- ✅ **Phase 1: Foundation Building & Efficiency** (Completed)
-- ✅ **Phase 2: Cognitive Architecture & Knowledge Adaptation** (Completed) - GraphRAG, Symbol Grounding
-- 🔄 **Phase 3: Scaling & Hybrid Intelligence** (In Progress) - FrankenMoE, 1.58bit RWKV
-- 📅 **Phase 4: Practical Application & Ecosystem** (Planned)
+\# Input example: "Cats are felines." (Knowledge will be stored in the graph)
 
-## 📂 Directory Structure
+## **🗺️ Roadmap (Summary)**
 
-```
-SNN/
-├── app/                    # Application Layer (UI, DI Container)
-├── configs/                # Configuration Files (Model Definitions, MoE Configs)
-├── snn_research/           # Core Library
-│   ├── models/
-│   │   └── experimental/
-│   │       └── moe_model.py         # FrankenMoE Implementation
-│   ├── cognitive_architecture/
-│   │   └── rag_snn.py               # GraphRAG Implementation
-│   └── models/
-│       └── transformer/
-│           └── spiking_rwkv.py      # 1.58bit RWKV Implementation
-└── scripts/                # Execution Scripts (Training, Management, Diagnostics)
-    └── manage_models.py    # Model Lifecycle Management
-```
+* ✅ **Phase 1-3:** Foundation, Cognitive Architecture, Scaling (Completed)  
+* ✅ **Phase 4:** Autonomous Intelligence (Completed)  
+* 🔄 **Phase 5: Neuro-Symbolic Evolution (Current)** \- Sleep Consolidation, Real-time Knowledge Editing.  
+* 📅 **Phase 6:** Hardware Native Transition \- Moving from GPU simulation to Event-Driven Kernels.  
+* 📅 **Phase 7:** The "Brain" OS \- Multi-agent competition and resource management.
 
-## 🤝 Contributing
+See [doc/ROADMAP.md](https://www.google.com/search?q=doc/ROADMAP.md) for details.
 
-Bug reports, feature suggestions, and pull requests are welcome!
+## **📂 Directory Structure**
 
-If you wish to participate in development, please refer to `doc/SNN開発:プロジェクト機能テスト コマンド一覧.md` and perform tests before submitting.
+SNN/  
+├── app/                    \# Application Layer (UI, DI Container)  
+├── configs/                \# Configuration Files  
+├── snn\_research/           \# Core Library  
+│   ├── cognitive\_architecture/ \# Brain Modules (Cortex, Hippocampus, etc.)  
+│   ├── core/                   \# SNN Kernels (Neurons, STDP, Attention)  
+│   ├── agent/                  \# Autonomous Agents & Life Forms  
+│   └── hardware/               \# Neuromorphic Compiler  
+└── scripts/                \# Execution Scripts
 
-## 📜 License
+## **🤝 Contributing**
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+We welcome contributions to build the future of AI\! Please refer to doc/SNN開発:プロジェクト機能テスト コマンド一覧.md for testing protocols.
 
-## 📧 Contact
+## **📜 License**
 
-For questions or collaboration inquiries, please open an issue or contact the maintainers.
+MIT License
 
-<div align="right">
+\<div align="right"\>
 
-[⬆️ Back to Top](#english)
+[⬆️ Back to Top](https://www.google.com/search?q=%23english)
 
-</div>
+\</div\>
 
----
+\<a id="japanese"\>\</a\>
 
-<a id="japanese"></a>
+## **🚀 ビジョン: "OSとしての脳"**
 
-## 🚀 プロジェクト概要
+**"学習し、眠り、進化する『人工脳』の実現"**
 
-**"ヒトの脳のように高効率で、自律的に思考・学習・適応する次世代人工知能の実現"**
+**SNNプロジェクト**は、単なるAIモデルの開発を超え、ヒトの脳のように複数の認知モジュール（視覚、言語、運動など）がリソースと意識の座を競い合う\*\*「ニューロモーフィックOS（脳型オペレーティングシステム）」\*\*の構築を目指すオープンソースプロジェクトです。
 
-**SNNプロジェクト**は、エネルギー効率に優れたスパイキングニューラルネットワーク (SNN) を基盤とし、生物学的妥当性と高度な認知機能を併せ持つ「人工脳」を構築するオープンソースプロジェクトです。
+従来のANNが抱える「巨大な電力消費」と「再学習の困難さ」を克服するため、**スパイキングニューラルネットワーク(SNN)**、**ニューロシンボリックAI**、そして**生物学的学習則**を融合させた革新的なアーキテクチャを採用しています。
 
-従来のANNが抱える「巨大化による電力消費」と「再学習の困難さ」を克服するため、**FrankenMoE** (継ぎ接ぎモデル) と **1.58bit量子化**、そして **GraphRAG** を組み合わせた革新的なアーキテクチャを採用しています。
+### **🏆 主な成果と特徴**
 
-### 🏆 主な成果
+* **🧠 認知アーキテクチャ:** グローバルワークスペース理論(GWT)を実装。知覚・感情・記憶などのモジュールが「意識」を求めて競合します。  
+* **💤 睡眠と記憶の固定化:** 短期記憶（海馬）を、睡眠サイクルを通じて長期記憶（大脳皮質のシナプス重み）に転送し、知識を直感へと変換します。  
+* **🧟 Spiking FrankenMoE:** 既存の小さなモデル(MicroLM)を部品として動的に結合し、単一の巨大な脳として振る舞わせる「継ぎ接ぎ」アーキテクチャ。  
+* **📚 GraphRAG記憶システム:** ベクトル検索とナレッジグラフを組み合わせ、文脈に沿った正確な記憶の想起と、対話による即座の知識修正を実現。  
+* **⚡ 超高効率SNN:** **1.58bit量子化** (BitNet) とスパース性を組み合わせ、スパイク率 **5.38%** を達成。エッジデバイスでの自律動作を可能にします。
 
-- **Spiking FrankenMoE:** 既存の小さなモデル(MicroLM)を部品として動的に結合し、単一の巨大モデルのように振る舞わせるアーキテクチャを確立。
-- **ニューロシンボリック・GraphRAG:** 自然言語から知識トリプル(主語-述語-目的語)を抽出し、ナレッジグラフに構造化して保存。再学習なしで知識の修正が可能。
-- **1.58bit Spiking RWKV:** 重みを {-1, 0, 1} の3値に量子化し、スパース性と極限のエネルギー効率を実現した超軽量エキスパートモデル。
-- **高効率SNN:** スパイク率 **5.38%** を達成 (SOTA基準 < 7% をクリア)。
+## **🛠️ コアコンポーネント**
 
-## 🛠️ 主要機能
+### **1\. 人工脳カーネル**
 
-### 1. FrankenMoE & モデル管理
+* **Global Workspace:** 情報のブロードキャストを行う意識の中枢。  
+* **Astrocyte Network:** エネルギー（スパイク率）を監視し、各モジュールの活動レベルを動的に調整（ホメオスタシス）するリソースマネージャ。  
+* **Self-Evolving Agent:** メタ認知に基づいて、自身のソースコードやパラメータを書き換える自律エージェント。
 
-- **エキスパート統合:** 計算、歴史、科学など、異なる得意分野を持つMicroLMを統合。
-- **ライフサイクル管理:** 増え続けるモデルを自動で整理・選抜する `manage_models.py`。
-- **1.58bit量子化:** 特定タスク専用の「使い捨て可能な」超軽量モデルの作成。
+### **2\. 学習と可塑性**
 
-### 2. 認知アーキテクチャ (人工脳)
+* **Deep Bio-Calibration:** ANNの重みをSNNの物理パラメータに変換し、高性能な初期状態を作成。  
+* **Causal Trace Learning:** スパイクの因果連鎖に基づいて学習する、勾配計算不要（Gradient-free）の学習則。  
+* **Active Inference (能動的推論):** 自由エネルギー（驚き）を最小化するように、自律的に環境を探索・行動します。
 
-- **Global Workspace Theory (GWT):** 知覚、感情、記憶などのモジュールが意識の座を競い合う。
-- **GraphRAG記憶システム:** ベクトル検索とグラフ構造を併用し、文脈に沿った正確な記憶の想起と修正を実現。
-- **内発的動機付け:** 好奇心や退屈に基づいて自律的に行動目標を決定。
+### **3\. 神経-記号融合 (Neuro-Symbolic)**
 
-### 3. 高効率SNN学習基盤
+* **Symbol Grounding:** 神経活動パターン（アトラクタ）と、知識グラフ上の概念（シンボル）を動的に結びつけます。  
+* **Neuro-Symbolic Feedback Loop:** 言語対話で知識グラフを更新し、睡眠でそれをSNNの重みに焼き付ける循環ループ。
 
-- **Predictive Coding SNN:** 予測符号化理論を取り入れた独自のレイヤー構造。
-- **ハイブリッド学習:** 代理勾配法、知識蒸留、STDP/BCMなどの生物学的学習則をサポート。
+## **📦 インストール**
 
-## 📦 インストール
-
-```bash
-# リポジトリのクローン
-git clone https://github.com/matsushibadenki/SNN.git
+\# リポジトリのクローン  
+git clone \[https://github.com/matsushibadenki/SNN.git\](https://github.com/matsushibadenki/SNN.git)  
 cd SNN
 
-# 仮想環境の作成
-python -m venv .venv
+\# 仮想環境の作成  
+python \-m venv .venv
 
-# 仮想環境の有効化
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+\# 仮想環境の有効化  
+source .venv/bin/activate  \# Windows: .venv\\Scripts\\activate
 
-# 依存関係のインストール
-pip install -r requirements.txt
-```
+\# 依存関係のインストール  
+pip install \-r requirements.txt
 
-## 🚦 クイックスタート
+## **🚦 クイックスタート**
 
-### 1. FrankenMoEの構築と実行
+### **1\. 人工脳シミュレーションの起動**
 
-```bash
-# エキスパートモデルの登録 (デモ用)
-python scripts/register_bitnet_expert.py
-python scripts/register_demo_experts.py
+脳が知覚し、思考し、行動する様子をシミュレートします。
 
-# FrankenMoE構成ファイルの作成
-python scripts/manage_models.py build-moe --keywords "science,history,calculation" --output my_moe.yaml
+\# エキスパートモデルの登録 (デモ用)  
+python scripts/register\_bitnet\_expert.py  
+python scripts/register\_demo\_experts.py
 
-# 人工脳の起動 (計算タスクの依頼)
-python scripts/runners/run_brain_simulation.py --model_config configs/models/my_moe.yaml --prompt "1+1の計算をして"
-```
+\# FrankenMoE構成ファイルの作成  
+python scripts/manage\_models.py build-moe \--keywords "science,history,calculation" \--output my\_moe.yaml
 
-### 2. 人工脳との対話 (GraphRAG体験)
+\# 人工脳の起動 (計算タスクの依頼)  
+python scripts/runners/run\_brain\_simulation.py \--model\_config configs/models/my\_moe.yaml \--prompt "1+1の計算をして"
 
-```bash
-python scripts/observe_brain_thought_process.py --model_config configs/models/micro.yaml
+### **2\. 思考プロセスの観察 (GraphRAG体験)**
 
-# 入力例: "猫は猫科です" (知識がグラフに保存されます)
-```
+人工脳と対話し、その思考や感情の変化、記憶の形成過程を観察します。
 
-## 🗺️ ロードマップ
+python scripts/observe\_brain\_thought\_process.py \--model\_config configs/models/micro.yaml
 
-- ✅ **フェーズ1: 基盤構築 & 効率化** (完了)
-- ✅ **フェーズ2: 認知アーキテクチャ & 知識適応** (完了) - GraphRAG、シンボルグラウンディング
-- 🔄 **フェーズ3: スケーリング & ハイブリッド知能** (進行中) - FrankenMoE、1.58bit RWKV
-- 📅 **フェーズ4: 実用化 & エコシステム** (計画中)
+\# 入力例: "猫は猫科です" (知識がグラフに保存され、後の推論に影響します)
 
-## 📂 ディレクトリ構造
+## **🗺️ ロードマップ (概要)**
 
-```
-SNN/
-├── app/                    # アプリケーション層 (UI、DIコンテナ)
-├── configs/                # 設定ファイル (モデル定義、MoE設定)
-├── snn_research/           # コアライブラリ
-│   ├── models/
-│   │   └── experimental/
-│   │       └── moe_model.py         # FrankenMoE実装
-│   ├── cognitive_architecture/
-│   │   └── rag_snn.py               # GraphRAG実装
-│   └── models/
-│       └── transformer/
-│           └── spiking_rwkv.py      # 1.58bit RWKV実装
-└── scripts/                # 実行スクリプト (学習、管理、診断)
-    └── manage_models.py    # モデルライフサイクル管理
-```
+* ✅ **Phase 1-3:** 基盤構築、認知アーキテクチャ、スケーリング (完了)  
+* ✅ **Phase 4:** 自律知能 (完了)  
+* 🔄 **Phase 5: Neuro-Symbolic Evolution (進行中)** \- 睡眠による記憶固定化、リアルタイム知識編集。  
+* 📅 **Phase 6:** Hardware Native Transition \- GPUシミュレーションから、イベント駆動カーネルへの移行。  
+* 📅 **Phase 7:** The "Brain" OS \- 複数エージェントの競合とリソース管理を行うOS化。
 
-## 🤝 コントリビューション
+詳細は [doc/ROADMAP.md](https://www.google.com/search?q=doc/ROADMAP.md) をご覧ください。
 
-バグ報告、機能提案、プルリクエストを歓迎します!
+## **📂 ディレクトリ構造**
 
-開発に参加される場合は、`doc/SNN開発:プロジェクト機能テスト コマンド一覧.md` を参照してテストを実施してください。
+SNN/  
+├── app/                    \# アプリケーション層 (UI、DIコンテナ)  
+├── configs/                \# 設定ファイル  
+├── snn\_research/           \# コアライブラリ  
+│   ├── cognitive\_architecture/ \# 脳モジュール (皮質、海馬など)  
+│   ├── core/                   \# SNNカーネル (ニューロン、STDP、Attention)  
+│   ├── agent/                  \# 自律エージェント、デジタル生命体  
+│   └── hardware/               \# ニューロモーフィック・コンパイラ  
+└── scripts/                \# 実行スクリプト
 
-## 📜 ライセンス
+## **🤝 コントリビューション**
 
-本プロジェクトはMITライセンスの下で公開されています。詳細は [LICENSE](LICENSE) ファイルをご覧ください。
+バグ報告、機能提案、プルリクエストを歓迎します！  
+開発に参加される場合は、doc/SNN開発:プロジェクト機能テスト コマンド一覧.md を参照してテストを実施してください。
 
-## 📧 お問い合わせ
+## **📜 ライセンス**
+
+MIT License
+
+## **📧 お問い合わせ**
 
 質問やコラボレーションのお問い合わせは、Issueを開くか、メンテナーまでご連絡ください。
 
-<div align="right">
+\<div align="right"\>
 
-[⬆️ トップに戻る](#japanese)
+[⬆️ トップに戻る](https://www.google.com/search?q=%23japanese)
 
-</div>
+\</div\>
