@@ -1,12 +1,16 @@
 # ファイルパス: app/containers.py
-# (修正: AppContainer の model_registry 設定を動的に変更し、全ての修正を統合)
+# ファイル名: DIコンテナ定義
+# 機能説明: プロジェクト全体の依存関係注入（Dependency Injection）を管理する。
+#          TrainingContainer（学習用）、AgentContainer（エージェント用）、
+#          AppContainer（UI/サービス用）、BrainContainer（統合人工脳用）を定義し、
+#          設定ファイルに基づいてインスタンスを生成・配線する。
 
 import torch
+import os
 from dependency_injector import containers, providers
 from torch.optim import AdamW, Optimizer
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR, LRScheduler
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
-import os
 from typing import TYPE_CHECKING, Dict, Any, cast, Optional, List, Union
 from omegaconf import DictConfig, OmegaConf
 
@@ -14,22 +18,24 @@ from omegaconf import DictConfig, OmegaConf
 from snn_research.core.snn_core import SNNCore
 from app.deployment import SNNInferenceEngine
 from snn_research.training.losses import (
-    CombinedLoss, DistillationLoss, SelfSupervisedLoss, PhysicsInformedLoss, PlannerLoss, ProbabilisticEnsembleLoss
+    CombinedLoss, DistillationLoss, SelfSupervisedLoss, 
+    PhysicsInformedLoss, PlannerLoss, ProbabilisticEnsembleLoss
 )
 from snn_research.training.trainers import (
-    BreakthroughTrainer, DistillationTrainer, SelfSupervisedTrainer, PhysicsInformedTrainer, ProbabilisticEnsembleTrainer, ParticleFilterTrainer, PlannerTrainer
+    BreakthroughTrainer, DistillationTrainer, SelfSupervisedTrainer, 
+    PhysicsInformedTrainer, ProbabilisticEnsembleTrainer, 
+    ParticleFilterTrainer, PlannerTrainer
 )
 from snn_research.training.bio_trainer import BioRLTrainer
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 from snn_research.cognitive_architecture.meta_cognitive_snn import MetaCognitiveSNN
 from snn_research.cognitive_architecture.planner_snn import PlannerSNN
-from .services.chat_service import ChatService
-from .services.image_classification_service import ImageClassificationService
-from .adapters.snn_langchain_adapter import SNNLangChainAdapter
-from snn_research.distillation.model_registry import SimpleModelRegistry, DistributedModelRegistry, ModelRegistry
+from app.services.chat_service import ChatService
+from app.services.image_classification_service import ImageClassificationService
+from app.adapters.snn_langchain_adapter import SNNLangChainAdapter
+from snn_research.distillation.model_registry import SimpleModelRegistry, DistributedModelRegistry
 from app.services.web_crawler import WebCrawler
-from snn_research.learning_rules import ProbabilisticHebbian, get_bio_learning_rule, BioLearningRule, CausalTraceCreditAssignmentEnhancedV2
-from snn_research.core.neurons import ProbabilisticLIFNeuron
+from snn_research.learning_rules import get_bio_learning_rule, ProbabilisticHebbian
 from snn_research.models.bio.simple_network import BioSNN
 from snn_research.rl_env.grid_world import GridWorldEnv
 from snn_research.agent.reinforcement_learner_agent import ReinforcementLearnerAgent
@@ -54,20 +60,15 @@ from snn_research.cognitive_architecture.hybrid_perception_cortex import HybridP
 from snn_research.cognitive_architecture.visual_perception import VisualCortex
 from snn_research.core.cortical_column import CorticalColumn
 from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
-from snn_research.benchmark import TASK_REGISTRY
-from .utils import get_auto_device
 from snn_research.agent.digital_life_form import DigitalLifeForm
 from snn_research.agent.autonomous_agent import AutonomousAgent
 from snn_research.agent.self_evolving_agent import SelfEvolvingAgentMaster
 from snn_research.cognitive_architecture.physics_evaluator import PhysicsEvaluator
 from snn_research.cognitive_architecture.symbol_grounding import SymbolGrounding
+from app.utils import get_auto_device
 
 import logging
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from .adapters.snn_langchain_adapter import SNNLangChainAdapter
-    from snn_research.cognitive_architecture.meta_cognitive_snn import MetaCognitiveSNN
 
 # --- ヘルパー関数 ---
 
@@ -89,7 +90,7 @@ def load_planner_snn(planner_model: PlannerSNN, model_path: Optional[str], devic
         try:
             checkpoint = torch.load(model_path, map_location=device)
             state_dict = checkpoint.get('model_state_dict', checkpoint)
-            planner_model.load_state_dict(state_dict)
+            planner_model.load_state_dict(state_dict, strict=False)
             logger.info(f"✅ Loaded PlannerSNN from '{model_path}'.")
         except Exception as e:
             logger.warning(f"⚠️ Failed to load PlannerSNN: {e}")
@@ -134,20 +135,80 @@ class TrainingContainer(containers.DeclarativeContainer):
     # トレーナー群
     standard_trainer = providers.Factory(
         BreakthroughTrainer, 
+        model=snn_model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        device=device,
+        rank=providers.Object(-1),
+        grad_clip_norm=config.training.gradient_based.grad_clip_norm,
+        use_amp=config.training.gradient_based.use_amp,
+        log_dir=config.training.log_dir,
         criterion=providers.Factory(CombinedLoss, tokenizer=tokenizer, ce_weight=config.training.gradient_based.loss.ce_weight), 
-        grad_clip_norm=config.training.gradient_based.grad_clip_norm, 
-        use_amp=config.training.gradient_based.use_amp, 
-        log_dir=config.training.log_dir, 
         meta_cognitive_snn=meta_cognitive_snn
     )
     
     distillation_trainer = providers.Factory(
         DistillationTrainer, 
+        model=snn_model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        device=device,
+        rank=providers.Object(-1),
+        grad_clip_norm=config.training.gradient_based.grad_clip_norm,
+        use_amp=config.training.gradient_based.use_amp,
+        log_dir=config.training.log_dir,
         criterion=providers.Factory(DistillationLoss, tokenizer=tokenizer, temperature=config.training.gradient_based.distillation.loss.temperature),
-        grad_clip_norm=config.training.gradient_based.grad_clip_norm, 
-        use_amp=config.training.gradient_based.use_amp, 
-        log_dir=config.training.log_dir, 
         meta_cognitive_snn=meta_cognitive_snn
+    )
+
+    physics_informed_trainer = providers.Factory(
+        PhysicsInformedTrainer,
+        model=snn_model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        device=device,
+        rank=providers.Object(-1),
+        grad_clip_norm=config.training.gradient_based.grad_clip_norm,
+        use_amp=config.training.gradient_based.use_amp,
+        log_dir=config.training.log_dir,
+        criterion=providers.Factory(PhysicsInformedLoss, tokenizer=tokenizer)
+    )
+
+    self_supervised_trainer = providers.Factory(
+        SelfSupervisedTrainer,
+        model=snn_model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        device=device,
+        rank=providers.Object(-1),
+        grad_clip_norm=config.training.gradient_based.grad_clip_norm,
+        use_amp=config.training.gradient_based.use_amp,
+        log_dir=config.training.log_dir,
+        criterion=providers.Factory(
+            SelfSupervisedLoss, 
+            tokenizer=tokenizer,
+            prediction_weight=1.0, spike_reg_weight=0.01, mem_reg_weight=0.0
+        )
+    )
+
+    probabilistic_ensemble_trainer = providers.Factory(
+        ProbabilisticEnsembleTrainer,
+        model=snn_model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        device=device,
+        rank=providers.Object(-1),
+        grad_clip_norm=config.training.gradient_based.grad_clip_norm,
+        use_amp=config.training.gradient_based.use_amp,
+        log_dir=config.training.log_dir,
+        criterion=providers.Factory(ProbabilisticEnsembleLoss, tokenizer=tokenizer, ce_weight=1.0, variance_reg_weight=0.1)
+    )
+    
+    particle_filter_trainer = providers.Factory(
+        ParticleFilterTrainer,
+        base_model=providers.Factory(BioSNN, layer_sizes=[10, 5, 2], neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0}, synaptic_rule=providers.Object(None)), # ダミー
+        config=config,
+        device=device
     )
     
     # Bio-RL関連
@@ -177,14 +238,23 @@ class TrainingContainer(containers.DeclarativeContainer):
     
     planner_optimizer = providers.Factory(AdamW, lr=config.training.planner.learning_rate)
     planner_loss = providers.Factory(PlannerLoss)
-    model_registry = providers.Selector(providers.Callable(lambda cfg: cfg.get("model_registry", {}).get("provider", "file"), cfg=config.provided), file=providers.Singleton(SimpleModelRegistry, registry_path=config.model_registry.file.path.or_none()), distributed=providers.Singleton(DistributedModelRegistry, registry_path=config.model_registry.file.path.or_none()))
-    probabilistic_neuron_params = providers.Factory(lambda cfg: cfg.get('training', {}).get('biologically_plausible', {}).get('probabilistic_neuron', {}), cfg=config.provided)
-    probabilistic_learning_rule = providers.Factory(lambda cfg: ProbabilisticHebbian(learning_rate=cfg.get('training', {}).get('biologically_plausible', {}).get('probabilistic_hebbian', {}).get('learning_rate', 0.01), weight_decay=cfg.get('training', {}).get('biologically_plausible', {}).get('probabilistic_hebbian', {}).get('weight_decay', 0.0)) if cfg.get('training', {}).get('biologically_plausible', {}).get('probabilistic_hebbian') else None, cfg=config.provided)
-    probabilistic_model = providers.Factory(BioSNN, layer_sizes=[10, 5, 2], neuron_params=probabilistic_neuron_params.provider, synaptic_rule=probabilistic_learning_rule.provider, homeostatic_rule=providers.Object(None), sparsification_config=config.training.biologically_plausible.adaptive_causal_sparsification.provided)
-    probabilistic_agent = providers.Factory(ReinforcementLearnerAgent, input_size=4, output_size=4, device=device, synaptic_rule=probabilistic_learning_rule.provider, homeostatic_rule=providers.Object(None))
-    probabilistic_trainer = providers.Factory(BioRLTrainer, agent=probabilistic_agent, env=grid_world_env)
-    bio_learning_rule = providers.Factory(get_bio_learning_rule, name=config.training.biologically_plausible.learning_rule, params=config.training.biologically_plausible.provided)
     
+    # Probabilistic
+    probabilistic_learning_rule = providers.Factory(
+        lambda cfg: ProbabilisticHebbian(
+            learning_rate=cfg.get('training', {}).get('biologically_plausible', {}).get('probabilistic_hebbian', {}).get('learning_rate', 0.01),
+            weight_decay=cfg.get('training', {}).get('biologically_plausible', {}).get('probabilistic_hebbian', {}).get('weight_decay', 0.0)
+        ) if cfg.get('training', {}).get('biologically_plausible', {}).get('probabilistic_hebbian') else None, 
+        cfg=config.provided
+    )
+    
+    probabilistic_agent = providers.Factory(
+        ReinforcementLearnerAgent, 
+        input_size=4, output_size=4, device=device, 
+        synaptic_rule=probabilistic_learning_rule, homeostatic_rule=providers.Object(None)
+    )
+    probabilistic_trainer = providers.Factory(BioRLTrainer, agent=probabilistic_agent, env=grid_world_env)
+
     active_inference_agent = providers.Factory(
         ActiveInferenceAgent,
         generative_model=snn_model,
@@ -254,7 +324,7 @@ class AgentContainer(containers.DeclarativeContainer):
         model_registry=model_registry,
         memory=memory,
         web_crawler=web_crawler,
-        meta_cognitive_snn=providers.Callable(lambda tc: tc.meta_cognitive_snn(), tc=training_container.provider),
+        meta_cognitive_snn=providers.Callable(lambda tc: tc.meta_cognitive_snn(), tc=training_container),
         motivation_system=providers.Singleton(IntrinsicMotivationSystem),
         model_config_path=config.model.path.or_none(),
         training_config_path=providers.Object("configs/templates/base_config.yaml")
@@ -273,7 +343,7 @@ class AppContainer(containers.DeclarativeContainer):
         registry_path=providers.Factory(get_registry_path, config=config)
     )
     
-    snn_inference_engine = providers.Factory(SNNInferenceEngine)
+    snn_inference_engine = providers.Factory(SNNInferenceEngine, config=config)
     
     chat_service = providers.Factory(ChatService, snn_engine=snn_inference_engine)
     image_classification_service = providers.Factory(ImageClassificationService, engine=snn_inference_engine)
@@ -375,16 +445,16 @@ class BrainContainer(containers.DeclarativeContainer):
     
     digital_life_form = providers.Singleton(
         DigitalLifeForm,
-        planner=providers.Callable(lambda ac: ac.hierarchical_planner(), ac=agent_container), # type: ignore[name-defined]
-        autonomous_agent=autonomous_agent, # type: ignore[name-defined]
-        rl_agent=rl_agent, # type: ignore[name-defined]
-        self_evolving_agent=self_evolving_agent, # type: ignore[name-defined]
-        motivation_system=motivation_system, # type: ignore[name-defined]
-        meta_cognitive_snn=providers.Callable(lambda ac_instance: cast(TrainingContainer, ac_instance.training_container()).meta_cognitive_snn(), ac_instance=agent_container), # type: ignore[name-defined]
-        memory=providers.Callable(lambda ac: ac.memory(), ac=agent_container), # type: ignore[name-defined]
+        planner=providers.Callable(lambda ac: ac.hierarchical_planner(), ac=agent_container),
+        autonomous_agent=autonomous_agent,
+        rl_agent=rl_agent,
+        self_evolving_agent=self_evolving_agent,
+        motivation_system=motivation_system,
+        meta_cognitive_snn=providers.Callable(lambda ac_instance: cast(TrainingContainer, ac_instance.training_container()).meta_cognitive_snn(), ac_instance=agent_container),
+        memory=providers.Callable(lambda ac: ac.memory(), ac=agent_container),
         physics_evaluator=providers.Singleton(PhysicsEvaluator),
-        symbol_grounding=symbol_grounding, # type: ignore[name-defined]
-        langchain_adapter=app_container.langchain_adapter, # type: ignore[name-defined, attr-defined]
-        global_workspace=global_workspace, # type: ignore[name-defined]
-        active_inference_agent=active_inference_agent # type: ignore[name-defined]
+        symbol_grounding=symbol_grounding,
+        langchain_adapter=app_container.langchain_adapter,
+        global_workspace=global_workspace,
+        active_inference_agent=active_inference_agent
     )
