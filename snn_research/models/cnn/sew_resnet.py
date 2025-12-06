@@ -1,19 +1,18 @@
 # ファイルパス: snn_research/models/cnn/sew_resnet.py
-# Title: SEW (Spike-Element-Wise) ResNet - ロジック修正版
+# Title: SEW (Spike-Element-Wise) ResNet - 修正版
 # Description:
 # - 修正: forwardメソッド内で、get_total_spikes() を set_stateful(False) の前に移動。
+# - 修正: AdaptiveLIFNeuron のパラメータフィルタに v_reset を追加。
 
 import torch
 import torch.nn as nn
 from typing import Tuple, Dict, Any, Type, Optional, List, cast
 import logging
 
-# SNNのコアコンポーネントをインポート
 from snn_research.core.base import BaseModel, SNNLayerNorm
 from snn_research.core.neurons import AdaptiveLIFNeuron, IzhikevichNeuron
 from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
 
-# ロガー設定
 logger = logging.getLogger(__name__)
 
 class SEWResidualBlock(nn.Module):
@@ -151,7 +150,8 @@ class SEWResNet(BaseModel):
         neuron_class: Type[nn.Module]
         if neuron_type_str == 'lif':
             neuron_class = AdaptiveLIFNeuron
-            neuron_params = {k: v for k, v in neuron_params.items() if k in ['tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']}
+            # --- 修正: v_reset を追加 ---
+            neuron_params = {k: v for k, v in neuron_params.items() if k in ['tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step', 'v_reset']}
         elif neuron_type_str == 'izhikevich':
             neuron_class = IzhikevichNeuron
             neuron_params = {k: v for k, v in neuron_params.items() if k in ['a', 'b', 'c', 'd', 'dt']}
