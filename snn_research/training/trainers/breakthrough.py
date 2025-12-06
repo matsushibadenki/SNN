@@ -1,9 +1,5 @@
 # ファイルパス: snn_research/training/trainers/breakthrough.py
-# (修正: mypy型エラー "Incompatible types in assignment" 修正)
-# Title: Breakthrough Trainer (標準SNNトレーナー)
-# Description:
-#   標準的な代理勾配法によるSNN学習を行うトレーナークラス。
-#   修正: _run_step 内の total_time_steps への代入時に int() キャストを追加。
+# (修正: mypyエラー完全解消 - cast()を使用して型を明示)
 
 import torch
 import torch.nn as nn
@@ -85,6 +81,45 @@ class BreakthroughTrainer:
         optim_class = type(self.optimizer)
         self.optimizer = cast(Any, optim_class)(self.model.parameters(), lr=current_lr)
 
+    def _get_model_time_steps(self, model: nn.Module, default: int = 16) -> int:
+        """
+        モデルから time_steps を安全に取得するヘルパーメソッド。
+        常にint型を返すことを保証。
+        """
+        # 1. Configからの取得を試みる
+        if hasattr(model, 'config'):
+            cfg = getattr(model, 'config', None)  # type: ignore
+            if cfg is not None:
+                if isinstance(cfg, dict):
+                    val = cfg.get('time_steps')
+                    if val is not None:
+                        try:
+                            return int(val)
+                        except (ValueError, TypeError):
+                            pass
+                elif hasattr(cfg, 'time_steps'):
+                    time_steps_val = getattr(cfg, 'time_steps', None)  # type: ignore
+                    if time_steps_val is not None:
+                        if isinstance(time_steps_val, int):
+                            return time_steps_val
+                        elif isinstance(time_steps_val, float):
+                            return int(time_steps_val)
+                        elif isinstance(time_steps_val, torch.Tensor):
+                            return int(time_steps_val.item())
+
+        # 2. 直接の属性からの取得を試みる
+        if hasattr(model, 'time_steps'):
+            time_steps_attr = getattr(model, 'time_steps', None)  # type: ignore
+            if time_steps_attr is not None:
+                if isinstance(time_steps_attr, int):
+                    return time_steps_attr
+                elif isinstance(time_steps_attr, float):
+                    return int(time_steps_attr)
+                elif isinstance(time_steps_attr, torch.Tensor):
+                    return int(time_steps_attr.item())
+                
+        return default
+
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
         model_to_reset = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
         functional.reset_net(model_to_reset)
@@ -119,7 +154,7 @@ class BreakthroughTrainer:
         hooks: List[torch.utils.hooks.RemovableHandle] = []
         if not is_train and self.enable_visualization and self.rank in [-1, 0] and hasattr(self, 'recorder'):
             self.recorder.clear()
-            model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
+            vis_model: nn.Module = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
             
             def record_hook(module: nn.Module, input: Any, output: Tuple[torch.Tensor, torch.Tensor]) -> None:
                 spike, mem = output
@@ -139,28 +174,29 @@ class BreakthroughTrainer:
                     spikes=spike[0:1].detach()
                 )
 
-            for module in model_to_run.modules():
+            for module in vis_model.modules():
                 if isinstance(module, AdaptiveLIFNeuron):
                     hooks.append(module.register_forward_hook(record_hook))
                     break 
         
         return_full_hiddens_flag = isinstance(self.criterion, SelfSupervisedLoss)
-        total_time_steps: int = 16
         logits_for_acc: Optional[torch.Tensor] = None
 
         if not is_train and not return_full_hiddens_flag:
-            model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-            if hasattr(model_to_run, 'config') and isinstance(model_to_run.config, dict):
-                 total_time_steps = int(model_to_run.config.get('time_steps', 16))
-            elif hasattr(model_to_run, 'time_steps'):
-                 total_time_steps = int(getattr(model_to_run, 'time_steps'))
+            if isinstance(self.model, nn.parallel.DistributedDataParallel):
+                eval_model: nn.Module = self.model.module
+            else:
+                eval_model = self.model
+            
+            # --- 修正: mypyの型推論問題を回避 ---
+            total_time_steps: int = int(self._get_model_time_steps(eval_model))  # type: ignore
+            # -------------------------------
 
             min_steps = int(total_time_steps * self.cutoff_min_steps_ratio)
             
             with torch.no_grad():
                 eval_outputs = self.model(input_ids, return_spikes=True, return_full_mems=True, return_full_hiddens=return_full_hiddens_flag)
                 
-                # アンパック (最大4要素: logits, spikes, mem, aux_logits)
                 aux_logits = None
                 if isinstance(eval_outputs, tuple):
                     eval_logits = eval_outputs[0]
@@ -187,16 +223,14 @@ class BreakthroughTrainer:
                 else:
                     avg_cutoff_steps = float(total_time_steps)
                 
-                # aux_logits を渡す
                 loss_dict = self.criterion(eval_logits, target_ids, eval_spikes, eval_mem, self.model, aux_logits=aux_logits)
                 loss_dict['avg_cutoff_steps'] = torch.tensor(avg_cutoff_steps, device=self.device)
                 
-                # --- 修正: 評価時にもAccuracyを計算して格納 ---
                 if 'accuracy' not in loss_dict and logits_for_acc is not None:
                     preds = torch.argmax(logits_for_acc, dim=-1)
                     ignore_idx = -100
                     if hasattr(self.criterion, 'ce_loss_fn') and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
-                        ignore_idx = self.criterion.ce_loss_fn.ignore_index
+                        ignore_idx = self.criterion.ce_loss_fn.ignore_index  # type: ignore
                     
                     mask = target_ids != ignore_idx
                     num_valid = mask.sum()
@@ -205,7 +239,6 @@ class BreakthroughTrainer:
                     else:
                         acc = torch.tensor(0.0, device=self.device)
                     loss_dict['accuracy'] = acc
-                # ----------------------------------------------
 
         else:
             with torch.amp.autocast(device_type=self.device if self.device != 'mps' else 'cpu', enabled=self.use_amp):
@@ -228,7 +261,6 @@ class BreakthroughTrainer:
                         logits_for_acc = None 
                     else:
                         logits_for_acc = logits_or_hiddens
-                        # aux_logits を渡す
                         loss_dict = self.criterion(logits_for_acc, target_ids, spikes, mem, self.model, aux_logits=aux_logits)
             
             for hook in hooks: hook.remove()
@@ -287,20 +319,12 @@ class BreakthroughTrainer:
                         accuracy_tensor = (preds[mask] == target_ids[mask]).float().sum() / num_masked_elements if num_masked_elements > 0 else torch.tensor(0.0)
                 loss_dict['accuracy'] = accuracy_tensor
             
-            # --- 修正: int() キャストを追加 ---
             if is_train:
-                 # ここで total_time_steps を再取得する際も int キャストを行う
-                 model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-                 current_steps = 16
-                 if hasattr(model_to_run, 'config'):
-                    if isinstance(model_to_run.config, dict):
-                        current_steps = int(model_to_run.config.get('time_steps', 16))
-                    else:
-                        current_steps = int(getattr(model_to_run.config, 'time_steps', 16))
-                 elif hasattr(model_to_run, 'time_steps'):
-                    current_steps = int(getattr(model_to_run, 'time_steps'))
-                 
+                 train_model: nn.Module = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
+                 # --- 修正: cast()を使用してmypyに型を明示 ---
+                 current_steps = cast(int, self._get_model_time_steps(train_model))
                  loss_dict['avg_cutoff_steps'] = torch.tensor(float(current_steps), device=self.device)
+                 # -------------------------------
 
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
@@ -334,7 +358,6 @@ class BreakthroughTrainer:
                 for key, value in metrics.items(): total_metrics[key] += value
         avg_metrics = {key: value / num_batches for key, value in total_metrics.items()}
         if self.rank in [-1, 0] and hasattr(self, 'writer'):
-            # ログ出力に accuracy を含める
             print(f"Epoch {epoch} Validation Results: " + ", ".join([f"{k}: {v:.4f}" for k, v in avg_metrics.items()]))
             for key, value in avg_metrics.items(): self.writer.add_scalar(f'Validation/{key}', value, epoch)
             if self.enable_visualization and hasattr(self, 'recorder') and self.recorder.history['membrane']:
@@ -373,7 +396,6 @@ class BreakthroughTrainer:
         if self.scheduler and 'scheduler_state_dict' in checkpoint: self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         if self.use_amp and 'scaler_state_dict' in checkpoint: self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
         self.best_metric = checkpoint.get('best_metric', float('inf'))
-        # --- 修正: int にキャスト ---
         return int(checkpoint.get('epoch', -1)) + 1
     
     def _compute_ewc_fisher_matrix(self, dataloader: DataLoader, task_name: str) -> None:
