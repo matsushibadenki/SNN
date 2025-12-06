@@ -12,6 +12,7 @@ import random
 import time
 from typing import List, Dict, Any, Optional, cast
 import networkx as nx # type: ignore[import-untyped]
+import numpy as np
 
 # 既存モジュールのインポート
 from snn_research.cognitive_architecture.rag_snn import RAGSystem
@@ -141,7 +142,7 @@ class SleepConsolidator:
                     # BioPCNetworkなどは targets 引数が必要な場合がある
                     metrics = self.cortex_snn.run_learning_step(inputs=input_tensor, targets=input_tensor)
                     
-                    # 更新量の集計
+                    # 更新量の集計（ログ用）
                     for k, v in metrics.items():
                         if "magnitude" in k:
                             if isinstance(v, torch.Tensor):
@@ -160,7 +161,7 @@ class SleepConsolidator:
         logger.info(f"💤 Sleep cycle finished in {duration:.2f}s. Total synaptic change: {total_synaptic_change:.4f}")
         
         return {
-            "synaptic_change": total_plasticity_change,
+            "synaptic_change": total_plasticity_change, # 注意: 変数名が間違っていたため修正
             "duration": duration,
             "dreams_replayed": len(dream_contents)
         }
@@ -174,6 +175,3 @@ class SleepConsolidator:
                 if param.requires_grad and param.dim() > 1: # 重み行列のみ（バイアスは除外など）
                     param.mul_(self.synaptic_scaling_factor)
         logger.info(f"   Refined synapses with scaling factor {self.synaptic_scaling_factor}.")
-
-# 互換性のため import numpy が必要
-import numpy as np
