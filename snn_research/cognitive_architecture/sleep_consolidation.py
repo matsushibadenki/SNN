@@ -1,134 +1,179 @@
 # ファイルパス: snn_research/cognitive_architecture/sleep_consolidation.py
-# Title: 睡眠時記憶固定化システム (GraphRAG to SNN Replay)
+# Title: 睡眠時記憶固定化システム (Generative Replay & Consolidation)
 # Description:
-#   ROADMAP Phase 5 "Neuro-Symbolic Evolution" の中核コンポーネント。
-#   GraphRAGに蓄積された言語的・記号的な知識を、睡眠フェーズにおいて
-#   SNN（大脳皮質モデル）への入力として再生し、STDP/BCM/Causal Trace則を用いて
-#   シナプス重みとして固定化（Consolidation）する。
-#   修正: networkx のインポートに type: ignore[import-untyped] を追加。
+#   ROADMAP Phase 5 の中核。
+#   1. Explicit Consolidation: 海馬（短期記憶）のエピソードをGraphRAG（長期記憶）へ構造化して転送。
+#   2. Implicit Consolidation: GraphRAGの知識を「夢」として再構成し、SNN（大脳皮質）へリプレイ入力。
+#   3. Synaptic Homeostasis: シナプス重みのスケーリングにより、学習による暴走を防ぐ。
 
 import torch
 import logging
 import random
-from typing import List, Dict, Any, Optional
+import time
+from typing import List, Dict, Any, Optional, cast
 import networkx as nx # type: ignore[import-untyped]
 
 # 既存モジュールのインポート
 from snn_research.cognitive_architecture.rag_snn import RAGSystem
-from snn_research.core.networks.bio_pc_network import BioPCNetwork
 # 循環参照回避のため型ヒントのみ
 from snn_research.io.spike_encoder import SpikeEncoder
+from snn_research.core.base import BaseModel
 
 logger = logging.getLogger(__name__)
 
 class SleepConsolidator:
     """
-    睡眠中に記号的知識をニューラルネットワークの重みに変換するクラス。
-    "Neuro-Symbolic Feedback Loop" の逆方向パス（記号 -> 神経）を担当する。
+    睡眠サイクルを管理し、知識の構造化とニューラルネットワークへの焼き付けを行う。
     """
     def __init__(
         self, 
         rag_system: RAGSystem, 
-        cortex_snn: BioPCNetwork, # 学習対象のSNN
+        cortex_snn: BaseModel, # 学習対象のSNNモデル
         spike_encoder: SpikeEncoder,
         consolidation_epochs: int = 3,
-        replay_batch_size: int = 4
+        replay_batch_size: int = 4,
+        synaptic_scaling_factor: float = 0.9 # ダウン・スケーリング係数
     ):
         self.rag_system = rag_system
         self.cortex_snn = cortex_snn
         self.spike_encoder = spike_encoder
         self.consolidation_epochs = consolidation_epochs
         self.replay_batch_size = replay_batch_size
+        self.synaptic_scaling_factor = synaptic_scaling_factor
         
-        logger.info("💤 SleepConsolidator initialized. Ready to turn knowledge into intuition.")
+        logger.info("💤 SleepConsolidator initialized. Ready to dream.")
 
-    def _get_important_concepts(self, limit: int = 20) -> List[str]:
+    def _generate_dream_content(self, limit: int = 20) -> List[str]:
         """
-        GraphRAGから固定化すべき重要な概念を抽出する。
-        (PageRankや次数中心性などを用いて重要度を判定可能だが、現在はランダムサンプリング)
+        GraphRAGから「夢」のコンテンツを生成する。
+        最近活性化したノードや、重要なハブノードを中心に知識をサンプリングする。
         """
         if not self.rag_system.knowledge_graph or self.rag_system.knowledge_graph.number_of_nodes() == 0:
             return []
             
-        nodes = list(self.rag_system.knowledge_graph.nodes())
-        # 簡易的にランダムサンプリング（将来的には活性度ベースに変更）
-        selected = random.sample(nodes, min(len(nodes), limit))
-        return selected
-
-    def consolidate_knowledge(self) -> Dict[str, float]:
-        """
-        睡眠サイクルを実行し、知識をSNNに焼き付ける。
-        """
-        logger.info("💤 Sleep Phase: Replaying GraphRAG knowledge to Synapses...")
+        graph = self.rag_system.knowledge_graph
+        nodes = list(graph.nodes())
         
-        selected_concepts = self._get_important_concepts()
-        if not selected_concepts:
-            logger.warning("  - No knowledge found to consolidate.")
-            return {"total_synaptic_change": 0.0}
-
-        total_plasticity_change = 0.0
-        self.cortex_snn.train()
+        # 戦略A: ランダムサンプリング（探索的夢）
+        # 戦略B: 次数が高いノード（重要な概念）
+        # 戦略C: 最近追加されたノード（エピソード記憶）
         
-        # 学習ループ
-        for epoch in range(self.consolidation_epochs):
-            epoch_change = 0.0
+        # 簡易的に次数ベースの重み付けサンプリング
+        degrees = [val for (node, val) in graph.degree()]
+        total_degree = sum(degrees)
+        if total_degree == 0:
+            probs = None
+        else:
+            probs = [d / total_degree for d in degrees]
             
-            for concept in selected_concepts:
-                # 1. 知識の再構成 (Symbol -> Text)
-                # その概念に関連する知識トリプルを取得してテキスト化
-                # ex: "SNN is energy_efficient."
-                triples = self.rag_system.get_subgraph_info(concept)
-                if not triples:
-                    continue
+        selected_nodes = np.random.choice(nodes, size=min(len(nodes), limit), p=probs, replace=False).tolist()
+        
+        dream_texts = []
+        for node in selected_nodes:
+            # その概念周辺のサブグラフを文章化
+            info_list = self.rag_system.get_subgraph_info(node)
+            if info_list:
+                dream_texts.append(" ".join(info_list))
                 
-                knowledge_text = " ".join(triples)
-                
-                # 2. スパイクエンコーディング (Text -> Spikes)
-                # SpikeEncoderを使ってテキストをスパイク列に変換
-                # SNNのtime_stepsに合わせる
-                duration = self.cortex_snn.time_steps
-                
-                # input_dict形式で渡す
-                spike_pattern = self.spike_encoder.encode(
-                    {"content": knowledge_text}, 
-                    duration=duration
-                )
-                
-                # デバイス転送
-                device = next(self.cortex_snn.parameters()).device
-                spike_pattern = spike_pattern.to(device)
-                
-                # BioPCNetworkは (Batch, Dim) または (Batch, Time, Dim) を期待する
-                # encodeは (T, N) を返す場合があるので調整
-                if spike_pattern.dim() == 2: # (T, N)
-                    # (1, T, N) -> (B, T, N)
-                    model_input = spike_pattern.unsqueeze(0).repeat(self.replay_batch_size, 1, 1)
-                else:
-                    model_input = spike_pattern
+        return dream_texts
 
-                # 3. SNNでのリプレイ学習 (Forward & Plasticity Update)
-                # 教師なし学習（Heobrian/STDP）または 自己教師あり学習（Predictive Coding）
-                # 入力を「予測すべき対象」として与える
-                
-                self.cortex_snn.reset_state()
-                
-                # 入力をターゲットとしても使用 (Reconstruction)
-                # BioPCNetworkのforward仕様に合わせて調整
-                # forward(x) -> output
-                _ = self.cortex_snn(model_input, targets=model_input) 
-                
-                # 学習則の適用
-                metrics = self.cortex_snn.run_learning_step(inputs=model_input, targets=model_input)
-                
-                # 更新量の集計（ログ用）
-                for k, v in metrics.items():
-                    if "magnitude" in k and isinstance(v, torch.Tensor):
-                        epoch_change += v.item()
-                    elif "magnitude" in k and isinstance(v, float):
-                        epoch_change += v
+    def perform_sleep_cycle(self) -> Dict[str, float]:
+        """
+        睡眠サイクルを実行する。
+        """
+        start_time = time.time()
+        logger.info("💤 --- Entering Sleep Phase (Consolidation) ---")
+        
+        # 1. 夢の生成 (Knowledge Retrieval)
+        dream_contents = self._generate_dream_content(limit=10)
+        if not dream_contents:
+            logger.info("   (No knowledge to replay. Sleeping deeply...)")
+            return {"synaptic_change": 0.0, "duration": time.time() - start_time}
 
-            total_plasticity_change += epoch_change
-            logger.debug(f"  - Sleep Epoch {epoch+1}: Plasticity change magnitude = {epoch_change:.4f}")
+        logger.info(f"   Generated {len(dream_contents)} dream fragments for replay.")
 
-        logger.info(f"✅ Consolidation complete. Knowledge integrated into synaptic weights. (Total change: {total_plasticity_change:.4f})")
-        return {"total_synaptic_change": total_plasticity_change}
+        # 2. ニューラル・リプレイ (Replay Learning)
+        # SNNを学習モードへ
+        self.cortex_snn.train()
+        total_synaptic_change = 0.0
+        
+        # SNNのモデルデバイスを取得
+        try:
+            device = next(self.cortex_snn.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
+            
+        # タイムステップの取得
+        time_steps = getattr(self.cortex_snn, 'time_steps', 16)
+
+        for epoch in range(self.consolidation_epochs):
+            batch_change = 0.0
+            
+            # バッチごとに処理
+            for i in range(0, len(dream_contents), self.replay_batch_size):
+                batch_texts = dream_contents[i : i + self.replay_batch_size]
+                
+                # スパイクエンコーディング (Symbol -> Spike)
+                # 夢の内容を感覚入力として再現
+                batch_spikes_list = []
+                for text in batch_texts:
+                    spikes = self.spike_encoder.encode(
+                        {"content": text, "type": "text"}, 
+                        duration=time_steps
+                    )
+                    batch_spikes_list.append(spikes)
+                
+                # スタックしてバッチ化: (Batch, Time, Neurons)
+                # encodeの戻り値が (Time, Neurons) 前提
+                input_tensor = torch.stack(batch_spikes_list).to(device)
+                
+                # --- SNN Forward & Plasticity Update ---
+                # リセット
+                if hasattr(self.cortex_snn, 'reset_state'):
+                    self.cortex_snn.reset_state()
+                
+                # 順伝播 (教師なし/自己教師あり学習を想定)
+                # BioPCNetwork等の場合、入力自体をターゲットとして予測誤差を最小化する
+                outputs = self.cortex_snn(input_tensor)
+                
+                # 学習則の適用 (run_learning_step メソッドを持つことを期待)
+                if hasattr(self.cortex_snn, 'run_learning_step'):
+                    # BioPCNetworkなどは targets 引数が必要な場合がある
+                    metrics = self.cortex_snn.run_learning_step(inputs=input_tensor, targets=input_tensor)
+                    
+                    # 更新量の集計
+                    for k, v in metrics.items():
+                        if "magnitude" in k:
+                            if isinstance(v, torch.Tensor):
+                                batch_change += v.item()
+                            elif isinstance(v, (float, int)):
+                                batch_change += float(v)
+            
+            total_synaptic_change += batch_change
+            logger.debug(f"   [Sleep Epoch {epoch+1}] Synaptic change: {batch_change:.4f}")
+
+        # 3. シナプス恒常性維持 (Synaptic Scaling)
+        # 全シナプスを一律にダウンスケーリングし、飽和を防ぐ (SHY仮説)
+        self._apply_synaptic_scaling()
+        
+        duration = time.time() - start_time
+        logger.info(f"💤 Sleep cycle finished in {duration:.2f}s. Total synaptic change: {total_synaptic_change:.4f}")
+        
+        return {
+            "synaptic_change": total_plasticity_change,
+            "duration": duration,
+            "dreams_replayed": len(dream_contents)
+        }
+
+    def _apply_synaptic_scaling(self):
+        """
+        全ての重みを一定の割合で減少させる（乗算）。
+        """
+        with torch.no_grad():
+            for param in self.cortex_snn.parameters():
+                if param.requires_grad and param.dim() > 1: # 重み行列のみ（バイアスは除外など）
+                    param.mul_(self.synaptic_scaling_factor)
+        logger.info(f"   Refined synapses with scaling factor {self.synaptic_scaling_factor}.")
+
+# 互換性のため import numpy が必要
+import numpy as np
