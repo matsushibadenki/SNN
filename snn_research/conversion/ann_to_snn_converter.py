@@ -2,7 +2,7 @@
 # Title: ANN-SNN 変換コンバータ (統合最適化版 / 高忠実度版) (修正版)
 # Description:
 # - GGUF/Safetensors形式のANNモデルからSNNへの変換・蒸留を行うコンバータ。
-# - 修正: スタブクラスの__init__メソッドに型ヒントを追加し、mypyのannotation-uncheckedノートを解消。
+# - 修正: Phase 5 (Deep Bio-Calibration) に対応するメタデータ `bio_calibration_status` を追加。
 
 import torch
 import torch.nn as nn
@@ -309,42 +309,37 @@ class AnnToSnnConverter:
         
         # 6. 変換メタデータの保存（Point 3, 8, 9の統合）
         conversion_metadata = {
-            # --- 蒸留の統合 (Point 3, 6) ---
+            # --- 修正: Phase 5 対応メタデータ ---
+            'bio_calibration_status': 'calibrated_with_ecl' if use_ecl else 'standard_conversion',
+            # --------------------------------
             'distillation': {
                 'teacher_model': teacher_model_name or ann_model_name_or_path,
                 'loss_type': 'KL_FinalLogits + MSE_InterFeature', 
                 'surrogate_gradient_hint': 'ATan_or_FastSigmoid', 
                 'peft_fine_tuning_required': True, 
             },
-            # --- 入力／時間符号化 (Point 4) ---
-            'encoding_hint': 'Latency_or_Thresholded_Coding', # Point 4
-            
-            # --- 実行時最適化／量子化 (Point 5, 8, 9) ---
+            'encoding_hint': 'Latency_or_Thresholded_Coding', 
             'runtime_optimization': {
-                'target_quantization_bits': quantization_bits, # Point 5/8
+                'target_quantization_bits': quantization_bits, 
                 'quantization_method': 'BitLinear/INT8' if quantization_bits > 0.0 else 'None',
                 'pruning_ratio': final_pruning_ratio,
                 'hardware_optimization_hint': hardware_target,
-                'time_step_batching_hint': hardware_target in ["Loihi", "TrueNorth"], # Point 9
+                'time_step_batching_hint': hardware_target in ["Loihi", "TrueNorth"],
                 'custom_kernel_hint': ['FUSE_MEM_SPIKE_UPDATE', 'SPARSE_CONV_JUMP_COMPUTATION'], 
             },
-            # --- 損失・正則化 (Point 8) ---
             'regularization_targets': {
-                'target_firing_rate': 0.05, # 活動率正則化
-                'energy_cost_penalty': 0.01, # エネルギー正則化
-                'weight_clip_value': 1.0 # L2/L1/Clip
+                'target_firing_rate': 0.05, 
+                'energy_cost_penalty': 0.01, 
+                'weight_clip_value': 1.0 
             },
-            # --- 評価基準 (Point 9) ---
             'evaluation_metrics': {
                 'primary': 'Accuracy',
                 'profiling': ['SpikeCount_Total', 'Latency_Steps_Mean', 'InferenceTime_ms', 'GPU_Memory_Peak']
             },
-            # --- 正規化処理のヒント (Point 1, 7) ---
             'normalization_compensation': {
-                'RMSNorm_Issue': 'RMSNorm分母の近似/後段閾値スケーリングが別途必要', # Point 1
-                'threshold_calibration_mode': 'Per_Channel_Scale' # Point 7
+                'RMSNorm_Issue': 'RMSNorm分母の近似/後段閾値スケーリングが別途必要', 
+                'threshold_calibration_mode': 'Per_Channel_Scale' 
             },
-            # 変換設定
             'progressive_quantization_stages': progressive_stages,
             'spiking_attention_enabled': use_spiking_attention,
             'ecl_enabled': use_ecl,
@@ -417,6 +412,9 @@ class AnnToSnnConverter:
 
         # 変換メタデータの保存
         conversion_metadata = {
+            # --- 修正: Phase 5 対応メタデータ ---
+            'bio_calibration_status': 'calibrated_with_ecl' if use_ecl else 'standard_conversion',
+            # --------------------------------
             'initial_pruning_ratio': final_pruning_ratio,
             'target_quantization_bits': quantization_bits,
             'hardware_optimization_hint': hardware_target,
