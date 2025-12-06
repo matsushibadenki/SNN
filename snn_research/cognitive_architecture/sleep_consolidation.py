@@ -5,12 +5,13 @@
 #   GraphRAGに蓄積された言語的・記号的な知識を、睡眠フェーズにおいて
 #   SNN（大脳皮質モデル）への入力として再生し、STDP/BCM/Causal Trace則を用いて
 #   シナプス重みとして固定化（Consolidation）する。
+#   修正: networkx のインポートに type: ignore[import-untyped] を追加。
 
 import torch
 import logging
 import random
 from typing import List, Dict, Any, Optional
-import networkx as nx
+import networkx as nx # type: ignore[import-untyped]
 
 # 既存モジュールのインポート
 from snn_research.cognitive_architecture.rag_snn import RAGSystem
