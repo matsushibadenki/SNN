@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 # ファイルパス: snn_research/distillation/model_registry.py
-# (修正: Windows環境対応 - fcntlのインポートエラー回避)
+# (修正: 循環インポート回避)
 #
 # Title: モデルレジストリ
 # Description:
 # - モデルの登録、検索、管理、および動的インスタンス化を行う。
-# - 修正: Windows環境で fcntl が使用できない場合に備え、
-#   try-except ブロックとフォールバック処理を追加。
+# - 修正: SNNCoreのトップレベルインポートを廃止し、遅延インポートに変更。
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Type, cast
@@ -27,8 +26,8 @@ try:
 except ImportError:
     FCNTL_AVAILABLE = False
 
-# SNNCore (統合ファクトリ) をインポート
-from snn_research.core.snn_core import SNNCore
+# SNNCore のトップレベルインポートを削除
+# from snn_research.core.snn_core import SNNCore 
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +63,13 @@ class ModelRegistry(ABC):
         設定ファイル (DictConfig) に基づいてモデルのインスタンスを構築するファクトリメソッド。
         SNNCoreを使用してモデルを構築する。
         """
+        # --- 修正: 遅延インポートで循環参照を回避 ---
+        try:
+            from snn_research.core.snn_core import SNNCore
+        except ImportError:
+            raise ImportError("Failed to import SNNCore in ModelRegistry.")
+        # ----------------------------------------
+
         model_name = model_config.get("name", "unknown_model")
         architecture_type = model_config.get("architecture_type")
         
@@ -244,9 +250,6 @@ class DistributedModelRegistry(SimpleModelRegistry):
                 if os.path.exists(self.registry_path):
                     with open(self.registry_path, 'r', encoding='utf-8') as f:
                         try:
-                            # 既存データを読み込んでから操作を実行するロジックが必要だが、
-                            # ここでは簡易的に operation が全ての責任を持つと仮定するか、
-                            # 単に空のファイルハンドルを渡すなどの調整が必要
                             pass
                         except Exception: pass
                 
