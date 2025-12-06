@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/training/trainers/__init__.py
-# Title: トレーナーパッケージ初期化
+# Title: トレーナーパッケージ初期化 (修正版)
 # Description:
 #   各モジュールに分割されたトレーナークラスをまとめてエクスポートします。
 #   これにより、外部からは `from snn_research.training.trainers import BreakthroughTrainer`
