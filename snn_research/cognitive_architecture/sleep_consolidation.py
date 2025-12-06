@@ -6,9 +6,9 @@
 #   2. Implicit Consolidation: GraphRAGの知識を「夢」として再構成し、SNN（大脳皮質）へリプレイ入力。
 #   3. Synaptic Homeostasis: シナプス重みのスケーリングにより、学習による暴走を防ぐ。
 #
-#   修正: mypyエラーの解消。
-#     - cortex_snn のメソッド呼び出しにおける型エラー ("Tensor" not callable) を修正。
-#     - 未定義変数 total_plasticity_change を total_synaptic_change に修正。
+#   修正: mypyエラーの解消 (v2)。
+#     - cortex_snn のメソッド呼び出しにおける型エラーを、ローカル変数(Any)経由で回避。
+#     - 戻り値の未定義変数名を修正。
 
 import torch
 import logging
@@ -33,7 +33,7 @@ class SleepConsolidator:
     def __init__(
         self, 
         rag_system: RAGSystem, 
-        cortex_snn: Any, # 修正: 型をAnyにしてメソッド呼び出しの柔軟性を持たせる (BaseModelだとreset_state等がない)
+        cortex_snn: Any, # 型をAnyにして柔軟性を持たせる
         spike_encoder: SpikeEncoder,
         consolidation_epochs: int = 3,
         replay_batch_size: int = 4,
@@ -97,23 +97,27 @@ class SleepConsolidator:
 
         logger.info(f"   Generated {len(dream_contents)} dream fragments for replay.")
 
+        # mypy対策: 型をAnyとして扱うためのローカル参照
+        # これにより "Tensor not callable" エラーを回避
+        model_ref: Any = self.cortex_snn
+
         # 2. ニューラル・リプレイ (Replay Learning)
         # SNNを学習モードへ
-        if isinstance(self.cortex_snn, torch.nn.Module):
-            self.cortex_snn.train()
+        if isinstance(model_ref, torch.nn.Module):
+            model_ref.train()
         
         total_synaptic_change = 0.0
         
         # SNNのモデルデバイスを取得
         device = torch.device("cpu")
-        if isinstance(self.cortex_snn, torch.nn.Module):
+        if isinstance(model_ref, torch.nn.Module):
             try:
-                device = next(self.cortex_snn.parameters()).device
+                device = next(model_ref.parameters()).device
             except StopIteration:
                 pass
             
         # タイムステップの取得
-        time_steps = getattr(self.cortex_snn, 'time_steps', 16)
+        time_steps = getattr(model_ref, 'time_steps', 16)
 
         for epoch in range(self.consolidation_epochs):
             batch_change = 0.0
@@ -138,19 +142,17 @@ class SleepConsolidator:
                 
                 # --- SNN Forward & Plasticity Update ---
                 # リセット
-                if hasattr(self.cortex_snn, 'reset_state'):
-                    # 修正: 明示的にメソッドとして呼び出す (mypy対策でAnyキャスト済み)
-                    self.cortex_snn.reset_state()
+                if hasattr(model_ref, 'reset_state'):
+                    model_ref.reset_state()
                 
                 # 順伝播 (教師なし/自己教師あり学習を想定)
                 # BioPCNetwork等の場合、入力自体をターゲットとして予測誤差を最小化する
-                # mypyエラー "Tensor" not callable を回避するため Any として扱う
-                _ = self.cortex_snn(input_tensor) 
+                _ = model_ref(input_tensor) 
                 
                 # 学習則の適用 (run_learning_step メソッドを持つことを期待)
-                if hasattr(self.cortex_snn, 'run_learning_step'):
+                if hasattr(model_ref, 'run_learning_step'):
                     # BioPCNetworkなどは targets 引数が必要な場合がある
-                    metrics = self.cortex_snn.run_learning_step(inputs=input_tensor, targets=input_tensor)
+                    metrics = model_ref.run_learning_step(inputs=input_tensor, targets=input_tensor)
                     
                     # 更新量の集計（ログ用）
                     for k, v in metrics.items():
@@ -170,7 +172,7 @@ class SleepConsolidator:
         duration = time.time() - start_time
         logger.info(f"💤 Sleep cycle finished in {duration:.2f}s. Total synaptic change: {total_synaptic_change:.4f}")
         
-        # 修正: 未定義変数 total_plasticity_change を total_synaptic_change に修正
+        # 修正: 変数名を修正 (total_plasticity_change -> total_synaptic_change)
         return {
             "synaptic_change": total_synaptic_change, 
             "duration": duration,
