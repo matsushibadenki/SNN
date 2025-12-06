@@ -3,8 +3,7 @@
 # Description:
 #   周波数エンコーディングと進化的リークニューロンを組み合わせた堅牢なSNNモデル。
 #   修正内容: 
-#   - 膜電位 (mem) が 0.0 固定だった問題を修正。
-#   - 内部のLIFニューロンから実際の状態を取得するロジックを追加。
+#   - 膜電位 (mem) 取得ロジックを修正 (.v -> .mem)。
 
 import torch
 import torch.nn as nn
@@ -94,8 +93,12 @@ class FEELSNN(BaseModel):
             
         # 修正: ループ終了後に最後のLIF層の膜電位を取得
         # classifier[1] が EvolutionaryLeakLIF であることを前提に取得
-        if len(self.classifier) > 1 and hasattr(self.classifier[1], 'v'):
-            last_mem = self.classifier[1].v # type: ignore
+        if len(self.classifier) > 1:
+            lif_layer = self.classifier[1]
+            if hasattr(lif_layer, 'mem'):
+                last_mem = lif_layer.mem # type: ignore
+            elif hasattr(lif_layer, 'v'):
+                last_mem = lif_layer.v # type: ignore
             
         # ステートフル解除
         for m in self.modules():
