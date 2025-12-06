@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# (修正: model_config未指定時のデフォルト設定追加)
+# (修正: argparse.Namespace を使用)
 
 import argparse
 import logging
@@ -66,20 +66,17 @@ def ensure_image_benchmark_data(data_path: str) -> None:
 def run_experiment(args: argparse.Namespace) -> None:
     logger.info(f"Starting experiment: {args.experiment} with tag: {args.tag}")
 
-    # --- 修正: model_config のデフォルトフォールバック ---
     if not args.model_config:
         if "cifar10" in args.experiment:
             args.model_config = "configs/experiments/cifar10_spikingcnn_config.yaml"
         else:
             args.model_config = "configs/models/micro.yaml"
         logger.info(f"No model config provided. Using default: {args.model_config}")
-    # -------------------------------------------------
 
     model_conf_dict: Dict[str, Any] = {}
     if args.model_config and os.path.exists(args.model_config):
         model_conf_loaded = OmegaConf.load(args.model_config)
         
-        # Config構造の正規化
         if 'architecture_type' in model_conf_loaded:
             model_conf_dict = cast(Dict[str, Any], OmegaConf.to_container(model_conf_loaded, resolve=True))
         elif 'model' in model_conf_loaded:
@@ -128,33 +125,34 @@ def run_experiment(args: argparse.Namespace) -> None:
         }
     })
 
-    # CLI override
     if args.epochs: base_config.training.epochs = args.epochs
     if args.batch_size: base_config.training.batch_size = args.batch_size
     if args.config: 
         ext_conf = OmegaConf.load(args.config)
         base_config = cast(DictConfig, OmegaConf.merge(base_config, ext_conf))
 
-    # データ準備
     data_path = str(base_config.data.path)
     if not os.path.exists(data_path):
         if is_vision: ensure_image_benchmark_data(data_path)
         else: ensure_text_benchmark_data(data_path)
 
-    # 実行
     if not args.eval_only:
         logger.info("Running training via train.py...")
         if 'train' in sys.modules:
             train_module = sys.modules['train']
-            class MockArgs:
-                distributed = False
-                data_path = None
-                task_name = args.experiment
-                resume_path = None
-                load_ewc_data = None
-                use_astrocyte = False
-                backend = "spikingjelly"
             
+            # --- 修正: argparse.Namespace を使用して引数を模倣 ---
+            mock_args = argparse.Namespace(
+                distributed=False,
+                data_path=None,
+                task_name=args.experiment,
+                resume_path=None,
+                load_ewc_data=None,
+                use_astrocyte=False,
+                backend="spikingjelly"
+            )
+            # ---------------------------------------------------
+
             try:
                 from transformers import AutoTokenizer
                 tokenizer = AutoTokenizer.from_pretrained("gpt2")
@@ -164,7 +162,7 @@ def run_experiment(args: argparse.Namespace) -> None:
                 if not isinstance(base_config, (dict, DictConfig)):
                      base_config = OmegaConf.create(base_config)
                 
-                train_module.train(MockArgs(), base_config, tokenizer) # type: ignore
+                train_module.train(mock_args, base_config, tokenizer) # type: ignore
                 logger.info("Training completed.")
             except Exception as e:
                 logger.error(f"Training failed: {e}", exc_info=True)
