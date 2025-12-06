@@ -1,55 +1,44 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# ファイル名: 人工脳統合コア
-# 機能説明: 全ての認知モジュール（知覚、記憶、感情、制御）を統合し、
-#          「意識的認知サイクル (Conscious Cognitive Cycle)」を実行するクラス。
-#          修正: SleepConsolidator を導入し、睡眠中に Neuro-Symbolic Feedback Loop を実行するように変更。
-#          修正: SleepConsolidatorの引数 cortex_snn を cast(Any, ...) で型エラー回避。
+# Title: Artificial Brain Kernel v14.0
+# Description:
+#   人工脳のライフサイクル（覚醒・睡眠・進化）を制御するカーネル。
+#   - 状態管理: Awake, Sleeping, Dreaming
+#   - 認知サイクル: 感覚 -> 記号接地 -> 意識 -> 意思決定 -> 行動
+#   - 恒常性: エネルギー（グルコース）管理と疲労蓄積による睡眠誘導
 
 from typing import Dict, Any, List, Optional, Callable, cast
 import asyncio
-import re
 import torch
-import numpy as np
-import random
+import time
+import logging
 
-# IO and encoding
+# 各コンポーネントのインポート
 from snn_research.io.sensory_receptor import SensoryReceptor
 from snn_research.io.spike_encoder import SpikeEncoder
 from snn_research.io.actuator import Actuator
-# Core cognitive modules
-from .hybrid_perception_cortex import HybridPerceptionCortex
 from .visual_perception import VisualCortex
 from .prefrontal_cortex import PrefrontalCortex
-# Memory systems
 from .hippocampus import Hippocampus
 from .cortex import Cortex
-# Value and action selection
 from .amygdala import Amygdala
 from .basal_ganglia import BasalGanglia
-# Motor control
 from .cerebellum import Cerebellum
 from .motor_cortex import MotorCortex
-# Central hub
 from .global_workspace import GlobalWorkspace
-# Causal Engine
 from .causal_inference_engine import CausalInferenceEngine
-# Motivation System
 from .intrinsic_motivation import IntrinsicMotivationSystem
-# Symbol Grounding
 from .symbol_grounding import SymbolGrounding
-# Sleep Consolidation (New!)
-from .sleep_consolidation import SleepConsolidator # --- 追加 ---
+from .sleep_consolidation import SleepConsolidator
+from .hybrid_perception_cortex import HybridPerceptionCortex
 
-# Utils
 from torchvision import transforms # type: ignore
+
+logger = logging.getLogger(__name__)
 
 class ArtificialBrain:
     """
-    認知アーキテクチャ全体を統合し、「意識的認知サイクル」を制御する人工脳システム。
+    ニューロシンボリック・人工脳システム (v14.0)
     """
-    image_transform: Callable[[Any], torch.Tensor]
-    sleep_consolidator: Optional[SleepConsolidator] # --- 追加 ---
-
     def __init__(
         self,
         global_workspace: GlobalWorkspace,
@@ -67,14 +56,18 @@ class ArtificialBrain:
         cerebellum: Cerebellum,
         motor_cortex: MotorCortex,
         causal_inference_engine: CausalInferenceEngine,
-        symbol_grounding: SymbolGrounding
+        symbol_grounding: SymbolGrounding,
+        sleep_consolidator: Optional[SleepConsolidator] = None
     ):
-        print("🚀 人工脳システムの起動を開始...")
+        logger.info("🚀 Initializing Artificial Brain Kernel v14.0...")
+        
         self.workspace = global_workspace
         self.motivation_system = motivation_system
         self.receptor = sensory_receptor
         self.encoder = spike_encoder
         self.actuator = actuator
+        
+        # Cognitive Modules
         self.perception = perception_cortex
         self.visual_cortex = visual_cortex
         self.pfc = prefrontal_cortex
@@ -86,170 +79,155 @@ class ArtificialBrain:
         self.motor = motor_cortex
         self.causal_engine = causal_inference_engine
         self.symbol_grounding = symbol_grounding
+        self.sleep_consolidator = sleep_consolidator
         
+        # State Variables
         self.cycle_count = 0
         self.is_sleeping = False
+        self.energy_level = 100.0 # 仮想グルコースレベル
+        self.fatigue_level = 0.0  # 疲労度 (睡眠圧)
         
-        # 画像変換パイプライン
-        self.image_transform = cast(Callable[[Any], torch.Tensor], transforms.Compose([
+        # 画像変換
+        self.image_transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
-        ]))
-
-        # --- 追加: 睡眠学習システムの初期化 ---
-        # CortexのSNNモデルに対してリプレイを行う
-        # 注: 本来は Cortex クラスが SNNモデルを管理しているべきだが、
-        # 現状の実装に合わせて PerceptionCortex のカラムを使用する例とする、
-        # または Cortex が BioPCNetwork を持つように拡張する必要がある。
-        # ここでは暫定的に PerceptionCortex の column (SNN) を強化対象とする。
-        if hasattr(self.perception, 'column'):
-             self.sleep_consolidator = SleepConsolidator(
-                 rag_system=self.cortex.rag_system, # type: ignore
-                 # --- 修正: 型不整合を回避するためにAnyでキャスト ---
-                 cortex_snn=cast(Any, self.perception.column), # 知覚野のSNNを強化
-                 spike_encoder=self.encoder
-             )
-        else:
-             print("⚠️ Warning: SNN model for sleep consolidation not found. Sleep learning disabled.")
-             self.sleep_consolidator = None
-        # -------------------------------------
+        ])
         
-        print("✅ 人工脳システムの全モジュールが正常に起動しました。")
+        logger.info("✅ Artificial Brain Kernel ready.")
 
-    def run_cognitive_cycle(self, raw_input: Any):
+    def run_cognitive_cycle(self, raw_input: Any) -> Dict[str, Any]:
+        """
+        1回の認知サイクルを実行する (覚醒時)。
+        """
+        # 1. 状態チェック (睡眠・エネルギー)
         if self.is_sleeping:
-            print("💤 人工脳は睡眠中です。入力を無視します。")
-            return
+            logger.info("💤 Brain is sleeping. Input ignored.")
+            return {"status": "sleeping"}
+            
+        if self.energy_level <= 0:
+            logger.warning("🪫 Energy depleted. Forced sleep initiated.")
+            self.sleep_and_dream()
+            return {"status": "forced_sleep"}
 
         self.cycle_count += 1
-        input_preview = str(raw_input)[:50] + "..." if isinstance(raw_input, str) else type(raw_input).__name__
-        print(f"\n--- 🧠 新しい認知サイクルを開始 ({self.cycle_count}) --- \n入力: {input_preview}")
+        self.energy_level -= 0.5 # 基礎代謝
+        self.fatigue_level += 1.0
         
-        # 1. 感覚入力 (Reception & Perception)
-        sensory_info = self.receptor.receive(raw_input)
-        perception_context = "unknown"
+        cycle_report = {"cycle": self.cycle_count, "input": str(raw_input)[:30]}
+        logger.info(f"\n--- 🧠 Cognitive Cycle #{self.cycle_count} (Energy: {self.energy_level:.1f}%) ---")
 
+        # 2. 知覚 (Perception & Grounding)
+        sensory_info = self.receptor.receive(raw_input)
+        
         if sensory_info['type'] == 'image':
+            # 視覚処理
             try:
-                transformed_img = self.image_transform(sensory_info['content'])
-                image_tensor = transformed_img.unsqueeze(0)
-                self.visual_cortex.perceive_and_upload(image_tensor)
-                perception_context = "visual_input"
+                img_tensor = self.image_transform(sensory_info['content']).unsqueeze(0)
+                self.visual_cortex.perceive_and_upload(img_tensor)
+                # 視覚特徴の接地
+                # (VisualCortexがWorkspaceにアップロードした特徴量を取得して接地)
+                vis_data = self.workspace.get_information("visual_cortex")
+                if vis_data and "features" in vis_data:
+                    self.symbol_grounding.ground_neural_pattern(vis_data["features"], "visual_input")
             except Exception as e:
-                print(f"❌ 視覚処理エラー: {e}")
+                logger.error(f"Visual processing error: {e}")
         else:
-            # テキストまたは数値をスパイク化して知覚野へ
-            duration = 50 # ミリ秒相当
-            spike_pattern = self.encoder.encode(sensory_info, duration=duration) 
+            # 言語/一般処理
+            content_str = str(sensory_info['content'])
+            spike_pattern = self.encoder.encode(sensory_info, duration=16)
             self.perception.perceive_and_upload(spike_pattern)
             
-            # テキストの場合は扁桃体で情動評価も行う
-            if sensory_info['type'] == 'text':
-                self.amygdala.evaluate_and_upload(str(sensory_info['content']))
-            perception_context = f"text_input_{str(raw_input)[:10]}"
+            # 情動評価
+            self.amygdala.evaluate_and_upload(content_str)
+            
+            # 言語情報の接地（観測データとして）
+            self.symbol_grounding.process_observation({"text": content_str}, "text_input")
 
-        # 1c. 記号接地と記憶検索
-        target_info = self.workspace.get_information("visual_cortex") or self.workspace.get_information("perception")
-        if target_info and isinstance(target_info, dict):
-            features = target_info.get('features')
-            if features is not None and isinstance(features, torch.Tensor):
-                self.symbol_grounding.ground_neural_pattern(features, perception_context)
-                self.hippocampus.evaluate_relevance_and_upload(features)
-
-        # 2. 意識のブロードキャスト (Conscious Access)
-        # 各モジュールからの情報を競合させ、最も顕著な情報を全体に共有する
+        # 3. 意識のワークスペース競合 (Global Workspace Theory)
         self.workspace.conscious_broadcast_cycle()
         conscious_content = self.workspace.conscious_broadcast_content
         
-        if conscious_content is not None:
-            # 3. 意思決定と行動計画 (PFC & Basal Ganglia)
-            # 前頭前野は目標を更新し、大脳基底核は具体的な行動を選択する
-            # (これらはWorkspaceを購読しているため、broadcast時に内部状態を更新済み)
-            
-            selected_action = self.basal_ganglia.selected_action
-            
-            # 4. 行動実行 (Action Execution)
-            if selected_action:
-                motor_commands = self.cerebellum.refine_action_plan(selected_action)
-                command_logs = self.motor.execute_commands(motor_commands)
-                self.actuator.run_command_sequence(command_logs)
-                # 自分の行動を観測としてフィードバック
-                self.symbol_grounding.process_observation(selected_action, "action_execution")
+        cycle_report["conscious_content"] = str(conscious_content)[:50] if conscious_content else "None"
 
-            # 5. エピソード記憶の保存
+        # 4. 意思決定と実行 (Action)
+        if conscious_content:
+            # 前頭前野による目標更新
+            self.pfc.handle_conscious_broadcast("workspace", conscious_content)
+            
+            # 大脳基底核による行動選択
+            # (PFCの目標もWorkspace経由でBasalGangliaに伝わる前提)
+            selected_action = self.basal_ganglia.selected_action # BasalGangliaは内部でWorkspaceを購読済み
+            
+            if selected_action:
+                action_name = selected_action.get('action')
+                cycle_report["action"] = action_name
+                logger.info(f"⚡ Action Selected: {action_name}")
+                
+                # 小脳による運動計画
+                motor_commands = self.cerebellum.refine_action_plan(selected_action)
+                # 運動野による実行
+                logs = self.motor.execute_commands(motor_commands)
+                # アクチュエータ出力
+                self.actuator.run_command_sequence(logs)
+                
+                # 行動によるエネルギー消費
+                self.energy_level -= 2.0
+            
+            # 5. 記憶の形成 (Hippocampus)
+            # エピソード記憶を作成
             amygdala_info = self.workspace.get_information("amygdala")
             episode = {
-                'type': 'conscious_experience', 
-                'content': conscious_content, 
-                'source_input': str(raw_input),
-                'emotion': amygdala_info if amygdala_info else {} # 安全に空辞書を渡す
+                "timestamp": time.time(),
+                "input": str(raw_input),
+                "consciousness": conscious_content,
+                "action": selected_action,
+                "emotion": amygdala_info
             }
             self.hippocampus.store_episode(episode)
+            
+            # 6. 因果推論の更新
+            # (CausalInferenceEngineはWorkspaceを購読しており自動更新される)
 
-            # 6. フィードバックと学習 (因果推論・動機付け)
-            prediction_error = 0.9 if self.causal_engine.just_inferred else 0.1
-            self.causal_engine.reset_inference_flag()
-            success_rate = 1.0 if selected_action else 0.0
-            loss = 0.1 # 簡易的な損失値
-        else:
-            print("🤔 意識に上る情報がなく、サイクルをスキップしました。")
-            prediction_error, success_rate, loss = 0.1, 0.0, 0.1
-
-        self.motivation_system.update_metrics(prediction_error, success_rate, 0.0, loss)
-
-        # 7. 睡眠サイクル (一定周期で記憶を整理)
-        if self.cycle_count % 20 == 0:
+        # 7. 睡眠圧のチェック
+        if self.fatigue_level > 50 or (self.hippocampus.working_memory and len(self.hippocampus.working_memory) >= self.hippocampus.capacity):
+            logger.info("🥱 Fatigue high. Initiating sleep cycle...")
             self.sleep_and_dream()
-
-        print("--- ✅ 認知サイクル完了 ---")
+            
+        return cycle_report
 
     def sleep_and_dream(self):
         """
-        睡眠フェーズ。
-        1. 海馬（短期記憶）からGraphRAG（長期記憶）へのエピソード転送。
-        2. GraphRAGからSNNへの知識リプレイ（Neuro-Symbolic Feedback Loop）。
+        睡眠フェーズを実行する。
         """
-        print("\n💤 --- 睡眠モード開始 (Memory Consolidation & Neural Replay) ---")
         self.is_sleeping = True
+        logger.info(f"\n💤 --- SLEEP MODE ACTIVATED (Fatigue: {self.fatigue_level}) ---")
         
-        # Step 1: エピソード記憶の固定化 (Explicit Consolidation)
-        recent_memories = list(self.hippocampus.working_memory)
-        if recent_memories:
-            print(f"  📝 {len(recent_memories)} 個のエピソードをGraphRAGへ構造化中...")
-            for episode in recent_memories:
-                 # 重要な記憶のみを長期記憶へ固定化
-                 # (簡易的にすべて送るが、Cortex側でフィルタリングされる)
-                 self.cortex.consolidate_memory(episode)
-        
-        # 短期記憶をクリア
-        self.hippocampus.clear_memory()
-        
-        # Step 2: 知識のニューラルリプレイ (Implicit Consolidation)
-        # GraphRAGの知識を使ってSNNを微調整する
-        if self.sleep_consolidator:
-            print("  🧠 Neuro-Symbolic Replay: 知識を直感（シナプス重み）に変換中...")
-            metrics = self.sleep_consolidator.consolidate_knowledge()
-            print(f"     -> シナプス可塑性変化: {metrics.get('total_synaptic_change', 0):.4f}")
-        
-        self.is_sleeping = False
-        print("🌅 --- 目覚め (Brain Updated) ---\n")
-
-    def consolidate_memories(self):
-        """手動で記憶の固定化を行うユーティリティ"""
+        # 1. 記憶の固定化 (Explicit)
+        # 海馬から重要なエピソードを取り出し、長期記憶(GraphRAG)へ
         episodes = self.hippocampus.get_and_clear_episodes_for_consolidation()
-        for episode in episodes:
-            self.cortex.consolidate_memory(episode)
+        logger.info(f"  📝 Consolidating {len(episodes)} episodes to Cortex...")
+        for ep in episodes:
+            self.cortex.consolidate_memory(ep)
+            
+        # 2. ニューラルリプレイ (Implicit)
+        if self.sleep_consolidator:
+            report = self.sleep_consolidator.perform_sleep_cycle()
+            logger.info(f"  🧠 Replay finished. Synaptic change: {report.get('synaptic_change', 0):.4f}")
+        else:
+            logger.warning("  ⚠️ SleepConsolidator not attached. Skipping neural replay.")
+            time.sleep(1) # 簡易的な休息
+            
+        # 3. リフレッシュ
+        self.fatigue_level = 0.0
+        self.energy_level = 100.0
+        self.is_sleeping = False
+        logger.info("🌅 --- WAKE UP --- \n")
 
-    def correct_knowledge(self, concept: str, new_info: str, reason: str = "user correction"):
-        """
-        ユーザーからの指示に基づいて知識を修正する。
-        """
-        print(f"\n🛠️ 知識修正: '{concept}' -> '{new_info}'")
-        correction_episode = {
-            'type': 'knowledge_correction', 'concept': concept,
-            'content': {'text': new_info}, 'source': 'user', 'reason': reason
-        }
-        self.hippocampus.store_episode(correction_episode)
-        # 即座に反映
+    def user_correction(self, concept: str, correct_info: str):
+        """ユーザーによる知識の訂正を受け付ける"""
+        logger.info(f"🛠️ User Correction: {concept} -> {correct_info}")
+        # Cortexを通じて知識グラフを修正
+        # RAGシステムへのアクセスが必要
         if hasattr(self.cortex, 'rag_system') and self.cortex.rag_system:
-             self.cortex.rag_system.add_relationship(concept, "is_corrected_to", new_info)
+             self.cortex.rag_system.update_knowledge(concept, "is_corrected_to", correct_info, reason="user_instruction")
+             # 次回の睡眠でこの知識がリプレイされるように優先度を上げたい（今後の課題）
