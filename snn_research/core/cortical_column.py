@@ -124,9 +124,11 @@ class CorticalColumn(BaseModel):
             
             return out_ff_stacked, out_fb_stacked, current_states
             
-        else:
+        elif input_signal.dim() == 2:
             # (Batch, InputDim) - 単一ステップ
             return self._forward_step(input_signal, prev_states)
+        else:
+            raise ValueError(f"CorticalColumn received input with unexpected shape: {input_signal.shape}. Expected 2D (Batch, Dim) or 3D (Batch, Time, Dim).")
 
     def _forward_step(
         self, 
