@@ -1,10 +1,9 @@
 # ファイルパス: snn_research/training/trainers/breakthrough.py
-# (修正: 評価モードでのAccuracy計算を確実にする & mypy型エラー修正)
+# (修正: mypy型エラー "Incompatible types in assignment" 修正)
 # Title: Breakthrough Trainer (標準SNNトレーナー)
 # Description:
 #   標準的な代理勾配法によるSNN学習を行うトレーナークラス。
-#   修正: _run_step 内で aux_logits の処理に加え、評価モード時に accuracy を明示的に計算して格納。
-#   修正: load_checkpoint の戻り値を int にキャストして mypy エラーを解消。
+#   修正: _run_step 内の total_time_steps への代入時に int() キャストを追加。
 
 import torch
 import torch.nn as nn
@@ -152,9 +151,9 @@ class BreakthroughTrainer:
         if not is_train and not return_full_hiddens_flag:
             model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
             if hasattr(model_to_run, 'config') and isinstance(model_to_run.config, dict):
-                 total_time_steps = model_to_run.config.get('time_steps', 16)
+                 total_time_steps = int(model_to_run.config.get('time_steps', 16))
             elif hasattr(model_to_run, 'time_steps'):
-                 total_time_steps = getattr(model_to_run, 'time_steps')
+                 total_time_steps = int(getattr(model_to_run, 'time_steps'))
 
             min_steps = int(total_time_steps * self.cutoff_min_steps_ratio)
             
@@ -288,8 +287,20 @@ class BreakthroughTrainer:
                         accuracy_tensor = (preds[mask] == target_ids[mask]).float().sum() / num_masked_elements if num_masked_elements > 0 else torch.tensor(0.0)
                 loss_dict['accuracy'] = accuracy_tensor
             
+            # --- 修正: int() キャストを追加 ---
             if is_train:
-                 loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
+                 # ここで total_time_steps を再取得する際も int キャストを行う
+                 model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
+                 current_steps = 16
+                 if hasattr(model_to_run, 'config'):
+                    if isinstance(model_to_run.config, dict):
+                        current_steps = int(model_to_run.config.get('time_steps', 16))
+                    else:
+                        current_steps = int(getattr(model_to_run.config, 'time_steps', 16))
+                 elif hasattr(model_to_run, 'time_steps'):
+                    current_steps = int(getattr(model_to_run, 'time_steps'))
+                 
+                 loss_dict['avg_cutoff_steps'] = torch.tensor(float(current_steps), device=self.device)
 
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
