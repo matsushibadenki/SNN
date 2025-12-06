@@ -1,12 +1,12 @@
 # ファイルパス: snn_research/training/trainers/self_supervised.py
-# Title: Self-Supervised Trainer (自己教師あり学習)
+# Title: Self-Supervised Trainer (自己教師あり学習) - 戻り値修正版
 # Description:
-#   BreakthroughTrainerを拡張し、Temporal Contrastive Learning (TCL) などの
-#   自己教師あり学習を行うトレーナー。
+#   BreakthroughTrainerを拡張し、TCLなどの自己教師あり学習を行うトレーナー。
+#   修正: モデルの戻り値アンパック処理を柔軟に変更。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Union, Tuple
+from typing import Dict, Any, Union, Tuple, Optional
 import logging
 
 from spikingjelly.activation_based import functional # type: ignore
@@ -35,7 +35,20 @@ class SelfSupervisedTrainer(BreakthroughTrainer):
             with torch.set_grad_enabled(is_train):
                 # SelfSupervisedではFull Hiddensを返す
                 outputs = self.model(input_ids, return_spikes=True, return_full_mems=True, return_full_hiddens=True)
-                full_hiddens, spikes, mem = outputs
+                
+                # --- 修正: 柔軟なアンパック処理 ---
+                full_hiddens: torch.Tensor
+                spikes: torch.Tensor = torch.tensor(0.0)
+                mem: torch.Tensor = torch.tensor(0.0)
+
+                if isinstance(outputs, tuple):
+                    full_hiddens = outputs[0]
+                    if len(outputs) > 1: spikes = outputs[1]
+                    if len(outputs) > 2: mem = outputs[2]
+                else:
+                    full_hiddens = outputs
+                # -------------------------------
+
                 assert isinstance(self.criterion, SelfSupervisedLoss)
                 loss_dict = self.criterion(full_hiddens, target_ids, spikes, mem, self.model)
         
@@ -49,7 +62,6 @@ class SelfSupervisedTrainer(BreakthroughTrainer):
                 loss_dict['total'].backward()
                 self.optimizer.step()
         
-        # Accuracyは計算不可なので0を返す
         loss_dict['accuracy'] = torch.tensor(0.0, device=self.device) 
         loss_dict['avg_cutoff_steps'] = torch.tensor(16.0, device=self.device)
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
