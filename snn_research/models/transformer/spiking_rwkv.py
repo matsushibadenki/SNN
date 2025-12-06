@@ -1,8 +1,9 @@
-# ファイルパス: snn_research/architectures/spiking_rwkv.py
-# (修正: 発火率計算の改善)
+# ファイルパス: snn_research/models/transformer/spiking_rwkv.py
+# (修正: ニューロンパラメータのフィルタリング追加 & v_reset対応)
 # Title: Spiking RWKV (Standard & 1.58bit BitNet)
 # Description:
-# - 修正: forwardメソッド内で、総ニューロン数を考慮した正確な平均発火率を返すように変更。
+# - 修正: ニューロンクラスの初期化時にパラメータフィルタリングを適用し、堅牢性を向上。
+# - 修正: forwardメソッド内で、総ニューロン数を考慮した正確な平均発火率を返すように変更（維持）。
 
 import torch
 import torch.nn as nn
@@ -18,6 +19,26 @@ from spikingjelly.activation_based import base as sj_base # type: ignore[import-
 from snn_research.training.quantization import BitLinear
 
 logger = logging.getLogger(__name__)
+
+def _filter_neuron_params(neuron_class: Type[nn.Module], neuron_params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    指定されたニューロンクラスの__init__が受け入れるパラメータのみをフィルタリングする。
+    """
+    valid_params: List[str] = []
+    
+    if neuron_class == AdaptiveLIFNeuron:
+        valid_params = [
+            'features', 'tau_mem', 'base_threshold', 'adaptation_strength', 
+            'target_spike_rate', 'noise_intensity', 'threshold_decay', 
+            'threshold_step', 'v_reset'
+        ]
+    elif neuron_class == IzhikevichNeuron:
+        valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
+    else:
+        # デフォルト (LIF互換と仮定)
+        valid_params = ['features', 'tau_mem', 'base_threshold', 'v_reset']
+    
+    return {k: v for k, v in neuron_params.items() if k in valid_params}
 
 class SpikingRWKVBlock(sj_base.MemoryModule):
     """
@@ -136,20 +157,23 @@ class SpikingRWKV(BaseModel):
             neuron_config = {'type': 'lif', 'tau_mem': 10.0, 'base_threshold': 1.0}
             
         neuron_type_str = neuron_config.get("type", "lif")
-        neuron_params = neuron_config.copy()
-        neuron_params.pop('type', None)
+        neuron_params_raw = neuron_config.copy()
+        neuron_params_raw.pop('type', None)
         neuron_class: Type[nn.Module] = AdaptiveLIFNeuron if neuron_type_str == 'lif' else IzhikevichNeuron
+        
+        # パラメータフィルタリング適用
+        filtered_params = _filter_neuron_params(neuron_class, neuron_params_raw)
 
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.pos_encoder = nn.Parameter(torch.zeros(1, 1024, d_model))
         
         self.layers = nn.ModuleList([
-            SpikingRWKVBlock(d_model, neuron_class, neuron_params)
+            SpikingRWKVBlock(d_model, neuron_class, filtered_params)
             for _ in range(num_layers)
         ])
         
         self.time_mixing_neurons = nn.ModuleList([
-             cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **neuron_params))
+             cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **filtered_params))
              for _ in range(num_layers)
         ])
 
@@ -339,20 +363,23 @@ class BitSpikingRWKV(BaseModel):
             neuron_config = {'type': 'lif', 'tau_mem': 10.0, 'base_threshold': 1.0}
             
         neuron_type_str = neuron_config.get("type", "lif")
-        neuron_params = neuron_config.copy()
-        neuron_params.pop('type', None)
+        neuron_params_raw = neuron_config.copy()
+        neuron_params_raw.pop('type', None)
         neuron_class: Type[nn.Module] = AdaptiveLIFNeuron if neuron_type_str == 'lif' else IzhikevichNeuron
+
+        # パラメータフィルタリング適用
+        filtered_params = _filter_neuron_params(neuron_class, neuron_params_raw)
 
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.pos_encoder = nn.Parameter(torch.zeros(1, 1024, d_model))
         
         self.layers = nn.ModuleList([
-            BitSpikingRWKVBlock(d_model, neuron_class, neuron_params, weight_bits=weight_bits)
+            BitSpikingRWKVBlock(d_model, neuron_class, filtered_params, weight_bits=weight_bits)
             for _ in range(num_layers)
         ])
         
         self.time_mixing_neurons = nn.ModuleList([
-             cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **neuron_params))
+             cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **filtered_params))
              for _ in range(num_layers)
         ])
 
