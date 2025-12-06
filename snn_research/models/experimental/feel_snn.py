@@ -3,9 +3,9 @@
 # Description:
 #   周波数エンコーディングと進化的リークニューロンを組み合わせた堅牢なSNNモデル。
 #   修正内容: 
-#   - nn.Sequential 内でのタプル戻り値 (spike, mem) によるクラッシュを回避するため、
-#     手動でレイヤーを反復処理するロジックを実装。
-#   - 最後のLIF層の膜電位を正しく取得するロジックを維持。
+#   - nn.Sequential 内でタプル (spike, mem) を返すニューロン層を使用するとエラーになるため、
+#     nn.ModuleList を使用して forward メソッドで明示的に制御するように構造を変更。
+#   - これにより、PyTorchの標準的なフック機能とも互換性を維持。
 
 import torch
 import torch.nn as nn
@@ -43,7 +43,8 @@ class FEELSNN(BaseModel):
         self.freq_encoder = FrequencyEncodingLayer(time_steps=time_steps)
         
         # 2. Feature Extractor (Conv + EL-LIF)
-        self.features = nn.Sequential(
+        # nn.Sequential ではなく ModuleList を使用して個別に定義
+        self.features_layers = nn.ModuleList([
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
             nn.BatchNorm2d(32),
             EvolutionaryLeakLIF(features=32, initial_tau=initial_tau, v_threshold=v_threshold, learn_threshold=learn_threshold),
@@ -58,23 +59,23 @@ class FEELSNN(BaseModel):
             nn.BatchNorm2d(128),
             EvolutionaryLeakLIF(features=128, initial_tau=initial_tau, v_threshold=v_threshold, learn_threshold=learn_threshold),
             nn.AdaptiveAvgPool2d((4, 4))
-        )
+        ])
         
         # 3. Classifier
         self.flatten = nn.Flatten()
-        self.classifier = nn.Sequential(
+        self.classifier_layers = nn.ModuleList([
             nn.Linear(128 * 4 * 4, 256),
             EvolutionaryLeakLIF(features=256, initial_tau=initial_tau, v_threshold=v_threshold, learn_threshold=learn_threshold),
             nn.Linear(256, num_classes)
-        )
+        ])
 
         self._init_weights()
 
-    def _forward_sequential_safe(self, sequential_module: nn.Sequential, x: torch.Tensor) -> torch.Tensor:
+    def _forward_layers(self, layers: nn.ModuleList, x: torch.Tensor) -> torch.Tensor:
         """
-        nn.Sequentialを手動で実行し、ニューロン層からのタプル戻り値 (spike, mem) を処理する。
+        レイヤーリストを順次実行し、ニューロン層からのタプル戻り値 (spike, mem) を処理する。
         """
-        for layer in sequential_module:
+        for layer in layers:
             x = layer(x)
             if isinstance(x, tuple):
                 # ニューロン層の場合、(spike, mem) が返るため spike のみ次へ渡す
@@ -98,22 +99,20 @@ class FEELSNN(BaseModel):
         for t in range(self.time_steps):
             x_t = encoded_inputs[:, t, ...]
             
-            # 特徴抽出 (安全な実行)
-            feat = self._forward_sequential_safe(self.features, x_t)
+            # 特徴抽出
+            feat = self._forward_layers(self.features_layers, x_t)
             
             flat = self.flatten(feat)
             
-            # 分類器 (安全な実行)
-            # Classifierの中間LIFの膜電位を取得したい場合は、ここで個別に実行する必要があるが、
-            # 簡易化のためヘルパーを使用し、最後にモジュールから直接取得する
-            out = self._forward_sequential_safe(self.classifier, flat)
+            # 分類器
+            out = self._forward_layers(self.classifier_layers, flat)
             
             outputs.append(out)
             
         # ループ終了後に最後のLIF層の膜電位を取得
-        # classifier[1] が EvolutionaryLeakLIF であることを前提
-        if len(self.classifier) > 1:
-            lif_layer = self.classifier[1]
+        # classifier_layers[1] が EvolutionaryLeakLIF であることを前提
+        if len(self.classifier_layers) > 1:
+            lif_layer = self.classifier_layers[1]
             if hasattr(lif_layer, 'mem'):
                 last_mem = lif_layer.mem # type: ignore
             elif hasattr(lif_layer, 'v'):
