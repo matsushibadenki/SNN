@@ -1,15 +1,13 @@
 # ファイルパス: snn_research/core/snn_core.py
-# Title: SNNCore (Registry Pattern Integrated & SpikingJelly Compatible)
-# Description:
-# - モデル構築ロジックを ArchitectureRegistry に移譲。
-# - 設定管理と共通インターフェース（forward, reset_state）を提供。
-# - 修正: SpikingJellyの再帰的リセットに対応するため、reset() メソッドを追加。
+# ファイル名: SNNコア・ラッパー
+# 機能説明: 各種アーキテクチャ（CNN, Transformer, PCなど）を統一的にラップするクラス。
+#          ArchitectureRegistryを使用して設定からモデルを構築し、
+#          共通のインターフェース（forward, reset_state）を提供する。
 
 import torch
 import torch.nn as nn
 from typing import Dict, Any, Optional
 import logging
-# mypyエラー抑制
 from spikingjelly.activation_based import functional # type: ignore
 
 # レジストリをインポート
@@ -29,8 +27,10 @@ class SNNCore(nn.Module):
         self.vocab_size = vocab_size
         self.backend = backend
         
+        # レジストリ経由でモデルを構築
         self.model: nn.Module = self._build_model()
         
+        # パラメータ数の集計とログ出力
         param_count = sum(p.numel() for p in self.model.parameters())
         trainable_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         
@@ -41,22 +41,28 @@ class SNNCore(nn.Module):
             logger.info(f"✅ SNNCore built model '{arch_type}' with {param_count:,} parameters ({trainable_count:,} trainable).")
 
     def forward(self, x: Optional[torch.Tensor] = None, **kwargs: Any) -> Any:
+        """
+        順伝播。入力テンソル x が None の場合、kwargs から適切なキーを探す。
+        """
         if x is None:
-            # 辞書キーから入力を探す
+            # 辞書キーから入力を探す (input_ids, input_images など)
             for key in ['input_ids', 'input_images', 'input_sequence', 'x']:
                 if key in kwargs:
                     x = kwargs.pop(key)
                     break
         
+        # モデルに渡す。xがまだNoneならkwargsのみで呼び出す。
         if x is None:
             return self.model(**kwargs)
         
         return self.model(x, **kwargs)
     
     def reset_state(self) -> None:
-        """モデルの内部状態をリセットする。"""
+        """モデルの内部状態（膜電位、スパイク履歴など）をリセットする。"""
+        # SpikingJellyの標準リセット
         functional.reset_net(self.model)
 
+        # カスタムリセットメソッドがあれば呼ぶ
         if hasattr(self.model, 'reset_state') and callable(getattr(self.model, 'reset_state')):
              getattr(self.model, 'reset_state')()
         
@@ -91,10 +97,9 @@ class SNNCore(nn.Module):
         if self.backend != "spikingjelly":
              raise ValueError(f"Unsupported backend: {self.backend}. Only 'spikingjelly' is supported.")
 
-        # レジストリに委譲
+        # レジストリに構築を委譲
         try:
             return ArchitectureRegistry.build(arch_type, self.config, self.vocab_size)
         except ValueError as e:
-            # レジストリに未登録の場合のエラーハンドリング
             logger.error(f"Failed to build model: {e}")
             raise e
