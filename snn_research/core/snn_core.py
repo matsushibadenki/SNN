@@ -1,10 +1,12 @@
 # ファイルパス: snn_research/core/snn_core.py
-# (修正済み完全版: get_total_spikes の委譲追加 & デバッグ情報強化)
+# (修正済み完全版: get_total_spikes の委譲追加 & デバッグ情報強化 & リセットロジック修正)
 
 import torch
 import torch.nn as nn
 from typing import Dict, Any, Optional, List, Union, Tuple, cast, Type
 import logging
+# --- 修正: spikingjelly functional のインポート ---
+from spikingjelly.activation_based import functional
 
 logger = logging.getLogger(__name__)
 
@@ -44,20 +46,26 @@ class SNNCore(nn.Module):
         return self.model(x, **kwargs)
     
     def reset_state(self) -> None:
-        if hasattr(self.model, 'reset_state'):
-            self.model.reset_state() # type: ignore
-        elif hasattr(self.model, 'reset_spike_stats'):
-             self.model.reset_spike_stats() # type: ignore
-        elif hasattr(self.model, 'reset'):
-             self.model.reset() # type: ignore
+        """
+        モデルの内部状態をリセットする。
+        再帰的なリセット処理 (functional.reset_net) を優先的に使用する。
+        """
+        # 1. SpikingJellyなどの再帰的リセット（これが最も安全）
+        functional.reset_net(self.model)
 
-    # --- ▼ 追加: スパイク集計メソッドの委譲（修正版） ▼ ---
+        # 2. モデル固有のリセットメソッドがあれば呼ぶ（BaseModelなど）
+        if hasattr(self.model, 'reset_state') and callable(getattr(self.model, 'reset_state')):
+             # reset_netと重複する可能性があるが、固有ロジックがある場合に備える
+             getattr(self.model, 'reset_state')()
+        
+        if hasattr(self.model, 'reset_spike_stats'):
+             getattr(self.model, 'reset_spike_stats')()
+
     def get_total_spikes(self) -> float:
         """内部モデルのスパイク総数を取得する。メソッドが存在しない場合は0を返す。"""
         if hasattr(self.model, 'get_total_spikes'):
             return self.model.get_total_spikes() # type: ignore
         return 0.0
-    # --- ▲ 追加 ▲ ---
 
     def _build_model(self) -> nn.Module:
         arch_type = self.config.get('architecture_type')
