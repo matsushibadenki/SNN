@@ -1,7 +1,9 @@
 # ファイルパス: snn_research/training/trainers/distillation.py
-# Title: Distillation Trainer (知識蒸留)
+# Title: Distillation Trainer (知識蒸留) - 戻り値修正版
 # Description:
 #   BreakthroughTrainerを拡張し、教師モデルからの知識蒸留を行うトレーナー。
+#   修正: モデルからの戻り値が3要素を超える場合（SEMMなど）に対応できるよう、
+#   アンパック処理を柔軟に変更。
 
 import torch
 import torch.nn as nn
@@ -50,10 +52,17 @@ class DistillationTrainer(BreakthroughTrainer):
         with torch.amp.autocast(device_type=self.device if self.device != 'mps' else 'cpu', enabled=self.use_amp):
             with torch.set_grad_enabled(is_train):
                 outputs = self.model(student_input, return_spikes=True, return_full_mems=True, return_full_hiddens=False)
+                
+                # --- 修正: 柔軟なアンパック処理 ---
                 if isinstance(outputs, tuple):
-                     student_logits, spikes, mem = outputs[0], outputs[1], outputs[2]
+                    # 最低限必要な要素を取得
+                    student_logits = outputs[0]
+                    spikes = outputs[1] if len(outputs) > 1 else torch.tensor(0.0)
+                    mem = outputs[2] if len(outputs) > 2 else torch.tensor(0.0)
+                    # 4つ目以降（aux_logitsなど）は蒸留では現在使用しないため無視するか、必要ならここで取得
                 else:
                      student_logits, spikes, mem = outputs, torch.tensor(0.0), torch.tensor(0.0)
+                # -------------------------------
 
                 assert isinstance(self.criterion, DistillationLoss)
                 loss_dict = self.criterion(
@@ -87,7 +96,16 @@ class DistillationTrainer(BreakthroughTrainer):
             loss_dict['accuracy'] = accuracy
             
             model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-            total_time_steps = getattr(model_to_run.config, 'time_steps', 16) if hasattr(model_to_run, 'config') else getattr(model_to_run, 'time_steps', 16)
+            # config属性への安全なアクセス
+            total_time_steps = 16
+            if hasattr(model_to_run, 'config'):
+                if isinstance(model_to_run.config, dict):
+                    total_time_steps = model_to_run.config.get('time_steps', 16)
+                else:
+                    total_time_steps = getattr(model_to_run.config, 'time_steps', 16)
+            elif hasattr(model_to_run, 'time_steps'):
+                total_time_steps = getattr(model_to_run, 'time_steps')
+
             loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
         
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
