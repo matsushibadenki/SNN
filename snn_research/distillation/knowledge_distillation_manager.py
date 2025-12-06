@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/distillation/knowledge_distillation_manager.py
-# (修正版: インポート整理とデータセット処理の改善)
+# (修正版: インポート整理とデータセット処理の改善 + mypy修正)
 # Title: 知識蒸留 (Knowledge Distillation) 管理マネージャー
 # Description:
 # - 教師モデルからの知識蒸留プロセスを管理するクラス。
@@ -29,8 +29,7 @@ except ImportError:
         def __len__(self): return 0
         def __getitem__(self, idx): return {}
 
-# type: ignore[import-untyped]
-import torchvision.models as models 
+import torchvision.models as models # type: ignore[import-untyped]
 
 from snn_research.distillation.model_registry import ModelRegistry
 from snn_research.training.trainers import DistillationTrainer
