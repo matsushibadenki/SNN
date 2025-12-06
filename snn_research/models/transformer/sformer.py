@@ -1,8 +1,9 @@
 # ファイルパス: snn_research/models/transformer/sformer.py
-# Title: SFormer (Scale-and-Fire Transformer) - High Fidelity T=1 Implementation
+# Title: SFormer (Scale-and-Fire Transformer) - High Fidelity T=1 Implementation (Fixed)
 # Description:
 #   ROADMAP Phase 3「究極の低遅延バックボーン」の完全実装。
-#   修正: 自己回帰生成に必要な因果マスク(Causal Mask)の生成と適用ロジックを追加。
+#   修正: SFNAttentionにおいて、SFNの適用タイミングをHead分割前に変更し、
+#         次元不整合エラー (Channel mismatch) を解消。
 
 import torch
 import torch.nn as nn
@@ -42,11 +43,11 @@ class SFNAttention(nn.Module):
         self.v_proj = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
 
-        # QK-Norm
+        # QK-Norm (Head次元に対して適用)
         self.qk_norm_q = SpikingQKNorm(self.head_dim)
         self.qk_norm_k = SpikingQKNorm(self.head_dim)
 
-        # Scale-and-Fire Neurons
+        # Scale-and-Fire Neurons (d_model全体に対して適用)
         self.sfn_q = ScaleAndFireNeuron(d_model, num_levels=sf_levels, base_threshold=sf_threshold)
         self.sfn_k = ScaleAndFireNeuron(d_model, num_levels=sf_levels, base_threshold=sf_threshold)
         self.sfn_v = ScaleAndFireNeuron(d_model, num_levels=sf_levels, base_threshold=sf_threshold)
@@ -58,21 +59,28 @@ class SFNAttention(nn.Module):
         H = self.nhead
         Dh = self.head_dim
 
-        # 1. Linear Projections
-        q = self.q_proj(x).view(B, L, H, Dh).transpose(1, 2) # (B, H, L, Dh)
-        k = self.k_proj(x).view(B, L, H, Dh).transpose(1, 2)
-        v = self.v_proj(x).view(B, L, H, Dh).transpose(1, 2)
+        # 1. Linear Projections: (B, L, D)
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
 
-        # 2. Apply QK-Norm
-        q = self.qk_norm_q(q)
-        k = self.qk_norm_k(k)
-
-        # 3. Apply SFN (Quantization)
+        # 2. Apply SFN (Quantization): (B, L, D)
+        # SFNは (B, L, C) の形状を受け付け、C=d_model と一致することを確認する
         q, _ = self.sfn_q(q)
         k, _ = self.sfn_k(k)
         v, _ = self.sfn_v(v)
 
-        # 4. Scaled Dot-Product Attention
+        # 3. Head Split: (B, L, D) -> (B, L, H, Dh) -> (B, H, L, Dh)
+        q = q.view(B, L, H, Dh).transpose(1, 2)
+        k = k.view(B, L, H, Dh).transpose(1, 2)
+        v = v.view(B, L, H, Dh).transpose(1, 2)
+
+        # 4. Apply QK-Norm: (B, H, L, Dh)
+        # QK-Normは最後の次元(Dh)に対して正規化を行う
+        q = self.qk_norm_q(q)
+        k = self.qk_norm_k(k)
+
+        # 5. Scaled Dot-Product Attention
         attn_scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
 
         # --- マスク適用 ---
@@ -80,7 +88,6 @@ class SFNAttention(nn.Module):
             # mask形状: (L, L) または (B, 1, L, L) を想定
             # attn_scores: (B, H, L, L)
             # マスクが 0 (False) の位置を -inf で埋める
-            # ブロードキャスト可能な形状であることを期待
             attn_scores = attn_scores.masked_fill(mask == 0, float('-inf'))
 
         attn_probs = torch.softmax(attn_scores, dim=-1)
@@ -89,7 +96,7 @@ class SFNAttention(nn.Module):
         # Attn @ V
         attn_output = torch.matmul(attn_probs, v)
 
-        # 5. Output Projection
+        # 6. Output Projection
         attn_output = attn_output.transpose(1, 2).reshape(B, L, D)
         output = self.out_proj(attn_output)
 
