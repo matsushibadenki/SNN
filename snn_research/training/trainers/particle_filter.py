@@ -1,0 +1,48 @@
+# ファイルパス: snn_research/training/trainers/particle_filter.py
+# Title: Particle Filter Trainer
+# Description: 粒子フィルタを用いた非勾配学習トレーナー。
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import List, Dict, Any
+import copy
+
+from snn_research.models.bio.simple_network import BioSNN
+
+class ParticleFilterTrainer:
+    def __init__(self, base_model: BioSNN, config: Dict[str, Any], device: str):
+        self.base_model = base_model.to(device)
+        self.device = device
+        self.config = config
+        self.num_particles: int = config['training']['biologically_plausible']['particle_filter']['num_particles']
+        self.noise_std: float = config['training']['biologically_plausible']['particle_filter']['noise_std']
+        self.particles: List[nn.Module] = [copy.deepcopy(self.base_model) for _ in range(self.num_particles)]
+        self.particle_weights = torch.ones(self.num_particles, device=self.device) / self.num_particles
+        print(f"🌪️ ParticleFilterTrainer initialized with {self.num_particles} particles.")
+        
+    def train_step(self, data: torch.Tensor, targets: torch.Tensor) -> float:
+        for particle in self.particles:
+            with torch.no_grad():
+                for param in particle.parameters(): param.add_(torch.randn_like(param) * self.noise_std)
+        log_likelihoods: List[float] = []
+        for particle in self.particles:
+            particle.eval()
+            with torch.no_grad():
+                squeezed_data = data.squeeze(0) if data.dim() > 1 else data
+                probs = torch.clamp(squeezed_data, 0.0, 1.0)
+                input_spikes = torch.bernoulli(probs)
+                outputs, _ = particle(input_spikes) # type: ignore[operator]
+                if targets is not None:
+                     loss = F.mse_loss(outputs, targets.squeeze(0) if targets.dim() > 1 else targets)
+                     log_likelihoods.append(-loss.item())
+                else: log_likelihoods.append(0.0)
+        log_likelihoods_tensor = torch.tensor(log_likelihoods, device=self.device)
+        self.particle_weights *= torch.exp(log_likelihoods_tensor - log_likelihoods_tensor.max())
+        if self.particle_weights.sum() > 0: self.particle_weights /= self.particle_weights.sum()
+        else: self.particle_weights.fill_(1.0 / self.num_particles)
+        if 1.0 / (self.particle_weights**2).sum() < self.num_particles / 2.0:
+            indices = torch.multinomial(self.particle_weights, self.num_particles, replacement=True)
+            self.particles = [copy.deepcopy(self.particles[i]) for i in indices]
+            self.particle_weights.fill_(1.0 / self.num_particles)
+        return -log_likelihoods_tensor.max().item()
