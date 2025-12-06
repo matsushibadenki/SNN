@@ -3,10 +3,11 @@
 # Description:
 # - モデル構築時のパラメータ取得を安全にし、循環インポートを回避する構造に整理。
 # - 不明な architecture_type に対して明確なエラーを出す。
+# - TSkipsSNN の引数型エラー(mypy)を修正。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, cast
 import logging
 # mypyエラー抑制
 from spikingjelly.activation_based import functional # type: ignore
@@ -134,8 +135,9 @@ class SNNCore(nn.Module):
                 num_layers=self.config.get('num_layers', 3),
                 time_steps=time_steps,
                 neuron_config=neuron_config,
-                forward_delays_per_layer=self.config.get('forward_delays_per_layer', None),
-                backward_delays_per_layer=self.config.get('backward_delays_per_layer', None)
+                # 修正: デフォルト値を None から [] に変更し、cast で型を明示
+                forward_delays_per_layer=cast(List[Optional[List[int]]], self.config.get('forward_delays_per_layer', [])),
+                backward_delays_per_layer=cast(List[Optional[List[int]]], self.config.get('backward_delays_per_layer', []))
             )
 
         elif arch_type == "franken_moe":
@@ -193,18 +195,6 @@ class SNNCore(nn.Module):
                 neuron_config=neuron_config
             )
         
-        elif arch_type == "spiking_ssm":
-            from snn_research.models.experimental.spiking_ssm import SpikingSSM
-            return SpikingSSM(
-                vocab_size=self.vocab_size,
-                d_model=self.config.get('d_model', 512),
-                d_state=self.config.get('d_state', 64),
-                num_layers=self.config.get('num_layers', 6),
-                time_steps=time_steps,
-                d_conv=self.config.get('d_conv', 4),
-                neuron_config=neuron_config
-            )
-
         elif arch_type == "feel_snn":
             from snn_research.models.experimental.feel_snn import FEELSNN
             num_classes = self.config.get('num_classes', self.vocab_size)
