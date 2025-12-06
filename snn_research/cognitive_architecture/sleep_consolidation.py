@@ -1,26 +1,18 @@
 # ファイルパス: snn_research/cognitive_architecture/sleep_consolidation.py
-# Title: 睡眠時記憶固定化システム (Generative Replay & Consolidation)
+# Title: 睡眠時記憶固定化システム (Generative Replay & Consolidation) v2
 # Description:
-#   ROADMAP Phase 5 の中核。
-#   1. Explicit Consolidation: 海馬（短期記憶）のエピソードをGraphRAG（長期記憶）へ構造化して転送。
-#   2. Implicit Consolidation: GraphRAGの知識を「夢」として再構成し、SNN（大脳皮質）へリプレイ入力。
-#   3. Synaptic Homeostasis: シナプス重みのスケーリングにより、学習による暴走を防ぐ。
-#
-#   修正: mypyエラーの解消 (v2)。
-#     - cortex_snn のメソッド呼び出しにおける型エラーを、ローカル変数(Any)経由で回避。
-#     - 戻り値の未定義変数名を修正。
+#   Neuro-Symbolic Feedback Loopの実装。
+#   GraphRAGの知識をサンプリングし、SNNへの感覚入力として「夢」を生成・再生する。
+#   Causal Trace Learningを用いて、エピソード記憶をシナプス重みに焼き付ける。
 
 import torch
 import logging
 import random
 import time
 from typing import List, Dict, Any, Optional, cast, Union
-import networkx as nx # type: ignore[import-untyped]
 import numpy as np
 
-# 既存モジュールのインポート
 from snn_research.cognitive_architecture.rag_snn import RAGSystem
-# 循環参照回避のため型ヒントのみ
 from snn_research.io.spike_encoder import SpikeEncoder
 from snn_research.core.base import BaseModel
 
@@ -28,16 +20,16 @@ logger = logging.getLogger(__name__)
 
 class SleepConsolidator:
     """
-    睡眠サイクルを管理し、知識の構造化とニューラルネットワークへの焼き付けを行う。
+    睡眠サイクルにおいて、知識の構造化（Symbolic）とニューラルネットワークへの固定化（Sub-symbolic）を行う。
     """
     def __init__(
         self, 
         rag_system: RAGSystem, 
-        cortex_snn: Any, # 型をAnyにして柔軟性を持たせる
+        cortex_snn: Union[BaseModel, torch.nn.Module], 
         spike_encoder: SpikeEncoder,
         consolidation_epochs: int = 3,
         replay_batch_size: int = 4,
-        synaptic_scaling_factor: float = 0.9 # ダウン・スケーリング係数
+        synaptic_scaling_factor: float = 0.95
     ):
         self.rag_system = rag_system
         self.cortex_snn = cortex_snn
@@ -51,128 +43,120 @@ class SleepConsolidator:
     def _generate_dream_content(self, limit: int = 20) -> List[str]:
         """
         GraphRAGから「夢」のコンテンツを生成する。
-        最近活性化したノードや、重要なハブノードを中心に知識をサンプリングする。
+        重要度（次数中心性）と新鮮さ（最近追加された知識）に基づいてサンプリングを行う。
         """
         if not self.rag_system.knowledge_graph or self.rag_system.knowledge_graph.number_of_nodes() == 0:
-            return []
+            return ["Empty void."] # 知識がない場合のデフォルト夢
             
         graph = self.rag_system.knowledge_graph
         nodes = list(graph.nodes())
         
-        # 戦略A: ランダムサンプリング（探索的夢）
-        # 戦略B: 次数が高いノード（重要な概念）
-        # 戦略C: 最近追加されたノード（エピソード記憶）
-        
-        # 簡易的に次数ベースの重み付けサンプリング
+        # サンプリング戦略: 次数中心性による重み付け
+        # よく接続された概念（ハブ）は、記憶の統合において重要であるため
         degrees = [val for (node, val) in graph.degree()]
         total_degree = sum(degrees)
+        
         if total_degree == 0:
             probs = None
         else:
             probs = [d / total_degree for d in degrees]
             
-        selected_nodes = np.random.choice(nodes, size=min(len(nodes), limit), p=probs, replace=False).tolist()
+        # ランダムサンプリング (夢の非線形性・跳躍を模倣)
+        try:
+            selected_nodes = np.random.choice(
+                nodes, 
+                size=min(len(nodes), limit), 
+                p=probs, 
+                replace=False
+            ).tolist()
+        except ValueError:
+            selected_nodes = nodes[:limit]
         
         dream_texts = []
         for node in selected_nodes:
-            # その概念周辺のサブグラフを文章化
+            # その概念周辺のサブグラフ情報を自然言語化
+            # 例: "Cat is a Animal. Cat has whiskers."
             info_list = self.rag_system.get_subgraph_info(node)
             if info_list:
-                dream_texts.append(" ".join(info_list))
+                # 複数の事実を結合して一つの「夢のシーン」を作る
+                scene = ". ".join(info_list[:3]) + "."
+                dream_texts.append(scene)
                 
         return dream_texts
 
     def perform_sleep_cycle(self) -> Dict[str, float]:
         """
-        睡眠サイクルを実行する。
+        睡眠サイクルを実行: 夢の生成 -> SNNでの再生 -> シナプス調整
         """
         start_time = time.time()
-        logger.info("💤 --- Entering Sleep Phase (Consolidation) ---")
         
-        # 1. 夢の生成 (Knowledge Retrieval)
-        dream_contents = self._generate_dream_content(limit=10)
+        # 1. 夢の生成 (Retrieval from Symbolic Memory)
+        dream_contents = self._generate_dream_content(limit=12)
         if not dream_contents:
-            logger.info("   (No knowledge to replay. Sleeping deeply...)")
-            return {"synaptic_change": 0.0, "duration": time.time() - start_time}
+            return {"synaptic_change": 0.0, "duration": 0.0}
 
-        logger.info(f"   Generated {len(dream_contents)} dream fragments for replay.")
-
-        # mypy対策: 型をAnyとして扱うためのローカル参照
-        # これにより "Tensor not callable" エラーを回避
-        model_ref: Any = self.cortex_snn
-
-        # 2. ニューラル・リプレイ (Replay Learning)
-        # SNNを学習モードへ
-        if isinstance(model_ref, torch.nn.Module):
-            model_ref.train()
+        # 2. ニューラル・リプレイ (Generative Replay on SNN)
+        self.cortex_snn.train() # 学習モード
         
-        total_synaptic_change = 0.0
-        
-        # SNNのモデルデバイスを取得
+        # デバイス検出
         device = torch.device("cpu")
-        if isinstance(model_ref, torch.nn.Module):
-            try:
-                device = next(model_ref.parameters()).device
-            except StopIteration:
-                pass
-            
-        # タイムステップの取得
-        time_steps = getattr(model_ref, 'time_steps', 16)
+        try:
+            device = next(self.cortex_snn.parameters()).device
+        except StopIteration: pass
+        
+        # モデルのタイムステップ取得
+        time_steps = getattr(self.cortex_snn, 'time_steps', 16)
+        if isinstance(time_steps, torch.Tensor): time_steps = int(time_steps.item())
+
+        total_synaptic_change = 0.0
 
         for epoch in range(self.consolidation_epochs):
             batch_change = 0.0
             
-            # バッチごとに処理
+            # 夢をバッチ処理
             for i in range(0, len(dream_contents), self.replay_batch_size):
                 batch_texts = dream_contents[i : i + self.replay_batch_size]
                 
-                # スパイクエンコーディング (Symbol -> Spike)
-                # 夢の内容を感覚入力として再現
+                # --- Symbol to Spike (記号接地) ---
                 batch_spikes_list = []
                 for text in batch_texts:
+                    # テキスト内容をスパイク列にエンコード
                     spikes = self.spike_encoder.encode(
                         {"content": text, "type": "text"}, 
                         duration=time_steps
                     )
                     batch_spikes_list.append(spikes)
                 
-                # スタックしてバッチ化: (Batch, Time, Neurons)
-                # encodeの戻り値が (Time, Neurons) 前提
+                if not batch_spikes_list: continue
                 input_tensor = torch.stack(batch_spikes_list).to(device)
                 
-                # --- SNN Forward & Plasticity Update ---
-                # リセット
-                if hasattr(model_ref, 'reset_state'):
-                    model_ref.reset_state()
-                
-                # 順伝播 (教師なし/自己教師あり学習を想定)
-                # BioPCNetwork等の場合、入力自体をターゲットとして予測誤差を最小化する
-                _ = model_ref(input_tensor) 
-                
-                # 学習則の適用 (run_learning_step メソッドを持つことを期待)
-                if hasattr(model_ref, 'run_learning_step'):
-                    # BioPCNetworkなどは targets 引数が必要な場合がある
-                    metrics = model_ref.run_learning_step(inputs=input_tensor, targets=input_tensor)
-                    
-                    # 更新量の集計（ログ用）
-                    for k, v in metrics.items():
-                        if "magnitude" in k:
-                            if isinstance(v, torch.Tensor):
-                                batch_change += v.item()
-                            elif isinstance(v, (float, int)):
-                                batch_change += float(v)
-            
-            total_synaptic_change += batch_change
-            logger.debug(f"   [Sleep Epoch {epoch+1}] Synaptic change: {batch_change:.4f}")
+                # --- SNN Plasticity Update ---
+                if hasattr(self.cortex_snn, 'reset_state'):
+                    self.cortex_snn.reset_state() # type: ignore
 
-        # 3. シナプス恒常性維持 (Synaptic Scaling)
-        # 全シナプスを一律にダウンスケーリングし、飽和を防ぐ (SHY仮説)
+                # 順伝播: 夢を見る
+                _ = self.cortex_snn(input_tensor)
+                
+                # 学習則の適用 (run_learning_step)
+                # 自己教師あり学習として、入力の再構成や予測誤差の最小化を図る
+                if hasattr(self.cortex_snn, 'run_learning_step'):
+                    metrics = self.cortex_snn.run_learning_step( # type: ignore
+                        inputs=input_tensor, 
+                        targets=input_tensor
+                    )
+                    # 更新量の集計
+                    for k, v in metrics.items():
+                        if "magnitude" in k or "update" in k:
+                            val = v.item() if isinstance(v, torch.Tensor) else float(v)
+                            batch_change += val
+
+            total_synaptic_change += batch_change
+
+        # 3. Synaptic Homeostasis (SHY仮説)
         self._apply_synaptic_scaling()
         
         duration = time.time() - start_time
-        logger.info(f"💤 Sleep cycle finished in {duration:.2f}s. Total synaptic change: {total_synaptic_change:.4f}")
         
-        # 修正: 変数名を修正 (total_plasticity_change -> total_synaptic_change)
         return {
             "synaptic_change": total_synaptic_change, 
             "duration": duration,
@@ -180,17 +164,8 @@ class SleepConsolidator:
         }
 
     def _apply_synaptic_scaling(self):
-        """
-        全ての重みを一定の割合で減少させる（乗算）。
-        """
-        if not isinstance(self.cortex_snn, torch.nn.Module):
-            return
-
+        """シナプス重みの全体的なダウンスケーリング"""
         with torch.no_grad():
             for param in self.cortex_snn.parameters():
-                if param.requires_grad and param.dim() > 1: # 重み行列のみ（バイアスは除外など）
+                if param.requires_grad and param.dim() > 1: # 重み行列のみ
                     param.mul_(self.synaptic_scaling_factor)
-        logger.info(f"   Refined synapses with scaling factor {self.synaptic_scaling_factor}.")
-
-# 互換性のため import numpy が必要
-import numpy as np
