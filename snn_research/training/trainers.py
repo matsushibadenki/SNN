@@ -1,10 +1,12 @@
 # ファイルパス: snn_research/training/trainers.py
-# Title: SNN 統合学習トレーナー (バグ修正版)
+# Title: SNN 統合学習トレーナー (全トレーナー バッチ処理修正版)
 # Description:
 # - BreakthroughTrainer: 標準的なSNN学習トレーナー。
 # - DistillationTrainer: 知識蒸留用トレーナー。
-# - 修正: DistillationTrainer._run_step で辞書型バッチが来た際のクラッシュを修正。
-#   画像/テキスト入力の動的判定ロジックを適用。
+# - SelfSupervisedTrainer: 自己教師あり学習用トレーナー。
+# - ProbabilisticEnsembleTrainer: 確率的アンサンブル学習用トレーナー。
+# - 修正: すべてのトレーナークラスの _run_step メソッドにおいて、
+#   辞書型バッチおよび画像/テキスト入力の動的判定ロジックを適用し、堅牢性を向上。
 
 import torch
 import torch.nn as nn
@@ -390,7 +392,7 @@ class DistillationTrainer(BreakthroughTrainer):
         model_to_reset = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
         functional.reset_net(model_to_reset)
         
-        # --- ▼ 修正: 辞書型とタプル型の両方に対応 ▼ ---
+        # --- 辞書型とタプル型の両方に対応 ---
         student_input: torch.Tensor
         attention_mask: Optional[torch.Tensor] = None
         student_target: torch.Tensor
@@ -398,7 +400,6 @@ class DistillationTrainer(BreakthroughTrainer):
 
         if isinstance(batch, dict):
             # 辞書の場合、必要なキーを取得
-            # DistillationDatasetは通常タプルを返すが、データローダーやcollate_fnの実装によっては辞書になる可能性がある
             student_input = batch.get('input_ids', batch.get('student_input')).to(self.device) # type: ignore
             student_target = batch.get('labels', batch.get('student_target')).to(self.device) # type: ignore
             teacher_logits = batch.get('teacher_logits').to(self.device) # type: ignore
@@ -407,7 +408,6 @@ class DistillationTrainer(BreakthroughTrainer):
                 attention_mask = attention_mask.to(self.device)
         else:
             # タプルの場合 (student_input, attention_mask, student_target, teacher_logits)
-            # collate_fnが返す順序に依存
             unpacked = [t.to(self.device) for t in batch]
             if len(unpacked) == 4:
                 student_input, attention_mask, student_target, teacher_logits = unpacked
@@ -417,7 +417,7 @@ class DistillationTrainer(BreakthroughTrainer):
                 attention_mask = None
             else:
                 raise ValueError(f"Unexpected batch tuple length: {len(unpacked)}. Expected 3 or 4.")
-        # --- ▲ 修正 ▲ ---
+        # ---
 
         if is_train:
             self.model.train()
@@ -467,12 +467,22 @@ class DistillationTrainer(BreakthroughTrainer):
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
 class SelfSupervisedTrainer(BreakthroughTrainer):
-    def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
+    def _run_step(self, batch: Union[Tuple[torch.Tensor, ...], Dict[str, Any]], is_train: bool) -> Dict[str, Any]:
         model_to_reset = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
         functional.reset_net(model_to_reset)
         if is_train: self.model.train()
         else: self.model.eval()
-        input_ids, target_ids = [t.to(self.device) for t in batch[:2]]
+        
+        # --- 修正: バッチ処理を一般化 ---
+        input_ids: torch.Tensor
+        target_ids: torch.Tensor
+        if isinstance(batch, dict):
+            input_ids = batch.get('input_ids', batch.get('input_images')).to(self.device) # type: ignore
+            target_ids = batch.get('labels').to(self.device) # type: ignore
+        else:
+            input_ids, target_ids = [t.to(self.device) for t in batch[:2]]
+        # ---
+
         with torch.amp.autocast(device_type=self.device if self.device != 'mps' else 'cpu', enabled=self.use_amp):
             with torch.set_grad_enabled(is_train):
                 outputs = self.model(input_ids, return_spikes=True, return_full_mems=True, return_full_hiddens=True)
@@ -508,11 +518,21 @@ class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
     def __init__(self, ensemble_size: int = 5, **kwargs: Any):
         super().__init__(**kwargs)
         self.ensemble_size = ensemble_size
-    def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
+    def _run_step(self, batch: Union[Tuple[torch.Tensor, ...], Dict[str, Any]], is_train: bool) -> Dict[str, Any]:
         if is_train: self.model.train()
         else: self.model.eval()
         model_to_reset = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-        input_ids, target_ids = [t.to(self.device) for t in batch[:2]]
+        
+        # --- 修正: バッチ処理を一般化 ---
+        input_ids: torch.Tensor
+        target_ids: torch.Tensor
+        if isinstance(batch, dict):
+            input_ids = batch.get('input_ids', batch.get('input_images')).to(self.device) # type: ignore
+            target_ids = batch.get('labels').to(self.device) # type: ignore
+        else:
+            input_ids, target_ids = [t.to(self.device) for t in batch[:2]]
+        # ---
+
         ensemble_logits: List[torch.Tensor] = []
         for _ in range(self.ensemble_size):
             functional.reset_net(model_to_reset)
@@ -550,7 +570,13 @@ class PlannerTrainer:
         self.model.train()
         progress_bar = tqdm(dataloader, desc=f"Planner Training Epoch {epoch}")
         for batch in progress_bar:
-            input_ids, target_plan = [t.to(self.device) for t in batch]
+            # PlannerTrainerは通常TensorDatasetを使用するためタプルを想定するが、念のため
+            if isinstance(batch, dict):
+                 input_ids = batch['input_ids'].to(self.device)
+                 target_plan = batch['labels'].to(self.device)
+            else:
+                 input_ids, target_plan = [t.to(self.device) for t in batch]
+            
             self.optimizer.zero_grad()
             skill_logits = self.model(input_ids)
             assert isinstance(self.criterion, PlannerLoss)
