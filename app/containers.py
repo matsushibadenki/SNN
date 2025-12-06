@@ -1,9 +1,8 @@
 # ファイルパス: app/containers.py
-# ファイル名: DIコンテナ定義
+# ファイル名: DIコンテナ定義 (Singleton修正版)
 # 機能説明: プロジェクト全体の依存関係注入（Dependency Injection）を管理する。
-#          TrainingContainer（学習用）、AgentContainer（エージェント用）、
-#          AppContainer（UI/サービス用）、BrainContainer（統合人工脳用）を定義し、
-#          設定ファイルに基づいてインスタンスを生成・配線する。
+#          修正: MetaCognitiveSNN と IntrinsicMotivationSystem を Singleton に変更し、
+#          トレーナーとエージェント間で状態を共有できるようにした。
 
 import torch
 import os
@@ -114,7 +113,7 @@ class TrainingContainer(containers.DeclarativeContainer):
     device = providers.Factory(get_auto_device)
     tokenizer = providers.Factory(get_tokenizer, config_dict=config)
     
-    # SNNモデル (ファクトリ利用)
+    # SNNモデル (ファクトリ利用 - 学習ごとに新しいインスタンス)
     snn_model = providers.Factory(
         SNNCore, 
         config=config.model, 
@@ -122,7 +121,10 @@ class TrainingContainer(containers.DeclarativeContainer):
     )
     
     astrocyte_network = providers.Factory(AstrocyteNetwork, snn_model=snn_model)
-    meta_cognitive_snn = providers.Factory(MetaCognitiveSNN)
+    
+    # --- 修正: Singletonに変更 ---
+    # トレーナーとエージェントで同じインスタンスを共有する必要がある
+    meta_cognitive_snn = providers.Singleton(MetaCognitiveSNN)
     
     optimizer = providers.Factory(AdamW, lr=config.training.gradient_based.learning_rate)
     scheduler = providers.Factory(
@@ -144,7 +146,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         use_amp=config.training.gradient_based.use_amp,
         log_dir=config.training.log_dir,
         criterion=providers.Factory(CombinedLoss, tokenizer=tokenizer, ce_weight=config.training.gradient_based.loss.ce_weight), 
-        meta_cognitive_snn=meta_cognitive_snn
+        meta_cognitive_snn=meta_cognitive_snn # 共有インスタンスを注入
     )
     
     distillation_trainer = providers.Factory(
@@ -158,7 +160,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         use_amp=config.training.gradient_based.use_amp,
         log_dir=config.training.log_dir,
         criterion=providers.Factory(DistillationLoss, tokenizer=tokenizer, temperature=config.training.gradient_based.distillation.loss.temperature),
-        meta_cognitive_snn=meta_cognitive_snn
+        meta_cognitive_snn=meta_cognitive_snn # 共有インスタンスを注入
     )
 
     physics_informed_trainer = providers.Factory(
@@ -317,6 +319,10 @@ class AgentContainer(containers.DeclarativeContainer):
         web_crawler=web_crawler
     )
     
+    # --- 修正: Singletonに変更 ---
+    # IntrinsicMotivationSystem も状態を持つため Singleton にする
+    motivation_system = providers.Singleton(IntrinsicMotivationSystem)
+
     self_evolving_agent_master = providers.Singleton(
         SelfEvolvingAgentMaster,
         name="SelfEvolvingAgentMaster",
@@ -324,8 +330,9 @@ class AgentContainer(containers.DeclarativeContainer):
         model_registry=model_registry,
         memory=memory,
         web_crawler=web_crawler,
+        # TrainingContainer の Singleton インスタンスを参照
         meta_cognitive_snn=providers.Callable(lambda tc: tc.meta_cognitive_snn(), tc=training_container),
-        motivation_system=providers.Singleton(IntrinsicMotivationSystem),
+        motivation_system=motivation_system,
         model_config_path=config.model.path.or_none(),
         training_config_path=providers.Object("configs/templates/base_config.yaml")
     )
@@ -363,7 +370,7 @@ class BrainContainer(containers.DeclarativeContainer):
         model_registry=agent_container.model_registry
     )
     
-    motivation_system = providers.Callable(lambda ag: ag.motivation_system, ag=agent_container.self_evolving_agent_master)
+    motivation_system = agent_container.motivation_system
     
     sensory_receptor = providers.Singleton(SensoryReceptor)
     spike_encoder = providers.Singleton(SpikeEncoder, num_neurons=256)
