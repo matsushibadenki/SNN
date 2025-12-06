@@ -114,7 +114,8 @@ class ArtificialBrain:
         self.fatigue_level += 1.0
         
         cycle_report = {"cycle": self.cycle_count, "input": str(raw_input)[:30]}
-        logger.info(f"\n--- 🧠 Cognitive Cycle #{self.cycle_count} (Energy: {self.energy_level:.1f}%) ---")
+        # ログ出力フォーマットを調整
+        # print(f"\n--- 🧠 Cognitive Cycle #{self.cycle_count} (Energy: {self.energy_level:.1f}%) ---")
 
         # 2. 知覚 (Perception & Grounding)
         sensory_info = self.receptor.receive(raw_input)
@@ -125,7 +126,6 @@ class ArtificialBrain:
                 img_tensor = self.image_transform(sensory_info['content']).unsqueeze(0)
                 self.visual_cortex.perceive_and_upload(img_tensor)
                 # 視覚特徴の接地
-                # (VisualCortexがWorkspaceにアップロードした特徴量を取得して接地)
                 vis_data = self.workspace.get_information("visual_cortex")
                 if vis_data and "features" in vis_data:
                     self.symbol_grounding.ground_neural_pattern(vis_data["features"], "visual_input")
@@ -151,17 +151,18 @@ class ArtificialBrain:
 
         # 4. 意思決定と実行 (Action)
         if conscious_content:
-            # 前頭前野による目標更新
+            # 前頭前野による目標更新 (意識的内容を受けて更新)
+            # ログの順序に合わせて、Broadcast後に処理を実行
             self.pfc.handle_conscious_broadcast("workspace", conscious_content)
             
             # 大脳基底核による行動選択
             # (PFCの目標もWorkspace経由でBasalGangliaに伝わる前提)
-            selected_action = self.basal_ganglia.selected_action # BasalGangliaは内部でWorkspaceを購読済み
+            selected_action = self.basal_ganglia.selected_action 
             
             if selected_action:
                 action_name = selected_action.get('action')
                 cycle_report["action"] = action_name
-                logger.info(f"⚡ Action Selected: {action_name}")
+                # logger.info(f"⚡ Action Selected: {action_name}")
                 
                 # 小脳による運動計画
                 motor_commands = self.cerebellum.refine_action_plan(selected_action)
@@ -200,19 +201,19 @@ class ArtificialBrain:
         睡眠フェーズを実行する。
         """
         self.is_sleeping = True
-        logger.info(f"\n💤 --- SLEEP MODE ACTIVATED (Fatigue: {self.fatigue_level}) ---")
+        print(f"\n💤 --- SLEEP MODE ACTIVATED (Fatigue: {self.fatigue_level}) ---")
         
         # 1. 記憶の固定化 (Explicit)
         # 海馬から重要なエピソードを取り出し、長期記憶(GraphRAG)へ
         episodes = self.hippocampus.get_and_clear_episodes_for_consolidation()
-        logger.info(f"  📝 Consolidating {len(episodes)} episodes to Cortex...")
+        print(f"  📝 Consolidating {len(episodes)} episodes to Cortex...")
         for ep in episodes:
             self.cortex.consolidate_memory(ep)
             
         # 2. ニューラルリプレイ (Implicit)
         if self.sleep_consolidator:
             report = self.sleep_consolidator.perform_sleep_cycle()
-            logger.info(f"  🧠 Replay finished. Synaptic change: {report.get('synaptic_change', 0):.4f}")
+            print(f"  🧠 Replay finished. Synaptic change: {report.get('synaptic_change', 0):.4f}")
         else:
             logger.warning("  ⚠️ SleepConsolidator not attached. Skipping neural replay.")
             time.sleep(1) # 簡易的な休息
@@ -221,13 +222,11 @@ class ArtificialBrain:
         self.fatigue_level = 0.0
         self.energy_level = 100.0
         self.is_sleeping = False
-        logger.info("🌅 --- WAKE UP --- \n")
+        print("🌅 --- WAKE UP --- \n")
 
     def user_correction(self, concept: str, correct_info: str):
         """ユーザーによる知識の訂正を受け付ける"""
         logger.info(f"🛠️ User Correction: {concept} -> {correct_info}")
         # Cortexを通じて知識グラフを修正
-        # RAGシステムへのアクセスが必要
         if hasattr(self.cortex, 'rag_system') and self.cortex.rag_system:
              self.cortex.rag_system.update_knowledge(concept, "is_corrected_to", correct_info, reason="user_instruction")
-             # 次回の睡眠でこの知識がリプレイされるように優先度を上げたい（今後の課題）
