@@ -5,7 +5,7 @@
 #   修正内容: 
 #   - nn.Sequential 内でタプル (spike, mem) を返すニューロン層を使用するとエラーになるため、
 #     nn.ModuleList を使用して forward メソッドで明示的に制御するように構造を変更。
-#   - これにより、PyTorchの標準的なフック機能とも互換性を維持。
+#   - forwardメソッド内で、get_total_spikes() を set_stateful(False) の前に移動 (重大バグ修正)。
 
 import torch
 import torch.nn as nn
@@ -117,17 +117,19 @@ class FEELSNN(BaseModel):
                 last_mem = lif_layer.mem # type: ignore
             elif hasattr(lif_layer, 'v'):
                 last_mem = lif_layer.v # type: ignore
-            
-        # ステートフル解除
-        for m in self.modules():
-            if hasattr(m, 'set_stateful'):
-                m.set_stateful(False) # type: ignore
         
         # 時間平均ロジット
         logits = torch.stack(outputs).mean(dim=0)
         
+        # --- 修正: リセット前にスパイクを集計 ---
         avg_spikes = 0.0
         if return_spikes:
             avg_spikes = self.get_total_spikes() / (input_images.shape[0] * self.time_steps)
+        # ------------------------------------
+
+        # ステートフル解除 (リセット)
+        for m in self.modules():
+            if hasattr(m, 'set_stateful'):
+                m.set_stateful(False) # type: ignore
             
         return logits, torch.tensor(avg_spikes, device=input_images.device), last_mem
