@@ -1,10 +1,10 @@
 # scripts/convert_model.py
-# (更新: ログ出力の強制)
+# (更新: ログ出力の強制・バッファリング対策)
 # ANNモデルからSNNモデルへの変換・蒸留を実行するためのスクリプト
 #
 # 変更点:
-# - [修正 v6] logging.basicConfig に force=True を追加。
-# - [修正 v6] 完了メッセージを print() でも出力するように変更。
+# - [修正 v7] print(..., flush=True) を使用して出力を即座にフラッシュ。
+# - [修正 v7] ロガー設定を main 関数の先頭で再設定。
 
 import argparse
 import sys
@@ -21,14 +21,6 @@ from snn_research.conversion.ann_to_snn_converter import AnnToSnnConverter
 from snn_research.benchmark.ann_baseline import SimpleCNN
 from omegaconf import OmegaConf
 
-# --- 修正: ストリームを標準出力に設定し、設定を強制 ---
-logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    stream=sys.stdout,
-    force=True # 他のライブラリによる設定を上書き
-)
-
 def get_calibration_loader(container):
     """キャリブレーション用の小規模なデータローダーを返す"""
     vocab_size = container.tokenizer.provided.vocab_size()
@@ -37,6 +29,21 @@ def get_calibration_loader(container):
     return DataLoader(dummy_dataset, batch_size=16)
 
 def main():
+    # --- 修正: ロギングの強制再設定 ---
+    # 他のライブラリによる設定をリセット
+    root = logging.getLogger()
+    if root.handlers:
+        for handler in root.handlers:
+            root.removeHandler(handler)
+    
+    logging.basicConfig(
+        level=logging.INFO, 
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        stream=sys.stdout,
+        force=True
+    )
+    logger = logging.getLogger(__name__)
+
     parser = argparse.ArgumentParser(
         description="ANNモデルからSNNへの高忠実度変換ツール",
         formatter_class=argparse.RawTextHelpFormatter
@@ -60,16 +67,17 @@ def main():
         snn_model = container.snn_model()
         snn_config = container.config.model.to_dict()
     except Exception as e:
-        logging.error(f"設定ファイルの読み込みまたはモデルの初期化に失敗しました: {e}")
+        logger.error(f"設定ファイルの読み込みまたはモデルの初期化に失敗しました: {e}")
         sys.exit(1)
 
-    # --- 修正: printでも出力 ---
+    # --- 修正: flush=True で確実に出力 ---
     msg = "✅ SNNモデルと設定の準備が完了しました。"
-    logging.info(msg)
-    print(msg) 
+    logger.info(msg)
+    print(msg, flush=True)
 
     if args.dry_run:
-        logging.info("--dry-run モード: 実際の変換は行わずに終了します。")
+        logger.info("--dry-run モード: 実際の変換は行わずに終了します。")
+        print("--dry-run モード: 実際の変換は行わずに終了します。", flush=True)
         sys.exit(0)
         
     converter = AnnToSnnConverter(snn_model=snn_model, model_config=snn_config)
@@ -77,7 +85,7 @@ def main():
 
     try:
         if args.method == "cnn-convert":
-            logging.info(f"CNN変換を開始します: {args.ann_model_path} -> {args.output_snn_path}")
+            logger.info(f"CNN変換を開始します: {args.ann_model_path} -> {args.output_snn_path}")
             ann_model = SimpleCNN(num_classes=10) 
             state_dict = torch.load(args.ann_model_path, map_location='cpu')
             if list(state_dict.keys())[0].startswith('module.'):
@@ -86,14 +94,14 @@ def main():
             converter.convert_cnn_weights(ann_model, args.output_snn_path, calibration_loader)
 
         elif args.method == "llm-convert":
-            logging.info(f"LLM変換を開始します: {args.ann_model_path} -> {args.output_snn_path}")
+            logger.info(f"LLM変換を開始します: {args.ann_model_path} -> {args.output_snn_path}")
             converter.convert_llm_weights(
                 ann_model_name_or_path=args.ann_model_path,
                 output_path=args.output_snn_path,
                 calibration_loader=calibration_loader
             )
     except Exception as e:
-        logging.error(f"変換プロセス中に致命的なエラーが発生しました: {e}", exc_info=True)
+        logger.error(f"変換プロセス中に致命的なエラーが発生しました: {e}", exc_info=True)
         sys.exit(1)
 
 if __name__ == "__main__":
