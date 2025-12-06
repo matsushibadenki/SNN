@@ -1,11 +1,10 @@
-# ファイルパス: snn_research/core/models/spiking_vlm.py
+# ファイルパス: snn_research/models/transformer/spiking_vlm.py
 # (Phase 3: Visual-Language Alignment)
 # Title: Spiking Vision-Language Model (SpikingVLM)
 # Description:
 # - 視覚エンコーダ (Vision Core) と言語モデル (Language Core) を
 #   マルチモーダル・プロジェクターで接続した統合モデル。
-# - 画像を入力し、その内容に基づいたテキスト生成（キャプション生成など）を行う。
-# - 教師あり学習（Image Captioning）や強化学習のバックボーンとして使用可能。
+# - 修正: SNNCore のインポートを遅延させ、循環参照を回避。
 
 import torch
 import torch.nn as nn
@@ -13,7 +12,8 @@ from typing import Dict, Any, Optional, Tuple, Union, cast
 import logging
 
 from snn_research.core.base import BaseModel
-from snn_research.core.snn_core import SNNCore
+# SNNCoreのトップレベルインポートを削除
+# from snn_research.core.snn_core import SNNCore 
 from snn_research.hybrid.multimodal_projector import MultimodalProjector
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,13 @@ class SpikingVLM(BaseModel):
     ) -> None:
         super().__init__()
         self.vocab_size = vocab_size
+
+        # --- 修正: 遅延インポートで循環参照を回避 ---
+        try:
+            from snn_research.core.snn_core import SNNCore
+        except ImportError:
+            raise ImportError("Failed to import SNNCore in SpikingVLM.")
+        # ----------------------------------------
         
         # 1. Vision Encoder (e.g., SpikingCNN, SpikingViT)
         logger.info("👁️ SpikingVLM: Building Vision Encoder...")
