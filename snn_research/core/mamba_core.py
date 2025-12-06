@@ -2,11 +2,8 @@
 # (修正)
 # Title: Spiking-MAMBAモデル コア実装
 # Description:
-# - 循環インポートエラーを解消するため、BaseModelとSNNLayerNormの
-#   インポート元を `snn_core` から新しい `base` モジュールに変更。
-# - ニューロンのタイプをハードコーディングせず、コンストラクタで
-#   neuron_classを受け取るように修正。
-# - 多様なニューロンタイプに対応。
+# - 修正: AdaptiveLIFNeuron の全パラメータ (decay, noise, adaptation等) を
+#   正しく通過させるようにフィルタリングを修正。
 
 import torch
 import torch.nn as nn
@@ -138,13 +135,16 @@ class SpikingMamba(BaseModel):
         filtered_params: Dict[str, Any]
         if neuron_type == 'lif':
             neuron_class = AdaptiveLIFNeuron
-            filtered_params = {k: v for k, v in neuron_params.items() if k in ['features', 'tau_mem', 'base_threshold']}
+            # 修正: AdaptiveLIFNeuronの全パラメータを許可
+            valid_keys = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 
+                          'target_spike_rate', 'noise_intensity', 'threshold_decay', 
+                          'threshold_step', 'v_reset']
+            filtered_params = {k: v for k, v in neuron_params.items() if k in valid_keys}
         elif neuron_type == 'izhikevich':
             neuron_class = IzhikevichNeuron
             filtered_params = {k: v for k, v in neuron_params.items() if k in ['features', 'a', 'b', 'c', 'd', 'dt']}
         elif neuron_type == 'glif':
             neuron_class = GLIFNeuron
-            # GLIFはゲート入力次元が必要だが、ここでは簡易的にfeaturesと同じとする
             neuron_params['gate_input_features'] = d_model * expand
             filtered_params = {k: v for k, v in neuron_params.items() if k in ['features', 'base_threshold', 'gate_input_features']}
         elif neuron_type == 'tc_lif':
@@ -175,9 +175,6 @@ class SpikingMamba(BaseModel):
         x = self.embedding(input_ids)
         
         # 時間ステップループ
-        # (注: Mamba自体がシーケンスモデルなので、SNNの時間ステップは外部ループとして扱うか、
-        #  内部状態の更新に使うかは設計による。ここでは外部ループとして適用)
-        
         for _ in range(self.time_steps):
             for layer in self.layers:
                 x = layer(x)
