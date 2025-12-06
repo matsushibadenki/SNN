@@ -3,8 +3,6 @@
 # ANNモデルからSNNモデルへの変換・蒸留を実行するためのスクリプト
 #
 # 変更点:
-# - [改善 v4] ご指摘に基づき、ロギング、例外処理、堅牢なCLI引数を導入。
-# - [改善 v4] 変換プロセスをメソッドごとに明確に分離。
 # - [修正 v5] ロギングのストリームを sys.stdout に設定し、外部ツールからキャプチャ可能にする。
 
 import argparse
@@ -23,7 +21,11 @@ from snn_research.benchmark.ann_baseline import SimpleCNN
 from omegaconf import OmegaConf
 
 # --- 修正: ストリームを標準出力に設定 ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', stream=sys.stdout)
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
 
 def get_calibration_loader(container):
     """キャリブレーション用の小規模なデータローダーを返す"""
