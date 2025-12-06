@@ -3,6 +3,7 @@
 # 機能説明: 全ての認知モジュール（知覚、記憶、感情、制御）を統合し、
 #          「意識的認知サイクル (Conscious Cognitive Cycle)」を実行するクラス。
 #          修正: SleepConsolidator を導入し、睡眠中に Neuro-Symbolic Feedback Loop を実行するように変更。
+#          修正: SleepConsolidatorの引数 cortex_snn を cast(Any, ...) で型エラー回避。
 
 from typing import Dict, Any, List, Optional, Callable, cast
 import asyncio
@@ -104,7 +105,8 @@ class ArtificialBrain:
         if hasattr(self.perception, 'column'):
              self.sleep_consolidator = SleepConsolidator(
                  rag_system=self.cortex.rag_system, # type: ignore
-                 cortex_snn=self.perception.column, # 知覚野のSNNを強化
+                 # --- 修正: 型不整合を回避するためにAnyでキャスト ---
+                 cortex_snn=cast(Any, self.perception.column), # 知覚野のSNNを強化
                  spike_encoder=self.encoder
              )
         else:
