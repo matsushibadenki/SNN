@@ -1,9 +1,9 @@
 # ファイルパス: snn_research/training/trainers/breakthrough.py
+# (修正: aux_logitsの処理を追加)
 # Title: Breakthrough Trainer (標準SNNトレーナー)
 # Description:
 #   標準的な代理勾配法によるSNN学習を行うトレーナークラス。
-#   他の多くのトレーナーの基底クラスとしても機能する。
-#   EWC (Elastic Weight Consolidation) や可視化機能も含む。
+#   修正: _run_step 内で aux_logits (4番目の戻り値) を取得し、損失関数に渡すように変更。
 
 import torch
 import torch.nn as nn
@@ -19,10 +19,8 @@ from torch.optim import Adam
 from pathlib import Path
 import logging
 
-# 外部ライブラリ
 from spikingjelly.activation_based import functional # type: ignore
 
-# プロジェクト内モジュール
 from snn_research.training.losses import CombinedLoss, SelfSupervisedLoss
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 from snn_research.cognitive_architecture.meta_cognitive_snn import MetaCognitiveSNN
@@ -105,13 +103,11 @@ class BreakthroughTrainer:
                  raise ValueError("Batch dictionary must contain 'labels'.")
             target_ids = target_ids.to(self.device)
             
-            # 入力キーの自動判別
             if 'input_images' in batch:
                 input_ids = batch['input_images'].to(self.device)
             elif 'input_ids' in batch:
                 input_ids = batch['input_ids'].to(self.device)
             else:
-                 # フォールバック
                  input_ids = list(batch.values())[0].to(self.device)
                  
         elif isinstance(batch, (list, tuple)) and len(batch) >= 2:
@@ -151,7 +147,6 @@ class BreakthroughTrainer:
         total_time_steps: int = 16
         logits_for_acc: Optional[torch.Tensor] = None
 
-        # SNN Cutoff (Evaluation only)
         if not is_train and not return_full_hiddens_flag:
             model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
             if hasattr(model_to_run, 'config') and isinstance(model_to_run.config, dict):
@@ -164,11 +159,13 @@ class BreakthroughTrainer:
             with torch.no_grad():
                 eval_outputs = self.model(input_ids, return_spikes=True, return_full_mems=True, return_full_hiddens=return_full_hiddens_flag)
                 
-                # アンパック (モデルによってはタプル長が異なる場合があるため注意)
+                # アンパック (最大4要素: logits, spikes, mem, aux_logits)
+                aux_logits = None
                 if isinstance(eval_outputs, tuple):
                     eval_logits = eval_outputs[0]
                     eval_spikes = eval_outputs[1]
                     eval_mem = eval_outputs[2] if len(eval_outputs) > 2 else torch.tensor(0.0)
+                    aux_logits = eval_outputs[3] if len(eval_outputs) > 3 else None
                 else:
                     eval_logits = eval_outputs
                     eval_spikes = torch.tensor(0.0)
@@ -176,7 +173,6 @@ class BreakthroughTrainer:
                 
                 logits_for_acc = eval_logits
                 
-                # Cutoff ロジック
                 if eval_logits.ndim >= 2:
                     if eval_logits.ndim == 3:
                         probs = F.softmax(eval_logits.view(-1, eval_logits.size(-1)), dim=-1)
@@ -190,17 +186,20 @@ class BreakthroughTrainer:
                 else:
                     avg_cutoff_steps = float(total_time_steps)
                 
-                loss_dict = self.criterion(eval_logits, target_ids, eval_spikes, eval_mem, self.model)
+                # aux_logits を渡す
+                loss_dict = self.criterion(eval_logits, target_ids, eval_spikes, eval_mem, self.model, aux_logits=aux_logits)
                 loss_dict['avg_cutoff_steps'] = torch.tensor(avg_cutoff_steps, device=self.device)
         else:
             with torch.amp.autocast(device_type=self.device if self.device != 'mps' else 'cpu', enabled=self.use_amp):
                 with torch.set_grad_enabled(is_train):
                     outputs = self.model(input_ids, return_spikes=True, return_full_mems=True, return_full_hiddens=return_full_hiddens_flag)
                     
+                    aux_logits = None
                     if isinstance(outputs, tuple):
                         logits_or_hiddens = outputs[0]
                         spikes = outputs[1]
                         mem = outputs[2] if len(outputs) > 2 else torch.tensor(0.0)
+                        aux_logits = outputs[3] if len(outputs) > 3 else None
                     else:
                         logits_or_hiddens = outputs
                         spikes = torch.tensor(0.0)
@@ -211,7 +210,8 @@ class BreakthroughTrainer:
                         logits_for_acc = None 
                     else:
                         logits_for_acc = logits_or_hiddens
-                        loss_dict = self.criterion(logits_for_acc, target_ids, spikes, mem, self.model)
+                        # aux_logits を渡す
+                        loss_dict = self.criterion(logits_for_acc, target_ids, spikes, mem, self.model, aux_logits=aux_logits)
             
             for hook in hooks: hook.remove()
 
@@ -253,7 +253,6 @@ class BreakthroughTrainer:
                             accuracy_val = accuracy_tensor.item()
                     self.meta_cognitive_snn.update_metadata(loss=loss_dict['total'].item(), computation_time=computation_time, accuracy=accuracy_val)
             
-            # --- Accuracy計算の安全化 ---
             accuracy_tensor = torch.tensor(0.0, device=self.device)
             if 'accuracy' not in loss_dict:
                 if logits_for_acc is not None:
