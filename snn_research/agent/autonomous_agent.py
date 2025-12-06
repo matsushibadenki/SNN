@@ -1,11 +1,12 @@
 # ファイルパス: snn_research/agent/autonomous_agent.py
-# (修正: Web学習の自動トリガー)
+# (修正: Web学習の自動トリガー & mypy型エラー修正)
 # Title: Autonomous Agent Base - 実装版
 # Description:
 #   - handle_task メソッドを修正し、データが指定されていない場合に
 #     Webクローラーを起動して自律的に学習データを収集するように変更。
+#   - register_model への引数を明示的にキャストして型エラーを解消。
 
-from typing import Dict, Any, Optional, List, TYPE_CHECKING, Union
+from typing import Dict, Any, Optional, List, TYPE_CHECKING, Union, cast
 import asyncio
 import torch
 import json
@@ -140,13 +141,15 @@ class AutonomousAgent:
         }
         
         # レジストリに登録 (シミュレーション)
+        # --- 修正: 明示的なキャストによる型エラー回避 ---
         await self.model_registry.register_model(
-            model_id=new_model_info["model_id"],
+            model_id=cast(str, new_model_info["model_id"]),
             task_description=task_description,
-            metrics=new_model_info["metrics"],
-            model_path=new_model_info["path"],
-            config=new_model_info["config"]
+            metrics=cast(Dict[str, float], new_model_info["metrics"]),
+            model_path=cast(str, new_model_info["path"]),
+            config=cast(Dict[str, Any], new_model_info["config"])
         )
+        # ----------------------------------------------
         
         return new_model_info
 
@@ -156,3 +159,5 @@ class AutonomousAgent:
         print(f"🤖 Running inference on '{model_path}' with prompt: '{prompt}'")
         # 実際のモデルロードと推論はリソースを食うため、ここではログ出力のみでシミュレート
         print(f"   -> Inference result: [Simulated SNN Output for '{prompt}']")
+
+}
