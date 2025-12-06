@@ -1,11 +1,8 @@
-# ファイルパス: snn_research/architectures/sformer.py
+# ファイルパス: snn_research/models/transformer/sformer.py
 # Title: SFormer (Scale-and-Fire Transformer) - High Fidelity T=1 Implementation
 # Description:
 #   ROADMAP Phase 3「究極の低遅延バックボーン」の完全実装。
-#   Scale-and-Fire Neuron (SFN) をQuery, Key, Value, FFNの全段に適用し、
-#   QK-Normによる安定化と合わせて T=1 での高精度動作を実現する。
-#   Softmaxアテンションの前段階で入力をSFNにより量子化することで、
-#   ハードウェアフレンドリーな計算グラフを構築する。
+#   修正: 自己回帰生成に必要な因果マスク(Causal Mask)の生成と適用ロジックを追加。
 
 import torch
 import torch.nn as nn
@@ -23,7 +20,6 @@ class SFNAttention(nn.Module):
     """
     Scale-and-Fire Attention Mechanism.
     Q, K, V を SFN で量子化(スパイク化)してからアテンションスコアを計算する。
-    T=1 SNNのための主要コンポーネント。
     """
     def __init__(
         self,
@@ -46,13 +42,11 @@ class SFNAttention(nn.Module):
         self.v_proj = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
 
-        # QK-Norm (Phase 3 Key Component)
-        # ヘッドごとに正規化するため、head_dim を指定
+        # QK-Norm
         self.qk_norm_q = SpikingQKNorm(self.head_dim)
         self.qk_norm_k = SpikingQKNorm(self.head_dim)
 
-        # Scale-and-Fire Neurons for Q, K, V
-        # これにより、行列積 (Q@K.T, Attn@V) の入力が整数(量子化値)になる
+        # Scale-and-Fire Neurons
         self.sfn_q = ScaleAndFireNeuron(d_model, num_levels=sf_levels, base_threshold=sf_threshold)
         self.sfn_k = ScaleAndFireNeuron(d_model, num_levels=sf_levels, base_threshold=sf_threshold)
         self.sfn_v = ScaleAndFireNeuron(d_model, num_levels=sf_levels, base_threshold=sf_threshold)
@@ -69,23 +63,24 @@ class SFNAttention(nn.Module):
         k = self.k_proj(x).view(B, L, H, Dh).transpose(1, 2)
         v = self.v_proj(x).view(B, L, H, Dh).transpose(1, 2)
 
-        # 2. Apply QK-Norm (Stabilization)
+        # 2. Apply QK-Norm
         q = self.qk_norm_q(q)
         k = self.qk_norm_k(k)
 
-        # 3. Apply SFN (Quantization / Spiking)
-        # (B, H, L, Dh) -> SFN -> (B, H, L, Dh)
-        # SFNは入力を量子化して返す(擬似的なスパイク/整数表現)
+        # 3. Apply SFN (Quantization)
         q, _ = self.sfn_q(q)
         k, _ = self.sfn_k(k)
         v, _ = self.sfn_v(v)
 
         # 4. Scaled Dot-Product Attention
-        # Q, K, V は量子化されているため、ハードウェア上では効率的に計算可能
         attn_scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
 
+        # --- マスク適用 ---
         if mask is not None:
-            # mask: (B, 1, 1, L) or similar
+            # mask形状: (L, L) または (B, 1, L, L) を想定
+            # attn_scores: (B, H, L, L)
+            # マスクが 0 (False) の位置を -inf で埋める
+            # ブロードキャスト可能な形状であることを期待
             attn_scores = attn_scores.masked_fill(mask == 0, float('-inf'))
 
         attn_probs = torch.softmax(attn_scores, dim=-1)
@@ -101,10 +96,6 @@ class SFNAttention(nn.Module):
         return output
 
 class SFormerBlock(nn.Module):
-    """
-    SFormerの基本ブロック。
-    SFNによる活性化と、SFNAttentionによる高効率アテンションを特徴とする。
-    """
     def __init__(
         self, 
         d_model: int, 
@@ -117,7 +108,6 @@ class SFormerBlock(nn.Module):
         super().__init__()
         self.d_model = d_model
         
-        # 1. Attention Block (SFN Integrated)
         self.norm1 = nn.LayerNorm(d_model)
         self.attn = SFNAttention(
             d_model=d_model, 
@@ -128,11 +118,9 @@ class SFormerBlock(nn.Module):
         )
         self.dropout1 = nn.Dropout(dropout)
         
-        # 2. FFN Block
         self.norm2 = nn.LayerNorm(d_model)
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         
-        # SFN (Scale-and-Fire Neuron) for FFN Activation (T=1)
         self.sfn_ffn = ScaleAndFireNeuron(
             features=dim_feedforward, 
             num_levels=sf_levels, 
@@ -143,22 +131,17 @@ class SFormerBlock(nn.Module):
         self.dropout2 = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        # --- Attention Sub-layer ---
         shortcut = x
         x_norm = self.norm1(x)
+        # マスクをAttentionに渡す
         attn_out = self.attn(x_norm, mask=mask)
         x = shortcut + self.dropout1(attn_out)
         
-        # --- FFN Sub-layer ---
         shortcut = x
         x_norm = self.norm2(x)
         
         x_ff = self.linear1(x_norm)
-        
-        # SFN Activation
-        # SFN returns (quantized_output, quantized_output) tuple in forward
         x_ff, _ = self.sfn_ffn(x_ff) 
-        
         x_ff = self.linear2(x_ff)
         x = shortcut + self.dropout2(x_ff)
         
@@ -167,7 +150,6 @@ class SFormerBlock(nn.Module):
 class SFormer(BaseModel):
     """
     Scale-and-Fire Transformer (SFormer).
-    T=1 での高精度推論を実現する次世代SNNバックボーン。
     """
     def __init__(
         self,
@@ -182,13 +164,12 @@ class SFormer(BaseModel):
         **kwargs: Any
     ):
         super().__init__()
-        # SFormerは本質的に T=1 モデルである
         self.time_steps = 1 
         
         if neuron_config is None:
             neuron_config = {}
             
-        sf_levels = int(neuron_config.get('num_levels', 8)) # SFNの量子化レベル数
+        sf_levels = int(neuron_config.get('num_levels', 8))
         sf_threshold = float(neuron_config.get('base_threshold', 4.0))
 
         self.embedding = nn.Embedding(vocab_size, d_model)
@@ -213,6 +194,12 @@ class SFormer(BaseModel):
         self._init_weights()
         logger.info(f"✅ SFormer initialized (T=1, Levels={sf_levels}). High-Fidelity Mode.")
 
+    def _generate_square_subsequent_mask(self, sz: int, device: torch.device) -> torch.Tensor:
+        """因果マスク（Look-ahead Mask）を生成する"""
+        mask = (torch.triu(torch.ones(sz, sz, device=device)) == 1).transpose(0, 1)
+        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+        return mask
+
     def forward(
         self, 
         input_ids: torch.Tensor, 
@@ -220,29 +207,35 @@ class SFormer(BaseModel):
         **kwargs: Any
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, L = input_ids.shape
+        device = input_ids.device
         
         # Embedding
         x = self.embedding(input_ids)
         
-        # Positional Encoding handling
         if L <= self.pos_encoder.shape[1]:
              x = x + self.pos_encoder[:, :L, :]
         else:
-             # Truncate pos_encoder if sequence is too long
              x = x + self.pos_encoder[:, :self.pos_encoder.shape[1], :]
 
         x = self.dropout(x)
         
-        # Layers (T=1 なので時間ループなし)
+        # --- 因果マスクの生成 ---
+        # (L, L) のマスクを作成。アテンションスコアに加算する場合は 0/-inf、
+        # masked_fill で使う場合は True/False (1/0)
+        # SFNAttentionの実装に合わせて 1 (許可) / 0 (禁止) のマスクを作成
+        causal_mask = torch.triu(torch.ones(L, L, device=device), diagonal=1) == 0
+        # (B, 1, L, L) に拡張してブロードキャスト対応
+        causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
+
+        # Layers
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, mask=causal_mask)
             
         x = self.norm(x)
         logits = self.output_projection(x)
         
-        # 統計情報 (SFNの総スパイク数を取得)
         total_spikes = self.get_total_spikes()
         avg_spikes = torch.tensor(total_spikes / (B * L), device=x.device) if return_spikes else torch.tensor(0.0, device=x.device)
-        mem = torch.tensor(0.0, device=x.device) # SFormerは膜電位を外部に出さない
+        mem = torch.tensor(0.0, device=x.device)
         
         return logits, avg_spikes, mem
