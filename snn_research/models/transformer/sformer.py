@@ -1,9 +1,9 @@
 # ファイルパス: snn_research/models/transformer/sformer.py
-# Title: SFormer (Scale-and-Fire Transformer) - High Fidelity T=1 Implementation (Fixed)
+# Title: SFormer (Scale-and-Fire Transformer) - High Fidelity T=1 Implementation (Fixed v2)
 # Description:
 #   ROADMAP Phase 3「究極の低遅延バックボーン」の完全実装。
 #   修正: SFNAttentionにおいて、SFNの適用タイミングをHead分割前に変更し、
-#         次元不整合エラー (Channel mismatch) を解消。
+#         次元不整合エラー (Channel mismatch) を確実に解消。
 
 import torch
 import torch.nn as nn
@@ -47,7 +47,7 @@ class SFNAttention(nn.Module):
         self.qk_norm_q = SpikingQKNorm(self.head_dim)
         self.qk_norm_k = SpikingQKNorm(self.head_dim)
 
-        # Scale-and-Fire Neurons (d_model全体に対して適用)
+        # Scale-and-Fire Neurons (d_model全体に対して適用するため、Head分割前に配置)
         self.sfn_q = ScaleAndFireNeuron(d_model, num_levels=sf_levels, base_threshold=sf_threshold)
         self.sfn_k = ScaleAndFireNeuron(d_model, num_levels=sf_levels, base_threshold=sf_threshold)
         self.sfn_v = ScaleAndFireNeuron(d_model, num_levels=sf_levels, base_threshold=sf_threshold)
@@ -65,6 +65,7 @@ class SFNAttention(nn.Module):
         v = self.v_proj(x)
 
         # 2. Apply SFN (Quantization): (B, L, D)
+        # --- 重要修正: Head分割前に適用 ---
         # SFNは (B, L, C) の形状を受け付け、C=d_model と一致することを確認する
         q, _ = self.sfn_q(q)
         k, _ = self.sfn_k(k)
@@ -87,7 +88,6 @@ class SFNAttention(nn.Module):
         if mask is not None:
             # mask形状: (L, L) または (B, 1, L, L) を想定
             # attn_scores: (B, H, L, L)
-            # マスクが 0 (False) の位置を -inf で埋める
             attn_scores = attn_scores.masked_fill(mask == 0, float('-inf'))
 
         attn_probs = torch.softmax(attn_scores, dim=-1)
@@ -227,9 +227,6 @@ class SFormer(BaseModel):
         x = self.dropout(x)
         
         # --- 因果マスクの生成 ---
-        # (L, L) のマスクを作成。アテンションスコアに加算する場合は 0/-inf、
-        # masked_fill で使う場合は True/False (1/0)
-        # SFNAttentionの実装に合わせて 1 (許可) / 0 (禁止) のマスクを作成
         causal_mask = torch.triu(torch.ones(L, L, device=device), diagonal=1) == 0
         # (B, 1, L, L) に拡張してブロードキャスト対応
         causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
