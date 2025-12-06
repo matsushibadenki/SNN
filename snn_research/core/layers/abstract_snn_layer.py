@@ -1,51 +1,27 @@
 # ファイルパス: snn_research/core/layers/abstract_snn_layer.py
-# タイトル: 抽象SNN（スパイキングニューラルネットワーク）レイヤー (PyTorch準拠)
+# 日本語タイトル: 抽象SNNレイヤー (修正版)
 # 機能説明: 
-#   Project SNN4のロードマップ (P4-1) に基づく、
-#   SNNに特有の機能（状態リセット）を持つ抽象基底クラス。
-#
-#   (ダミー実装の解消):
-#   - Generic[Tensor] および TypeVar('Tensor') を削除。
-#   - P2-1 の 'AbstractLayer' (nn.Module 準拠) を継承します。
-#   - 'torch.Tensor' を直接使用します。
+#   SNN特有の機能（状態リセットなど）を追加した抽象レイヤー。
+#   snn_research.layers.abstract_layer.AbstractLayer を継承する。
+#   
+#   修正点:
+#   - 相対インポート (...) を廃止し、絶対インポートを使用。
+#   - ダミー定義ブロックを削除し、依存関係を明確化。
 
-from abc import abstractmethod, ABC
+from __future__ import annotations
+from abc import abstractmethod
 from typing import Dict, Any, Optional
-
-# --- ダミー実装の解消 (PyTorch のインポート) ---
-import torch.nn as nn
+import torch
 from torch import Tensor
 
-# P2-1 (抽象レイヤー) をインポート
-try:
-    from ...layers.abstract_layer import AbstractLayer, LayerOutput
-    from ...config.learning_config import BaseLearningConfig
-except ImportError:
-    # (mypy フォールバック)
-    LayerOutput = Dict[str, Tensor] # type: ignore[misc]
-    # 修正 (エラー 13): mypy [assignment] 競合を無視
-    BaseLearningConfig = Any # type: ignore[misc, assignment]
-    
-    class AbstractLayer(nn.Module, ABC): # type: ignore[no-redef, misc]
-        def __init__(
-            self, i: Any, o: Any, l: Any, n: str
-        ) -> None: super().__init__()
-        
-        # 修正 (エラー 14): タイプミスを修正
-        @abstractmethod
-        def build(self) -> None: raise NotImplementedError
-        
-        @abstractmethod
-        def forward(
-            self, i: Tensor, s: Dict[str, Tensor]
-        ) -> LayerOutput:
-            raise NotImplementedError
+# 絶対インポートを使用
+from snn_research.layers.abstract_layer import AbstractLayer, LayerOutput
+from snn_research.config.learning_config import BaseLearningConfig
 
-
-# 修正: Generic[Tensor] を削除し、AbstractLayer を継承
 class AbstractSNNLayer(AbstractLayer):
     """
-    P4-1: SNNレイヤーのための抽象基底クラス。
+    SNNレイヤーのための抽象基底クラス。
+    内部状態（膜電位など）のリセット機能を追加。
     """
 
     def __init__(
@@ -60,7 +36,7 @@ class AbstractSNNLayer(AbstractLayer):
         """
         super().__init__(input_shape, output_shape, learning_config, name)
         
-        # P4-1: SNNの内部状態 (例: 膜電位)
+        # SNNの内部状態 (例: 膜電位)
         self.membrane_potential: Optional[Tensor] = None
 
     @abstractmethod
@@ -86,6 +62,7 @@ class AbstractSNNLayer(AbstractLayer):
     @abstractmethod
     def reset_state(self) -> None:
         """
-        P4-1: レイヤーの内部状態 (膜電位など) をリセットします。
+        レイヤーの内部状態 (膜電位など) をリセットします。
+        時系列データのバッチ切り替え時などに呼び出されます。
         """
         raise NotImplementedError
