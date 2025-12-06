@@ -3,6 +3,7 @@
 # Title: Artificial Brain Dashboard
 # Description: 人工脳の内部状態をリアルタイム可視化するGUI。
 # 修正: Gradioのキューエラー回避のため、イベントリスナーに queue=False を追加。
+# 修正: ArtificialBrainの初期化にmotivation_systemを渡すように変更。
 
 import gradio as gr # type: ignore[import-untyped]
 import sys
@@ -28,6 +29,7 @@ def process_brain_cycle(user_input: str):
 
     # 1. 感情状態
     amygdala_info = brain.workspace.get_information("amygdala")
+    # 修正: motivation_system を使用
     internal_state = brain.motivation_system.get_internal_state()
     
     emotion_summary = {
