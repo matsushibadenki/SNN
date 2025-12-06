@@ -3,9 +3,8 @@
 # Description:
 #   SDSAを使用したTransformerモデル。
 #   修正点:
-#   - SDSAEncoderLayer: 不要な input_spike_converter を削除し、
-#     標準的な残差接続 (x = src + attn_output) に変更して勾配フローを改善。
-#   - forwardメソッド内で、get_total_spikes() を set_stateful(False) の前に移動 (維持)。
+#   - SDSAEncoderLayer: 不要な input_spike_converter を削除。
+#   - forwardメソッド内で、get_total_spikes() を set_stateful(False) の前に移動 (重大バグ修正)。
 
 import torch
 import torch.nn as nn
@@ -71,8 +70,6 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
         self.norm1 = SNNLayerNorm(d_model)
         self.norm2 = SNNLayerNorm(d_model)
 
-        # 修正: input_spike_converter を削除
-
     def set_stateful(self, stateful: bool) -> None:
         self.stateful = stateful
         self.sdsa.set_stateful(stateful)
@@ -87,11 +84,9 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
 
     def forward(self, src: torch.Tensor) -> torch.Tensor:
         # 1. SDSAによる自己注意
-        # src はアナログ値を想定 (LayerNorm後などの連続値)
         attn_output = self.sdsa(src)
 
         # 2. Residual Connection 1 + Norm 1
-        # 修正: 入力をそのまま加算 (Standard Residual Connection)
         x = src + attn_output 
         x = self.norm1(x)
 
@@ -101,7 +96,6 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
         ff_output_spikes, _ = self.neuron_ff2(ff_output_analog)
 
         # 4. Residual Connection 2 + Norm 2
-        # ここでも前段の出力(x)をそのまま加算
         x = x + ff_output_spikes
         x = self.norm2(x)
 
@@ -110,7 +104,6 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
 class SpikingTransformerV2(BaseModel):
     """
     SDSA Encoder Layer を使用した Spiking Transformer。
-    ViT（画像）とテキストの両方に対応し、クロスモーダル注入をサポート。
     """
     def __init__(self, 
                  vocab_size: int, 
@@ -148,17 +141,11 @@ class SpikingTransformerV2(BaseModel):
     def forward(self, 
                 input_ids: Optional[torch.Tensor] = None, 
                 input_images: Optional[torch.Tensor] = None,
-                # --- コンテキスト注入用引数 ---
                 context_embeds: Optional[torch.Tensor] = None,
                 return_spikes: bool = False, 
                 output_hidden_states: bool = False, 
                 **kwargs: Any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            input_ids (Optional[torch.Tensor]): (B, SeqLen)
-            input_images (Optional[torch.Tensor]): (B, C, H, W)
-            context_embeds (Optional[torch.Tensor]): (B, CtxLen, D_model) - 外部から注入するコンテキスト
-        """
+        
         B: int
         N: int
         x: torch.Tensor
@@ -171,11 +158,10 @@ class SpikingTransformerV2(BaseModel):
             B, N = input_ids.shape
             device = input_ids.device
             x = self.token_embedding(input_ids)
-            # 位置エンコーディング
             if N <= self.pos_encoder_text.shape[1]:
                  x = x + self.pos_encoder_text[:, :N, :]
             else:
-                 x = x + self.pos_encoder_text[:, :self.pos_encoder_text.shape[1], :] # Truncate
+                 x = x + self.pos_encoder_text[:, :self.pos_encoder_text.shape[1], :]
         
         elif input_images is not None:
             device = input_images.device
@@ -186,7 +172,7 @@ class SpikingTransformerV2(BaseModel):
         else:
             raise ValueError("Either input_ids or input_images must be provided.")
 
-        # 2. Cross-Modal Injection (コンテキストの結合)
+        # 2. Cross-Modal Injection
         if context_embeds is not None:
             if context_embeds.shape[0] != B:
                  if context_embeds.shape[0] == 1:
@@ -196,7 +182,6 @@ class SpikingTransformerV2(BaseModel):
                       context_embeds = None
 
             if context_embeds is not None:
-                logging.debug(f"Injecting context: {context_embeds.shape} into input: {x.shape}")
                 x = torch.cat([context_embeds, x], dim=1) 
                 N = x.shape[1] 
 
@@ -209,28 +194,24 @@ class SpikingTransformerV2(BaseModel):
              layer.set_stateful(True)
 
         for t in range(self.time_steps):
-            # レートコーディング入力: 静的なアナログ値 'x' を毎ステップ入力
             x_step = x 
-
             for layer_module in self.layers:
                 layer = cast(SDSAEncoderLayer, layer_module)
                 x_step = layer(x_step) 
-
             outputs_over_time.append(x_step)
 
-        x_final = torch.stack(outputs_over_time).mean(dim=0) # 時間平均
+        x_final = torch.stack(outputs_over_time).mean(dim=0)
 
-        # --- スパイク集計 (リセット前) ---
+        # --- 修正: リセット前にスパイクを集計 ---
         avg_spikes_val = 0.0
         if return_spikes:
             avg_spikes_val = self.get_total_spikes() / (B * N * self.time_steps)
         # ------------------------------------
 
-        # Stateful解除
+        # Stateful解除 (リセット)
         for layer_module in self.layers:
              layer = cast(SDSAEncoderLayer, layer_module)
              layer.set_stateful(False)
-        # --- ループ終了 ---
 
         x_final = self.norm(x_final)
 
