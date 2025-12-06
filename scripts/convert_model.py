@@ -1,9 +1,10 @@
 # scripts/convert_model.py
-# (更新)
+# (更新: ログ出力の強制)
 # ANNモデルからSNNモデルへの変換・蒸留を実行するためのスクリプト
 #
 # 変更点:
-# - [修正 v5] ロギングのストリームを sys.stdout に設定し、外部ツールからキャプチャ可能にする。
+# - [修正 v6] logging.basicConfig に force=True を追加。
+# - [修正 v6] 完了メッセージを print() でも出力するように変更。
 
 import argparse
 import sys
@@ -20,11 +21,12 @@ from snn_research.conversion.ann_to_snn_converter import AnnToSnnConverter
 from snn_research.benchmark.ann_baseline import SimpleCNN
 from omegaconf import OmegaConf
 
-# --- 修正: ストリームを標準出力に設定 ---
+# --- 修正: ストリームを標準出力に設定し、設定を強制 ---
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - %(levelname)s - %(message)s',
-    stream=sys.stdout
+    stream=sys.stdout,
+    force=True # 他のライブラリによる設定を上書き
 )
 
 def get_calibration_loader(container):
@@ -61,7 +63,10 @@ def main():
         logging.error(f"設定ファイルの読み込みまたはモデルの初期化に失敗しました: {e}")
         sys.exit(1)
 
-    logging.info("✅ SNNモデルと設定の準備が完了しました。")
+    # --- 修正: printでも出力 ---
+    msg = "✅ SNNモデルと設定の準備が完了しました。"
+    logging.info(msg)
+    print(msg) 
 
     if args.dry_run:
         logging.info("--dry-run モード: 実際の変換は行わずに終了します。")
@@ -73,7 +78,7 @@ def main():
     try:
         if args.method == "cnn-convert":
             logging.info(f"CNN変換を開始します: {args.ann_model_path} -> {args.output_snn_path}")
-            ann_model = SimpleCNN(num_classes=10) # この部分はタスクに応じて変更が必要
+            ann_model = SimpleCNN(num_classes=10) 
             state_dict = torch.load(args.ann_model_path, map_location='cpu')
             if list(state_dict.keys())[0].startswith('module.'):
                  state_dict = {k[7:]: v for k, v in state_dict.items()}
