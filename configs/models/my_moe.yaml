@@ -1,11 +1,22 @@
+# ファイルパス: configs/models/my_moe.yaml
+# (修正済み: 相対パス化)
+# Title: FrankenMoE モデル設定
+# Description: 
+#   複数のエキスパートモデルを統合するFrankenMoEの設定ファイル。
+#   絶対パスをプロジェクト相対パスに修正し、環境依存を解消しました。
+
 model:
   architecture_type: franken_moe
   d_model: 128
   d_state: 64
+  # 修正: 絶対パスから相対パスに変更。
+  # 実行環境に合わせて適切なパス（runs/以下の学習済みモデル）を指定してください。
+  # ファイルが存在しない場合は、FrankenMoEクラスがランダム初期化でフォールバックします。
   expert_checkpoints:
-  - /Users/Shared/Program/python310/SNN5-main/runs/snn_experiment/best_model.pth
-  - /Users/Shared/Program/python310/SNN5-main/runs/snn_experiment/best_model.pth
-  - /Users/Shared/Program/python310/SNN5-main/runs/smoke_tests/best_model.pth
+  - runs/snn_experiment/best_model.pth
+  - runs/snn_experiment/best_model.pth
+  - runs/smoke_tests/best_model.pth
+  
   expert_configs:
   - architecture_type: predictive_coding
     d_model: 128
