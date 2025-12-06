@@ -1,11 +1,10 @@
 # ファイルパス: snn_research/core/layers/adapters.py
-# (修正: AnalogToSpikesの戻り値型整合性確保)
+# (修正: AnalogToSpikesのパラメータフィルタリング修正)
 #
 # Title: ANN-SNN アダプタレイヤー
 # Description:
 # - アナログ値とスパイク時系列を相互変換するためのアダプタレイヤー。
-# - 修正: DifferentiableTTFSEncoder使用時にmemとしてNoneではなく
-#   ゼロテンソルを返すようにし、損失計算時のエラーを防止。
+# - 修正: AdaptiveLIFNeuron のパラメータフィルタに v_reset を追加。
 
 import torch
 import torch.nn as nn
@@ -26,12 +25,10 @@ class AnalogToSpikes(BaseModel):
     DifferentiableTTFSEncoder (DTTFS) のロジックも含む。
     """
     neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, DifferentiableTTFSEncoder, TC_LIF, DualThresholdNeuron]
-    # all_mems_history: List[torch.Tensor] # forward内ローカル変数に変更するため削除
     
     def __init__(self, in_features: int, out_features: int, time_steps: int, activation: Type[nn.Module], neuron_config: Dict[str, Any]):
         super().__init__() 
         self.time_steps = time_steps
-        # self.all_mems_history = [] # 削除
         self.projection = nn.Linear(in_features, out_features)
         
         neuron_type_str: str = neuron_config.get("type", "lif")
@@ -43,9 +40,10 @@ class AnalogToSpikes(BaseModel):
         filtered_params: Dict[str, Any]
         if neuron_type_str == 'lif':
             neuron_class = AdaptiveLIFNeuron
+            # --- 修正: v_reset を追加 ---
             filtered_params = {
                 k: v for k, v in neuron_params.items() 
-                if k in ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
+                if k in ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step', 'v_reset']
             }
         elif neuron_type_str == 'izhikevich':
             neuron_class = IzhikevichNeuron
@@ -60,7 +58,7 @@ class AnalogToSpikes(BaseModel):
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'base_threshold', 'gate_input_features']
             }
-        elif neuron_type_str == 'dttfs': # 設計思想 4.1
+        elif neuron_type_str == 'dttfs': 
             neuron_class = DifferentiableTTFSEncoder
             neuron_params['num_neurons'] = out_features
             neuron_params['duration'] = time_steps
@@ -110,8 +108,6 @@ class AnalogToSpikes(BaseModel):
             
             spikes_out = dttfs_spikes_stacked.reshape(dttfs_output_shape)
             
-            # --- 修正: Noneではなく、勾配のないゼロテンソルを返す ---
-            # 損失関数が mem**2 などを計算するため、Noneだとクラッシュする
             dummy_mem = torch.zeros_like(spikes_out, requires_grad=False)
             
             return spikes_out, dummy_mem
@@ -123,7 +119,6 @@ class AnalogToSpikes(BaseModel):
             cast(sj_base.MemoryModule, self.neuron).set_stateful(True)
         functional.reset_net(self.neuron)
 
-        # ローカル変数として履歴を保持
         local_mems_history: List[torch.Tensor] = []
         
         hook: Optional[torch.utils.hooks.RemovableHandle] = None
@@ -166,7 +161,6 @@ class AnalogToSpikes(BaseModel):
         else: # (B, D_in)
             output_shape = (original_shape[0], self.time_steps, neuron_features) 
             
-        # full_mems も output_shape に合わせる
         if full_mems is not None:
              full_mems = full_mems.reshape(output_shape)
             
