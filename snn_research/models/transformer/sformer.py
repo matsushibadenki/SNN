@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/models/transformer/sformer.py
-# Title: SFormer (Scale-and-Fire Transformer) - High Fidelity T=1 Implementation (Fixed v2)
+# Title: SFormer (Scale-and-Fire Transformer) - High Fidelity T=1 Implementation (Fixed v3)
 # Description:
 #   ROADMAP Phase 3「究極の低遅延バックボーン」の完全実装。
 #   修正: SFNAttentionにおいて、SFNの適用タイミングをHead分割前に変更し、
