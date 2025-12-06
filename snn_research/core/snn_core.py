@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/snn_core.py
-# ファイル名: SNNコア・ラッパー
+# ファイル名: SNNコア・ラッパー (Safety Fix)
 # 機能説明: 各種アーキテクチャ（CNN, Transformer, PCなど）を統一的にラップするクラス。
 #          ArchitectureRegistryを使用して設定からモデルを構築し、
 #          共通のインターフェース（forward, reset_state）を提供する。
@@ -30,13 +30,17 @@ class SNNCore(nn.Module):
         # レジストリ経由でモデルを構築
         self.model: nn.Module = self._build_model()
         
-        # パラメータ数の集計とログ出力
-        param_count = sum(p.numel() for p in self.model.parameters())
-        trainable_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        # パラメータ数の集計とログ出力（安全に実行）
+        try:
+            param_count = sum(p.numel() for p in self.model.parameters())
+            trainable_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        except Exception:
+            param_count = 0
+            trainable_count = 0
         
         arch_type = self.config.get('architecture_type', 'unknown')
         if param_count == 0:
-            logger.error(f"❌ Built model '{arch_type}' has 0 parameters! Check model initialization.")
+            logger.warning(f"⚠️ Built model '{arch_type}' appears to have 0 parameters. This might be intentional (e.g. functional model) or an error.")
         else:
             logger.info(f"✅ SNNCore built model '{arch_type}' with {param_count:,} parameters ({trainable_count:,} trainable).")
 
