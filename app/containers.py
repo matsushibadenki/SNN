@@ -1,8 +1,8 @@
 # ファイルパス: app/containers.py
-# ファイル名: DIコンテナ定義 (Singleton修正版)
+# ファイル名: DIコンテナ定義 (SleepConsolidator追加版)
 # 機能説明: プロジェクト全体の依存関係注入（Dependency Injection）を管理する。
-#          修正: MetaCognitiveSNN と IntrinsicMotivationSystem を Singleton に変更し、
-#          トレーナーとエージェント間で状態を共有できるようにした。
+#          修正: SleepConsolidator を BrainContainer に追加し、ArtificialBrain に注入。
+#          修正: CorticalColumn を Singleton に変更し、SleepConsolidator と共有可能にした。
 
 import torch
 import os
@@ -64,6 +64,9 @@ from snn_research.agent.autonomous_agent import AutonomousAgent
 from snn_research.agent.self_evolving_agent import SelfEvolvingAgentMaster
 from snn_research.cognitive_architecture.physics_evaluator import PhysicsEvaluator
 from snn_research.cognitive_architecture.symbol_grounding import SymbolGrounding
+# --- ▼ 追加: SleepConsolidator をインポート ▼ ---
+from snn_research.cognitive_architecture.sleep_consolidation import SleepConsolidator
+# --- ▲ 追加 ▲ ---
 from app.utils import get_auto_device
 
 import logging
@@ -122,8 +125,7 @@ class TrainingContainer(containers.DeclarativeContainer):
     
     astrocyte_network = providers.Factory(AstrocyteNetwork, snn_model=snn_model)
     
-    # --- 修正: Singletonに変更 ---
-    # トレーナーとエージェントで同じインスタンスを共有する必要がある
+    # Singletonに変更
     meta_cognitive_snn = providers.Singleton(MetaCognitiveSNN)
     
     optimizer = providers.Factory(AdamW, lr=config.training.gradient_based.learning_rate)
@@ -146,7 +148,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         use_amp=config.training.gradient_based.use_amp,
         log_dir=config.training.log_dir,
         criterion=providers.Factory(CombinedLoss, tokenizer=tokenizer, ce_weight=config.training.gradient_based.loss.ce_weight), 
-        meta_cognitive_snn=meta_cognitive_snn # 共有インスタンスを注入
+        meta_cognitive_snn=meta_cognitive_snn
     )
     
     distillation_trainer = providers.Factory(
@@ -160,7 +162,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         use_amp=config.training.gradient_based.use_amp,
         log_dir=config.training.log_dir,
         criterion=providers.Factory(DistillationLoss, tokenizer=tokenizer, temperature=config.training.gradient_based.distillation.loss.temperature),
-        meta_cognitive_snn=meta_cognitive_snn # 共有インスタンスを注入
+        meta_cognitive_snn=meta_cognitive_snn
     )
 
     physics_informed_trainer = providers.Factory(
@@ -319,8 +321,7 @@ class AgentContainer(containers.DeclarativeContainer):
         web_crawler=web_crawler
     )
     
-    # --- 修正: Singletonに変更 ---
-    # IntrinsicMotivationSystem も状態を持つため Singleton にする
+    # Singletonに変更
     motivation_system = providers.Singleton(IntrinsicMotivationSystem)
 
     self_evolving_agent_master = providers.Singleton(
@@ -340,6 +341,27 @@ class AgentContainer(containers.DeclarativeContainer):
     active_inference_agent = providers.Callable(
         lambda tc: tc.active_inference_agent(),
         tc=training_container
+    )
+    
+    autonomous_agent = providers.Callable(
+        lambda ac: ac.autonomous_agent(),
+        ac=agent_container
+    )
+    
+    digital_life_form = providers.Singleton(
+        DigitalLifeForm,
+        planner=providers.Callable(lambda ac: ac.hierarchical_planner(), ac=agent_container),
+        autonomous_agent=autonomous_agent,
+        rl_agent=rl_agent,
+        self_evolving_agent=self_evolving_agent,
+        motivation_system=motivation_system,
+        meta_cognitive_snn=providers.Callable(lambda ac_instance: cast(TrainingContainer, ac_instance.training_container()).meta_cognitive_snn(), ac_instance=agent_container),
+        memory=providers.Callable(lambda ac: ac.memory(), ac=agent_container),
+        physics_evaluator=providers.Singleton(PhysicsEvaluator),
+        symbol_grounding=symbol_grounding,
+        langchain_adapter=app_container.langchain_adapter,
+        global_workspace=global_workspace,
+        active_inference_agent=active_inference_agent
     )
 
 class AppContainer(containers.DeclarativeContainer):
@@ -376,7 +398,8 @@ class BrainContainer(containers.DeclarativeContainer):
     spike_encoder = providers.Singleton(SpikeEncoder, num_neurons=256)
     actuator = providers.Singleton(Actuator, actuator_name="voice_synthesizer")
 
-    cortical_column = providers.Factory(
+    # --- 修正: FactoryからSingletonに変更してSleepConsolidatorと共有 ---
+    cortical_column = providers.Singleton(
         CorticalColumn, input_dim=256, output_dim=64, column_dim=128,
         neuron_config=config.training.biologically_plausible.neuron
     )
@@ -410,6 +433,17 @@ class BrainContainer(containers.DeclarativeContainer):
     
     symbol_grounding = providers.Singleton(SymbolGrounding, rag_system=agent_container.rag_system)
 
+    # --- 追加: SleepConsolidatorの定義 ---
+    sleep_consolidator = providers.Factory(
+        SleepConsolidator,
+        rag_system=agent_container.rag_system,
+        cortex_snn=cortical_column, # ここで共有
+        spike_encoder=spike_encoder,
+        # Configの値を使用（デフォルト値設定済み）
+        consolidation_epochs=3,
+        replay_batch_size=4
+    )
+
     artificial_brain = providers.Singleton(
         ArtificialBrain, 
         global_workspace=global_workspace, 
@@ -427,7 +461,8 @@ class BrainContainer(containers.DeclarativeContainer):
         cerebellum=cerebellum, 
         motor_cortex=motor_cortex, 
         causal_inference_engine=causal_inference_engine,
-        symbol_grounding=symbol_grounding 
+        symbol_grounding=symbol_grounding,
+        sleep_consolidator=sleep_consolidator # 注入
     )
     
     rl_agent = providers.Callable(
