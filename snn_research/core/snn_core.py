@@ -1,12 +1,12 @@
 # ファイルパス: snn_research/core/snn_core.py
-# ファイル名: SNNコア・ラッパー (Safety Fix)
+# ファイル名: SNNコア・ラッパー (Input Handling Fix)
 # 機能説明: 各種アーキテクチャ（CNN, Transformer, PCなど）を統一的にラップするクラス。
 #          ArchitectureRegistryを使用して設定からモデルを構築し、
 #          共通のインターフェース（forward, reset_state）を提供する。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import logging
 from spikingjelly.activation_based import functional # type: ignore
 
@@ -48,18 +48,33 @@ class SNNCore(nn.Module):
         """
         順伝播。入力テンソル x が None の場合、kwargs から適切なキーを探す。
         """
+        # x が指定されていない場合、kwargs から入力テンソルを探す
         if x is None:
-            # 辞書キーから入力を探す (input_ids, input_images など)
-            for key in ['input_ids', 'input_images', 'input_sequence', 'x']:
+            # 優先順位の高いキーから順に探す
+            # 注意: pop() すると下流のモデルがその引数を必要とする場合にエラーになる可能性があるため、
+            # ここでは取得するだけにして、kwargs はそのままモデルに渡す設計にする。
+            # ただし、x として渡す場合は kwargs から除外しないと重複エラーになる場合がある。
+            # モデルの実装 (forward) 次第だが、一般的には位置引数 x があればそれを使い、
+            # なければ kwargs を使う形が多い。
+            
+            found_key = None
+            for key in ['input_ids', 'input_images', 'input_sequence', 'x', 'input']:
                 if key in kwargs:
-                    x = kwargs.pop(key)
+                    x = kwargs[key]
+                    found_key = key
                     break
-        
-        # モデルに渡す。xがまだNoneならkwargsのみで呼び出す。
+            
+            # キーが見つかった場合、kwargs から削除して x として渡すことで重複を防ぐ
+            if found_key:
+                kwargs.pop(found_key)
+
+        # モデルに渡す
         if x is None:
+            # x が見つからなかった場合は kwargs のみで呼び出す
             return self.model(**kwargs)
-        
-        return self.model(x, **kwargs)
+        else:
+            # x と残りの kwargs で呼び出す
+            return self.model(x, **kwargs)
     
     def reset_state(self) -> None:
         """モデルの内部状態（膜電位、スパイク履歴など）をリセットする。"""
