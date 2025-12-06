@@ -3,12 +3,11 @@
 
 """
 ファイルパス: snn-cli.py
-タイトル: SNN Project CLI Tool (パス修正版)
+タイトル: SNN Project CLI Tool (完全版)
 機能説明:
 SNNプロジェクトの主要なワークフロー（学習、評価、変換、UI起動、最適化、診断など）を
 統一的に管理するためのコマンドラインインターフェース（CLI）ツール。
 clickライブラリを使用して、モジュール化されたコマンドグループを提供します。
-修正: scripts/runners/ ディレクトリ内のスクリプトへのパスを修正。
 """
 
 import click
@@ -34,9 +33,16 @@ def run_script(script_path, args, capture_output=False):
     指定されたPythonスクリプトをサブプロセスとして実行する。
     """
     python_exec = find_python_executable()
+    
+    # スクリプトの存在確認
+    if not os.path.exists(script_path):
+        logger.error(f"❌ スクリプトが見つかりません: {script_path}")
+        logger.error("プロジェクトのルートディレクトリから実行しているか確認してください。")
+        sys.exit(1)
+
     command = [python_exec, script_path] + args
     
-    logger.info(f"実行中: {' '.join(command)}")
+    logger.info(f"🚀 実行中: {' '.join(command)}")
     
     try:
         if capture_output:
@@ -44,25 +50,24 @@ def run_script(script_path, args, capture_output=False):
         else:
             result = subprocess.run(command, check=True, text=True)
             
-        logger.info(f"スクリプト {script_path} が正常に完了しました。")
+        logger.info(f"✅ スクリプト {script_path} が正常に完了しました。")
         return result
         
     except subprocess.CalledProcessError as e:
-        logger.error(f"スクリプト実行中にエラーが発生しました: {script_path}")
+        logger.error(f"❌ スクリプト実行中にエラーが発生しました: {script_path}")
         logger.error(f"コマンド: {' '.join(command)}")
         logger.error(f"リターンコード: {e.returncode}")
         if capture_output:
             logger.error(f"標準出力: {e.stdout}")
             logger.error(f"標準エラー: {e.stderr}")
         sys.exit(e.returncode)
-    except FileNotFoundError:
-        logger.error(f"スクリプトが見つかりません: {script_path}")
-        logger.error("プロジェクトのルートディレクトリから実行しているか確認してください。")
+    except Exception as e:
+        logger.error(f"❌ 予期せぬエラーが発生しました: {e}")
         sys.exit(1)
 
 def run_external_command(command_list, capture_output=False):
     """指定された外部コマンドをサブプロセスとして実行する。"""
-    logger.info(f"実行中: {' '.join(command_list)}")
+    logger.info(f"🚀 実行中: {' '.join(command_list)}")
     try:
         if capture_output:
             result = subprocess.run(command_list, check=False, text=True, capture_output=True)
@@ -70,21 +75,21 @@ def run_external_command(command_list, capture_output=False):
             result = subprocess.run(command_list, text=True)
             
         if result.returncode == 0:
-            logger.info(f"コマンド {command_list[0]} が正常に完了しました。")
+            logger.info(f"✅ コマンド {command_list[0]} が正常に完了しました。")
         else:
-            logger.warning(f"コマンド {command_list[0]} が完了しました (リターンコード: {result.returncode})。")
+            logger.warning(f"⚠️ コマンド {command_list[0]} が完了しました (リターンコード: {result.returncode})。")
         return result
     except FileNotFoundError:
-        logger.error(f"コマンドが見つかりません: {command_list[0]}")
+        logger.error(f"❌ コマンドが見つかりません: {command_list[0]}")
         sys.exit(1)
     except Exception as e:
-        logger.error(f"コマンド {command_list[0]} 実行中に予期せぬエラーが発生しました: {e}")
+        logger.error(f"❌ コマンド {command_list[0]} 実行中に予期せぬエラーが発生しました: {e}")
         sys.exit(1)
 
 # --- 1. メインCLIグループ ---
 @click.group()
 def cli():
-    """SNNプロジェクト 統合CLIツール (v11.1)"""
+    """SNNプロジェクト 統合CLIツール (v13.0)"""
     pass
 
 # --- 2. クリーンアップ機能 ---
@@ -169,8 +174,8 @@ def hpo_cli():
 @hpo_cli.command(name="run")
 @click.argument('model_config', type=click.Path(exists=True))
 @click.argument('task_name', type=str)
-@click.option('--target-script', default="scripts/runners/train.py", help="最適化対象スクリプト。") # 修正
-@click.option('--teacher-model', default="models/ann_teacher.pth", help="教師モデルパス。")
+@click.option('--target-script', default="scripts/runners/train.py", help="最適化対象スクリプト。")
+@click.option('--teacher-model', default="gpt2", help="教師モデルパス。")
 @click.option('--n-trials', default=50, help="試行回数。")
 @click.option('--eval-epochs', default=5, help="評価エポック数。")
 @click.option('--metric-name', default="accuracy", help="最適化メトリクス。")
@@ -178,16 +183,15 @@ def hpo_cli():
 @click.option('--study-name', default=None, help="Study名。")
 def hpo_run(model_config, task_name, target_script, teacher_model, n_trials, eval_epochs, metric_name, storage, study_name):
     """run_hpo.py を実行"""
-    # パス修正: scripts/runners/run_hpo.py
     script_path = "scripts/runners/run_hpo.py"
     args = [
         "--model_config", model_config,
         "--task", task_name,
         "--target_script", target_script,
         "--teacher_model", teacher_model,
-        "--n-trials", str(n_trials),
-        "--eval-epochs", str(eval_epochs),
-        "--metric-name", metric_name,
+        "--n_trials", str(n_trials),
+        "--eval_epochs", str(eval_epochs),
+        "--metric_name", metric_name,
     ]
     if storage: args.extend(["--storage", storage])
     if study_name: args.extend(["--study_name", study_name])
@@ -236,20 +240,21 @@ def train_cli():
     pass
 
 @train_cli.command(name="gradient")
-@click.option('--config', default="configs/experiments/cifar10_spikingcnn_config.yaml")
+@click.option('--config', default="configs/templates/base_config.yaml")
 @click.option('--model-config', required=True)
-@click.option('--data-path', default="data/")
+@click.option('--data-path', default="data/smoke_test_data.jsonl")
 @click.option('--override-config', default=None)
 @click.option('--resume-path', default=None, type=click.Path(exists=True))
 @click.option('--distributed', is_flag=True)
 @click.option('--task-name', default=None)
 @click.option('--load-ewc-data', default=None)
-def gradient_train(config, model_config, data_path, override_config, resume_path, distributed, task_name, load_ewc_data):
+@click.option('--epochs', default=None)
+def gradient_train(config, model_config, data_path, override_config, resume_path, distributed, task_name, load_ewc_data, epochs):
     """代理勾配法による学習"""
-    # パス修正: scripts/runners/train.py
     script_path = "scripts/runners/train.py"
     args = ["--config", config, "--model_config", model_config, "--data_path", data_path]
     if override_config: args.extend(["--override_config", override_config])
+    if epochs: args.extend(["--override_config", f"training.epochs={epochs}"])
     if resume_path: args.extend(["--resume_path", resume_path])
     if distributed: args.append("--distributed")
     if task_name: args.extend(["--task_name", task_name])
@@ -265,18 +270,14 @@ def train_distill(task, teacher_model, model_config, epochs):
     """
     知識蒸留 (train.py を蒸留モードで実行)
     """
-    # パス修正: scripts/runners/train.py を使用
     script_path = "scripts/runners/train.py"
-    # 蒸留用の設定をオーバーライドで渡す
     args = [
-        "--config", "configs/templates/base_config.yaml", # ベース設定
+        "--config", "configs/templates/base_config.yaml",
         "--model_config", model_config,
         "--paradigm", "gradient_based",
         "--override_config", "training.gradient_based.type=distillation",
         "--override_config", f"training.gradient_based.distillation.teacher_model={teacher_model}",
         "--override_config", f"training.epochs={epochs}",
-        # データパスはタスクに応じて適切に設定する必要があるが、ここでは簡易的にデフォルトを使用するか
-        # ユーザーに追加引数を求めるのが望ましい。今回は必須引数 task を task_name として渡す
         "--task_name", task
     ]
     run_script(script_path, args)
@@ -293,7 +294,7 @@ def benchmark_cli():
 @click.option('--experiment', required=True)
 @click.option('--epochs', default=5)
 @click.option('--tag', default="BenchmarkRun")
-@click.option('--model-config', default=None) # 追加
+@click.option('--model-config', default=None)
 def benchmark_run(experiment, epochs, tag, model_config):
     """ベンチマーク実行"""
     script_path = "scripts/run_benchmark_suite.py"
@@ -305,7 +306,7 @@ def benchmark_run(experiment, epochs, tag, model_config):
 @benchmark_cli.command(name="evaluate-accuracy")
 @click.option('--model-path', required=True, type=click.Path(exists=True))
 @click.option('--model-config', required=True)
-@click.option('--model-type', required=True, type=click.Choice(['snn', 'ann']))
+@click.option('--model-type', required=True, type=click.Choice(['SNN', 'ANN']))
 @click.option('--experiment', required=True)
 @click.option('--tag', default="AccuracyEvaluation")
 def evaluate_accuracy(model_path, model_config, model_type, experiment, tag):
@@ -355,20 +356,16 @@ def agent_cli():
 @click.option('--force-retrain', is_flag=True)
 def agent_solve(task_description, unlabeled_data_path, force_retrain):
     """タスク解決"""
-    # パス修正
     script_path = "scripts/runners/run_agent.py"
     args = ["--task_description", task_description]
     if unlabeled_data_path: args.extend(["--unlabeled_data_path", unlabeled_data_path])
     if force_retrain: args.append("--force_retrain")
     run_script(script_path, args)
 
-# agent evolve コマンドはスクリプトが存在しないため削除
-
 @agent_cli.command(name="rl")
 @click.option('--episodes', default=1000)
 def agent_rl(episodes):
     """強化学習"""
-    # パス修正
     script_path = "scripts/runners/run_rl_agent.py"
     args = ["--episodes", str(episodes)]
     run_script(script_path, args)
@@ -378,7 +375,6 @@ def agent_rl(episodes):
 @click.option('--context-data', required=True)
 def agent_planner(task_request, context_data):
     """プランナー"""
-    # パス修正
     script_path = "scripts/runners/run_planner.py"
     args = ["--task_request", task_request, "--context_data", context_data]
     run_script(script_path, args)
@@ -393,7 +389,6 @@ def agent_brain(prompt, loop, model_config):
     if loop:
         script_path = "scripts/observe_brain_thought_process.py"
     else:
-        # パス修正
         script_path = "scripts/runners/run_brain_simulation.py"
         args.extend(["--prompt", prompt])
     run_script(script_path, args)
@@ -403,7 +398,6 @@ def agent_brain(prompt, loop, model_config):
 @click.option('--model-config', default='configs/models/small.yaml')
 def agent_life_form(duration, model_config):
     """デジタル生命体"""
-    # パス修正
     script_path = "scripts/runners/run_life_form.py"
     args = ["--duration", str(duration), "--model_config", model_config]
     run_script(script_path, args)
@@ -484,7 +478,6 @@ def debug_analyze(tool, skip_mypy, skip_flake8):
     if (tool in ['all', 'flake8']) and not skip_flake8:
         run_external_command(["flake8"] + targets)
     if (tool in ['all', 'mypy']) and not skip_mypy:
-        # パス修正: scripts/runners を追加
         mypy_targets = ["snn_research", "app", "scripts", "tests", "snn-cli.py", "scripts/runners/train.py"]
         run_external_command(["mypy"] + mypy_targets)
 
