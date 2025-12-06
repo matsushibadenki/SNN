@@ -3,11 +3,13 @@
 # Description:
 #   周波数エンコーディングと進化的リークニューロンを組み合わせた堅牢なSNNモデル。
 #   修正内容: 
-#   - 膜電位 (mem) 取得ロジックを修正 (.v -> .mem)。
+#   - nn.Sequential 内でのタプル戻り値 (spike, mem) によるクラッシュを回避するため、
+#     手動でレイヤーを反復処理するロジックを実装。
+#   - 最後のLIF層の膜電位を正しく取得するロジックを維持。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional, Type, Union, cast
+from typing import Dict, Any, Optional, Type, Union, cast, List
 
 from snn_research.core.base import BaseModel
 from snn_research.core.neurons.feel_neuron import EvolutionaryLeakLIF
@@ -60,7 +62,6 @@ class FEELSNN(BaseModel):
         
         # 3. Classifier
         self.flatten = nn.Flatten()
-        # Sequentialのインデックスで内部レイヤーにアクセスできるように構造化
         self.classifier = nn.Sequential(
             nn.Linear(128 * 4 * 4, 256),
             EvolutionaryLeakLIF(features=256, initial_tau=initial_tau, v_threshold=v_threshold, learn_threshold=learn_threshold),
@@ -68,6 +69,17 @@ class FEELSNN(BaseModel):
         )
 
         self._init_weights()
+
+    def _forward_sequential_safe(self, sequential_module: nn.Sequential, x: torch.Tensor) -> torch.Tensor:
+        """
+        nn.Sequentialを手動で実行し、ニューロン層からのタプル戻り値 (spike, mem) を処理する。
+        """
+        for layer in sequential_module:
+            x = layer(x)
+            if isinstance(x, tuple):
+                # ニューロン層の場合、(spike, mem) が返るため spike のみ次へ渡す
+                x = x[0]
+        return x
 
     def forward(self, input_images: torch.Tensor, return_spikes: bool = False, **kwargs: Any) -> Any:
         # リセット
@@ -86,13 +98,20 @@ class FEELSNN(BaseModel):
         for t in range(self.time_steps):
             x_t = encoded_inputs[:, t, ...]
             
-            feat = self.features(x_t)
+            # 特徴抽出 (安全な実行)
+            feat = self._forward_sequential_safe(self.features, x_t)
+            
             flat = self.flatten(feat)
-            out = self.classifier(flat)
+            
+            # 分類器 (安全な実行)
+            # Classifierの中間LIFの膜電位を取得したい場合は、ここで個別に実行する必要があるが、
+            # 簡易化のためヘルパーを使用し、最後にモジュールから直接取得する
+            out = self._forward_sequential_safe(self.classifier, flat)
+            
             outputs.append(out)
             
-        # 修正: ループ終了後に最後のLIF層の膜電位を取得
-        # classifier[1] が EvolutionaryLeakLIF であることを前提に取得
+        # ループ終了後に最後のLIF層の膜電位を取得
+        # classifier[1] が EvolutionaryLeakLIF であることを前提
         if len(self.classifier) > 1:
             lif_layer = self.classifier[1]
             if hasattr(lif_layer, 'mem'):
@@ -105,6 +124,7 @@ class FEELSNN(BaseModel):
             if hasattr(m, 'set_stateful'):
                 m.set_stateful(False) # type: ignore
         
+        # 時間平均ロジット
         logits = torch.stack(outputs).mean(dim=0)
         
         avg_spikes = 0.0
