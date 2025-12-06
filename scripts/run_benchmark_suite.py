@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# (修正: argparse.Namespace を使用)
+# (修正: logging.basicConfig に stream=sys.stdout を追加)
 
 import argparse
 import logging
@@ -14,7 +14,12 @@ from typing import Any, Dict, cast
 from PIL import Image
 import numpy as np
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# --- 修正: ストリームを標準出力に設定 ---
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
 logger = logging.getLogger(__name__)
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
