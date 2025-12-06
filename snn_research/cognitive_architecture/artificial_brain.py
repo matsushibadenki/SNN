@@ -2,7 +2,7 @@
 # ファイル名: 人工脳統合コア
 # 機能説明: 全ての認知モジュール（知覚、記憶、感情、制御）を統合し、
 #          「意識的認知サイクル (Conscious Cognitive Cycle)」を実行するクラス。
-#          外部入力の処理、意識のブロードキャスト、行動選択、記憶の固定化（睡眠）を管理する。
+#          修正: SleepConsolidator を導入し、睡眠中に Neuro-Symbolic Feedback Loop を実行するように変更。
 
 from typing import Dict, Any, List, Optional, Callable, cast
 import asyncio
@@ -36,6 +36,9 @@ from .causal_inference_engine import CausalInferenceEngine
 from .intrinsic_motivation import IntrinsicMotivationSystem
 # Symbol Grounding
 from .symbol_grounding import SymbolGrounding
+# Sleep Consolidation (New!)
+from .sleep_consolidation import SleepConsolidator # --- 追加 ---
+
 # Utils
 from torchvision import transforms # type: ignore
 
@@ -44,6 +47,7 @@ class ArtificialBrain:
     認知アーキテクチャ全体を統合し、「意識的認知サイクル」を制御する人工脳システム。
     """
     image_transform: Callable[[Any], torch.Tensor]
+    sleep_consolidator: Optional[SleepConsolidator] # --- 追加 ---
 
     def __init__(
         self,
@@ -90,6 +94,23 @@ class ArtificialBrain:
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
         ]))
+
+        # --- 追加: 睡眠学習システムの初期化 ---
+        # CortexのSNNモデルに対してリプレイを行う
+        # 注: 本来は Cortex クラスが SNNモデルを管理しているべきだが、
+        # 現状の実装に合わせて PerceptionCortex のカラムを使用する例とする、
+        # または Cortex が BioPCNetwork を持つように拡張する必要がある。
+        # ここでは暫定的に PerceptionCortex の column (SNN) を強化対象とする。
+        if hasattr(self.perception, 'column'):
+             self.sleep_consolidator = SleepConsolidator(
+                 rag_system=self.cortex.rag_system, # type: ignore
+                 cortex_snn=self.perception.column, # 知覚野のSNNを強化
+                 spike_encoder=self.encoder
+             )
+        else:
+             print("⚠️ Warning: SNN model for sleep consolidation not found. Sleep learning disabled.")
+             self.sleep_consolidator = None
+        # -------------------------------------
         
         print("✅ 人工脳システムの全モジュールが正常に起動しました。")
 
@@ -182,45 +203,34 @@ class ArtificialBrain:
 
     def sleep_and_dream(self):
         """
-        睡眠フェーズ。海馬（短期記憶）から大脳皮質（長期記憶）への記憶の固定化（Consolidation）を行い、
-        夢（ランダムな記憶の再生）を通じて重要な情報を強化する。
+        睡眠フェーズ。
+        1. 海馬（短期記憶）からGraphRAG（長期記憶）へのエピソード転送。
+        2. GraphRAGからSNNへの知識リプレイ（Neuro-Symbolic Feedback Loop）。
         """
-        print("\n💤 --- 睡眠モード開始 (Memory Consolidation & Dreaming) ---")
+        print("\n💤 --- 睡眠モード開始 (Memory Consolidation & Neural Replay) ---")
         self.is_sleeping = True
         
+        # Step 1: エピソード記憶の固定化 (Explicit Consolidation)
         recent_memories = list(self.hippocampus.working_memory)
         if recent_memories:
-            print(f"  💭 {len(recent_memories)} 個のエピソードから夢を生成中...")
-            # 夢を見る（ランダムサンプリング）
-            dream_sequence = random.sample(recent_memories, min(len(recent_memories), 5))
-            
-            for episode in dream_sequence:
-                # 感情価に基づいて記憶の重要度を判定
-                emotion = episode.get('emotion')
-                # Noneチェックと型安全なアクセス
-                if emotion is None:
-                    emotion = {}
-                
-                valence = 0.0
-                arousal = 0.0
-                if isinstance(emotion, dict):
-                    valence = float(emotion.get('valence', 0.0))
-                    arousal = float(emotion.get('arousal', 0.0))
-                
-                importance = abs(valence) + arousal
-                content_preview = str(episode.get('content', ''))[:30]
-                
-                print(f"  📽️ リプレイ中: '{content_preview}...' (重要度: {importance:.2f})")
-                
-                # 重要な記憶のみを長期記憶へ固定化
-                if importance > 0.5:
-                    self.cortex.consolidate_memory(episode)
-                    print("    --> 🧠 大脳皮質へ固定化されました。")
+            print(f"  📝 {len(recent_memories)} 個のエピソードをGraphRAGへ構造化中...")
+            for episode in recent_memories:
+                 # 重要な記憶のみを長期記憶へ固定化
+                 # (簡易的にすべて送るが、Cortex側でフィルタリングされる)
+                 self.cortex.consolidate_memory(episode)
         
         # 短期記憶をクリア
         self.hippocampus.clear_memory()
+        
+        # Step 2: 知識のニューラルリプレイ (Implicit Consolidation)
+        # GraphRAGの知識を使ってSNNを微調整する
+        if self.sleep_consolidator:
+            print("  🧠 Neuro-Symbolic Replay: 知識を直感（シナプス重み）に変換中...")
+            metrics = self.sleep_consolidator.consolidate_knowledge()
+            print(f"     -> シナプス可塑性変化: {metrics.get('total_synaptic_change', 0):.4f}")
+        
         self.is_sleeping = False
-        print("🌅 --- 目覚め (Ready for new cycles) ---\n")
+        print("🌅 --- 目覚め (Brain Updated) ---\n")
 
     def consolidate_memories(self):
         """手動で記憶の固定化を行うユーティリティ"""
