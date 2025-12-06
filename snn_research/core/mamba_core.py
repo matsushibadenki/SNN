@@ -1,8 +1,8 @@
 # ファイルパス: snn_research/core/mamba_core.py
-# (修正)
-# Title: Spiking-MAMBAモデル コア実装
+# Title: Spiking-MAMBAモデル コア実装 (Stateful修正版)
 # Description:
 # - 修正: AdaptiveLIFNeuron の全パラメータを正しく通過させるようにフィルタリングを修正。
+# - 修正: SpikingMambaBlock に set_stateful / reset を実装し、時間ループでの状態保持を保証。
 
 import torch
 import torch.nn as nn
@@ -15,8 +15,10 @@ from .neurons import (
     TC_LIF, DualThresholdNeuron
 )
 from .base import BaseModel, SNNLayerNorm
+from spikingjelly.activation_based import base as sj_base # type: ignore[import-untyped]
+from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
 
-class SpikingMambaBlock(nn.Module):
+class SpikingMambaBlock(sj_base.MemoryModule):
     """
     Spiking-MAMBAの基本ブロック。
     選択的SSMをスパイクベースで実装。
@@ -61,6 +63,20 @@ class SpikingMambaBlock(nn.Module):
         
         self.lif_out = neuron_class(features=d_model, **neuron_params)
 
+    def set_stateful(self, stateful: bool) -> None:
+        self.stateful = stateful
+        if hasattr(self.lif_conv, 'set_stateful'):
+            cast(Any, self.lif_conv).set_stateful(stateful)
+        if hasattr(self.lif_out, 'set_stateful'):
+            cast(Any, self.lif_out).set_stateful(stateful)
+
+    def reset(self) -> None:
+        super().reset()
+        if hasattr(self.lif_conv, 'reset'):
+            cast(Any, self.lif_conv).reset()
+        if hasattr(self.lif_out, 'reset'):
+            cast(Any, self.lif_out).reset()
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, L, D)
         B, L, D = x.shape
@@ -74,7 +90,6 @@ class SpikingMambaBlock(nn.Module):
         # LIF Conv
         x_conv_flat = x_conv.reshape(B * L, -1)
         
-        # --- 修正: タプル戻り値に対応 ---
         output = self.lif_conv(x_conv_flat) # type: ignore[operator]
         if isinstance(output, tuple):
             x_conv_spikes = output[0]
@@ -109,7 +124,6 @@ class SpikingMambaBlock(nn.Module):
         out = self.norm(x + self.out_proj(y))
         
         # Output LIF
-        # --- 修正: タプル戻り値に対応 ---
         out_output = self.lif_out(out.reshape(B * L, -1)) # type: ignore[operator]
         if isinstance(out_output, tuple):
             out_spikes = out_output[0]
@@ -146,7 +160,6 @@ class SpikingMamba(BaseModel):
         filtered_params: Dict[str, Any]
         if neuron_type == 'lif':
             neuron_class = AdaptiveLIFNeuron
-            # 修正: AdaptiveLIFNeuronの全パラメータを許可
             valid_keys = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 
                           'target_spike_rate', 'noise_intensity', 'threshold_decay', 
                           'threshold_step', 'v_reset']
@@ -183,19 +196,34 @@ class SpikingMamba(BaseModel):
 
     def forward(self, input_ids: torch.Tensor, return_spikes: bool = False, **kwargs: Any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, L = input_ids.shape
+        device = input_ids.device
+        
+        SJ_F.reset_net(self)
+        
         x = self.embedding(input_ids)
         
+        # --- 時間ステップループでの状態保持 ---
+        for layer in self.layers:
+            if hasattr(layer, 'set_stateful'):
+                cast(SpikingMambaBlock, layer).set_stateful(True)
+
         # 時間ステップループ
         for _ in range(self.time_steps):
             for layer in self.layers:
                 x = layer(x)
-                
+        
+        # 状態解除
+        for layer in self.layers:
+            if hasattr(layer, 'set_stateful'):
+                cast(SpikingMambaBlock, layer).set_stateful(False)
+        # -----------------------------------
+
         x = self.norm(x)
         logits = self.output_projection(x)
         
         total_spikes = self.get_total_spikes()
         avg_spikes_val = total_spikes / (L * self.time_steps * B) if return_spikes else 0.0
-        avg_spikes = torch.tensor(avg_spikes_val, device=input_ids.device)
-        mem = torch.tensor(0.0, device=input_ids.device) 
+        avg_spikes = torch.tensor(avg_spikes_val, device=device)
+        mem = torch.tensor(0.0, device=device) 
         
         return logits, avg_spikes, mem
