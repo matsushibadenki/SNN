@@ -1,6 +1,9 @@
-# snn_research/bio_models/lif_neuron.py
-# Title: Leaky Integrate-and-Fire (LIF) ニューロンモデル
-# Description: シンプルなLIFニューロンを実装します。
+# ファイルパス: snn_research/models/bio/lif_neuron_legacy.py
+# (修正: スパイク統計の記録を追加)
+# Title: Leaky Integrate-and-Fire (LIF) ニューロンモデル (Legacy)
+# Description: 
+#   生物学的学習則のためのシンプルなLIFニューロン。
+#   修正: 診断ツールとの互換性のため、total_spikesバッファとresetメソッドを追加。
 
 import torch
 import torch.nn as nn
@@ -16,7 +19,16 @@ class BioLIFNeuron(nn.Module):
         self.v_rest = neuron_params['v_rest']
         self.dt = dt
         
-        self.voltages = torch.full((n_neurons,), self.v_rest)
+        self.register_buffer('voltages', torch.full((n_neurons,), self.v_rest))
+        # 修正: 統計用バッファの追加
+        self.register_buffer('total_spikes', torch.tensor(0.0))
+        self.register_buffer('spikes', torch.zeros(n_neurons)) # 直近のスパイク
+
+    def reset(self):
+        """状態のリセット"""
+        self.voltages.fill_(self.v_rest)
+        self.total_spikes.zero_()
+        self.spikes.zero_()
 
     def forward(self, input_current: torch.Tensor) -> torch.Tensor:
         if self.voltages.device != input_current.device:
@@ -30,7 +42,12 @@ class BioLIFNeuron(nn.Module):
         
         # 発火
         spikes = (self.voltages >= self.v_thresh).float()
+        self.spikes = spikes
         
+        # 統計更新
+        with torch.no_grad():
+            self.total_spikes += spikes.sum()
+
         # リセット
         self.voltages[spikes.bool()] = self.v_reset
         
