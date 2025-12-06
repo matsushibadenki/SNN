@@ -1,11 +1,10 @@
 # ファイルパス: snn_research/core/layers/complex_attention.py
 # (snn_core.pyから分離)
 #
-# Title: 複雑なアテンションレイヤー
+# Title: 複雑なアテンションレイヤー (修正版)
 # Description:
 # - SpikingTransformer_OldTextOnly で使用されるレイヤーコンポーネント。
-# - MultiLevelSpikeDrivenSelfAttention: 複数時間スケールでXNOR類似度を計算。
-# - STAttenBlock: SDSAとFFNを組み合わせたTransformerブロック。
+# - 修正: _filter_neuron_params に v_reset を追加。
 
 import torch
 import torch.nn as nn
@@ -18,7 +17,6 @@ from snn_research.core.neurons import (
     AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
     TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron
 )
-# DifferentiableTTFSEncoderは_filter_neuron_paramsでのみ使用
 from snn_research.io.spike_encoder import DifferentiableTTFSEncoder 
 
 logger = logging.getLogger(__name__)
@@ -26,12 +24,11 @@ logger = logging.getLogger(__name__)
 class MultiLevelSpikeDrivenSelfAttention(nn.Module):
     """
     複数時間スケールで動作するSDSA。
-    (snn_core.pyから分離)
     """
     neuron_out: nn.Module 
     mem_history: List[torch.Tensor]
-    neuron_q: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF] # 修正: TC_LIF追加
-    neuron_k: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF] # 修正: TC_LIF追加
+    neuron_q: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF]
+    neuron_k: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF]
 
     def __init__(self, d_model: int, n_head: int, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any], time_scales: List[int] = [1, 3, 5]):
         super().__init__()
@@ -47,7 +44,7 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
         self.out_proj = nn.Linear(d_model * len(time_scales), d_model)
         
         filtered_params = self._filter_neuron_params(neuron_class, neuron_params)
-        # 修正: TC_LIF追加
+        
         self.neuron_q = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF], neuron_class(features=d_model, **filtered_params))
         self.neuron_k = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF], neuron_class(features=d_model, **filtered_params))
         self.neuron_out = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF], neuron_class(features=d_model, **filtered_params))
@@ -58,7 +55,8 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
         """指定されたニューロンクラスの__init__が受け入れるパラメータのみをフィルタリングする"""
         valid_params: List[str] = []
         if neuron_class == AdaptiveLIFNeuron:
-            valid_params = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
+            # --- 修正: v_reset を追加 ---
+            valid_params = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step', 'v_reset']
         elif neuron_class == IzhikevichNeuron:
             valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
         elif neuron_class == GLIFNeuron:
@@ -140,12 +138,11 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
 class STAttenBlock(nn.Module):
     """
     Spiking Transformer (v1) のエンコーダーブロック。
-    (snn_core.pyから分離)
     """
     mem_history: List[torch.Tensor]
-    lif1: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF] # 修正: TC_LIF追加
-    lif2: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF] # 修正: TC_LIF追加
-    lif3: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF] # 修正: TC_LIF追加
+    lif1: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF]
+    lif2: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF]
+    lif3: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF]
     attn: MultiLevelSpikeDrivenSelfAttention
     learned_delays: nn.Parameter
 
@@ -156,7 +153,7 @@ class STAttenBlock(nn.Module):
         self.learned_delays = nn.Parameter(torch.zeros(d_model))
 
         filtered_params = self._filter_neuron_params(neuron_class, neuron_params)
-        # 修正: TC_LIF追加
+        
         self.lif1 = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF], neuron_class(features=d_model, **filtered_params))
         self.norm2 = SNNLayerNorm(d_model)
         self.fc1 = nn.Linear(d_model, d_model * 4)
@@ -169,7 +166,8 @@ class STAttenBlock(nn.Module):
         """指定されたニューロンクラスの__init__が受け入れるパラメータのみをフィルタリングする"""
         valid_params: List[str] = []
         if neuron_class == AdaptiveLIFNeuron:
-            valid_params = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
+            # --- 修正: v_reset を追加 ---
+            valid_params = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step', 'v_reset']
         elif neuron_class == IzhikevichNeuron:
             valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
         elif neuron_class == GLIFNeuron:
