@@ -1,9 +1,8 @@
 # ファイルパス: snn_research/training/trainers/distillation.py
 # Title: Distillation Trainer (知識蒸留) - 戻り値修正版
 # Description:
-#   BreakthroughTrainerを拡張し、教師モデルからの知識蒸留を行うトレーナー。
-#   修正: モデルからの戻り値が3要素を超える場合（SEMMなど）に対応できるよう、
-#   アンパック処理を柔軟に変更。
+#   知識蒸留トレーナー。
+#   修正: モデルの戻り値アンパック処理を柔軟に変更。
 
 import torch
 import torch.nn as nn
@@ -54,14 +53,16 @@ class DistillationTrainer(BreakthroughTrainer):
                 outputs = self.model(student_input, return_spikes=True, return_full_mems=True, return_full_hiddens=False)
                 
                 # --- 修正: 柔軟なアンパック処理 ---
+                student_logits: torch.Tensor
+                spikes: torch.Tensor = torch.tensor(0.0)
+                mem: torch.Tensor = torch.tensor(0.0)
+
                 if isinstance(outputs, tuple):
-                    # 最低限必要な要素を取得
                     student_logits = outputs[0]
-                    spikes = outputs[1] if len(outputs) > 1 else torch.tensor(0.0)
-                    mem = outputs[2] if len(outputs) > 2 else torch.tensor(0.0)
-                    # 4つ目以降（aux_logitsなど）は蒸留では現在使用しないため無視するか、必要ならここで取得
+                    if len(outputs) > 1: spikes = outputs[1]
+                    if len(outputs) > 2: mem = outputs[2]
                 else:
-                     student_logits, spikes, mem = outputs, torch.tensor(0.0), torch.tensor(0.0)
+                    student_logits = outputs
                 # -------------------------------
 
                 assert isinstance(self.criterion, DistillationLoss)
@@ -86,7 +87,6 @@ class DistillationTrainer(BreakthroughTrainer):
                         self._reinitialize_optimizer()
                 except Exception: pass
 
-        # 評価ロジック
         with torch.no_grad():
             preds = torch.argmax(student_logits, dim=-1)
             ignore_idx = self.criterion.ce_loss_fn.ignore_index
@@ -96,7 +96,6 @@ class DistillationTrainer(BreakthroughTrainer):
             loss_dict['accuracy'] = accuracy
             
             model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-            # config属性への安全なアクセス
             total_time_steps = 16
             if hasattr(model_to_run, 'config'):
                 if isinstance(model_to_run.config, dict):
