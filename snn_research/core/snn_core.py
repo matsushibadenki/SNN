@@ -6,7 +6,8 @@ import torch.nn as nn
 from typing import Dict, Any, Optional, List, Union, Tuple, cast, Type
 import logging
 # --- 修正: spikingjelly functional のインポート ---
-from spikingjelly.activation_based import functional
+# mypyエラー [import-untyped] を抑制するために type: ignore を追加
+from spikingjelly.activation_based import functional # type: ignore
 
 logger = logging.getLogger(__name__)
 
