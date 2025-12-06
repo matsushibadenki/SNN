@@ -1,9 +1,8 @@
-# ファイルパス: snn_research/core/models/moe_model.py
+# ファイルパス: snn_research/models/experimental/moe_model.py
 # Title: Spiking FrankenMoE & Router (堅牢化版)
 # 機能説明:
 #   複数の学習済みSNNモデル（エキスパート）を統合するMoEモデル。
-#   【修正】エキスパートロード時のパスチェックを強化し、Noneや無効なパスの場合でも
-#   ランダム初期化されたエキスパートを使って動作を継続するように改善。
+#   修正: forwardメソッド内でリセットを確実に行い、タプル戻り値に対応。
 
 import torch
 import torch.nn as nn
@@ -15,6 +14,7 @@ from pathlib import Path
 
 from snn_research.core.base import BaseModel
 from snn_research.core.neurons import AdaptiveLIFNeuron
+from spikingjelly.activation_based import functional as SJ_F # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +144,9 @@ class SpikingFrankenMoE(BaseModel):
         
         device = input_ids.device
         
+        # --- 修正: 全エキスパートの内部状態をリセット ---
+        SJ_F.reset_net(self)
+        
         # 1. ルーティング入力の準備
         first_expert = self.experts[0]
         text_embeds: torch.Tensor
@@ -180,21 +183,26 @@ class SpikingFrankenMoE(BaseModel):
             # SNNCoreでラップされたモデルは kwargs を適切に処理できる前提
             out_any = expert(
                 input_ids, 
-                return_spikes=False, 
+                return_spikes=False, # エキスパート内部での集計は不要
                 context_embeds=visual_context, 
                 **kwargs
             )
             
+            # --- 修正: タプル戻り値のハンドリング ---
             if isinstance(out_any, tuple):
-                expert_outputs.append(out_any[0])
+                expert_outputs.append(out_any[0]) # (logits, spikes, mem) -> logits
             else:
                 expert_outputs.append(out_any)
             
         # 4. Aggregation
         # (Batch, SeqLen, Dim)
-        stacked_outputs = torch.stack(expert_outputs, dim=-1) 
-        rw_expanded = routing_weights.unsqueeze(1).unsqueeze(1)
-        final_output = (stacked_outputs * rw_expanded).sum(dim=-1)
+        try:
+            stacked_outputs = torch.stack(expert_outputs, dim=-1) 
+            rw_expanded = routing_weights.unsqueeze(1).unsqueeze(1)
+            final_output = (stacked_outputs * rw_expanded).sum(dim=-1)
+        except Exception as e:
+            logger.error(f"Error stacking expert outputs. Shapes might mismatch: {[o.shape for o in expert_outputs]}")
+            raise e
         
         # 5. Statistics
         total_spikes = 0.0
