@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/cortical_column.py
-# (修正: mypy [assignment] エラー修正)
+# (修正: 時間軸対応 - Batch, Time, Dim 入力に対応)
 
 import torch
 import torch.nn as nn
@@ -88,6 +88,54 @@ class CorticalColumn(BaseModel):
         input_signal: torch.Tensor, 
         prev_states: Optional[Dict[str, torch.Tensor]] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        順伝播処理。
+        入力が (Batch, Time, Dim) の場合は時間ループを実行する。
+        """
+        # --- 時間軸対応 ---
+        if input_signal.dim() == 3:
+            # (Batch, Time, InputDim)
+            B, T, D = input_signal.shape
+            device = input_signal.device
+            
+            # 状態の初期化
+            if prev_states is None:
+                current_states = {
+                    "L4": torch.zeros(B, self.column_dim, device=device),
+                    "L23": torch.zeros(B, self.column_dim, device=device),
+                    "L56": torch.zeros(B, self.column_dim, device=device)
+                }
+            else:
+                current_states = prev_states
+
+            out_ff_list = []
+            out_fb_list = []
+            
+            # 時間ループ
+            for t in range(T):
+                input_t = input_signal[:, t, :] # (Batch, InputDim)
+                out_ff_t, out_fb_t, current_states = self._forward_step(input_t, current_states)
+                out_ff_list.append(out_ff_t)
+                out_fb_list.append(out_fb_t)
+            
+            # (Batch, Time, OutputDim)
+            out_ff_stacked = torch.stack(out_ff_list, dim=1)
+            out_fb_stacked = torch.stack(out_fb_list, dim=1)
+            
+            return out_ff_stacked, out_fb_stacked, current_states
+            
+        else:
+            # (Batch, InputDim) - 単一ステップ
+            return self._forward_step(input_signal, prev_states)
+
+    def _forward_step(
+        self, 
+        input_signal: torch.Tensor, 
+        prev_states: Optional[Dict[str, torch.Tensor]] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        1タイムステップ分の処理。
+        """
         batch_size = input_signal.shape[0]
         device = input_signal.device
         
@@ -102,15 +150,18 @@ class CorticalColumn(BaseModel):
         spikes_L23_prev = prev_states["L23"]
         spikes_L56_prev = prev_states["L56"]
 
+        # L4: 入力 + L5/6からのフィードバック + 自己回帰
         in_L4 = self.proj_input_L4(input_signal) + \
                 self.proj_L56_L4(spikes_L56_prev) + \
                 self.rec_L4(spikes_L4_prev)
         spikes_L4, _ = self.L4(in_L4)
 
+        # L2/3: L4からの入力 + 自己回帰
         in_L23 = self.proj_L4_L23(spikes_L4) + \
                  self.rec_L23(spikes_L23_prev)
         spikes_L23, _ = self.L23(in_L23)
 
+        # L5/6: L2/3からの入力 + 自己回帰
         in_L56 = self.proj_L23_L56(spikes_L23) + \
                  self.rec_L56(spikes_L56_prev)
         spikes_L56, _ = self.L56(in_L56)
