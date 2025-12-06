@@ -1,9 +1,9 @@
 # ファイルパス: snn_research/training/trainers/breakthrough.py
-# (修正: aux_logitsの処理を追加)
+# (修正: 評価モードでのAccuracy計算を確実にする)
 # Title: Breakthrough Trainer (標準SNNトレーナー)
 # Description:
 #   標準的な代理勾配法によるSNN学習を行うトレーナークラス。
-#   修正: _run_step 内で aux_logits (4番目の戻り値) を取得し、損失関数に渡すように変更。
+#   修正: _run_step 内で aux_logits の処理に加え、評価モード時に accuracy を明示的に計算して格納。
 
 import torch
 import torch.nn as nn
@@ -18,6 +18,7 @@ import time
 from torch.optim import Adam
 from pathlib import Path
 import logging
+import sys
 
 from spikingjelly.activation_based import functional # type: ignore
 
@@ -189,6 +190,23 @@ class BreakthroughTrainer:
                 # aux_logits を渡す
                 loss_dict = self.criterion(eval_logits, target_ids, eval_spikes, eval_mem, self.model, aux_logits=aux_logits)
                 loss_dict['avg_cutoff_steps'] = torch.tensor(avg_cutoff_steps, device=self.device)
+                
+                # --- 修正: 評価時にもAccuracyを計算して格納 ---
+                if 'accuracy' not in loss_dict and logits_for_acc is not None:
+                    preds = torch.argmax(logits_for_acc, dim=-1)
+                    ignore_idx = -100
+                    if hasattr(self.criterion, 'ce_loss_fn') and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
+                        ignore_idx = self.criterion.ce_loss_fn.ignore_index
+                    
+                    mask = target_ids != ignore_idx
+                    num_valid = mask.sum()
+                    if num_valid > 0:
+                        acc = (preds[mask] == target_ids[mask]).float().sum() / num_valid
+                    else:
+                        acc = torch.tensor(0.0, device=self.device)
+                    loss_dict['accuracy'] = acc
+                # ----------------------------------------------
+
         else:
             with torch.amp.autocast(device_type=self.device if self.device != 'mps' else 'cpu', enabled=self.use_amp):
                 with torch.set_grad_enabled(is_train):
@@ -304,6 +322,7 @@ class BreakthroughTrainer:
                 for key, value in metrics.items(): total_metrics[key] += value
         avg_metrics = {key: value / num_batches for key, value in total_metrics.items()}
         if self.rank in [-1, 0] and hasattr(self, 'writer'):
+            # ログ出力に accuracy を含める
             print(f"Epoch {epoch} Validation Results: " + ", ".join([f"{k}: {v:.4f}" for k, v in avg_metrics.items()]))
             for key, value in avg_metrics.items(): self.writer.add_scalar(f'Validation/{key}', value, epoch)
             if self.enable_visualization and hasattr(self, 'recorder') and self.recorder.history['membrane']:
