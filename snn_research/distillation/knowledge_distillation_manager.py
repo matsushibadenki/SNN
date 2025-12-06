@@ -1,9 +1,11 @@
 # ファイルパス: snn_research/distillation/knowledge_distillation_manager.py
-# (v13 修正版)
+# (修正版: 事前計算による高速化と安全性向上)
 # Title: 知識蒸留 (Knowledge Distillation) 管理マネージャー
 # Description:
-# - 修正: mypyエラー [import-untyped] を解消するため、torchvision.models のインポート行に
-#   type: ignore コメントを追加。
+# - 修正: _DistillationWrapperDataset でのオンザフライ推論を廃止。
+#   初期化時に教師モデルのロジットを一括計算してキャッシュする _PrecomputedDistillationDataset に変更。
+#   これにより、DataLoaderのマルチプロセス動作時のエラー（CUDA初期化、Pickle不可など）を回避し、
+#   学習時のデータ供給速度を向上させる。
 
 import torch
 import torch.nn as nn
@@ -16,9 +18,8 @@ import logging
 import asyncio
 from omegaconf import DictConfig
 
-# --- ▼ 修正: type: ignore[import-untyped] を追加 ▼ ---
-import torchvision.models as models # type: ignore[import-untyped]
-# --- ▲ 修正 ▲ ---
+# type: ignore[import-untyped]
+import torchvision.models as models 
 
 from snn_research.distillation.model_registry import ModelRegistry
 from snn_research.training.trainers import DistillationTrainer
@@ -273,27 +274,36 @@ class KnowledgeDistillationManager:
 
         teacher_model_instance = await self._get_or_load_teacher_model()
 
-        distill_train_dataset: Dataset = _DistillationWrapperDataset(
+        # 修正: _PrecomputedDistillationDataset を使用してロジットを事前計算
+        # これにより、DataLoader worker 内でのモデル推論を回避する
+        
+        print("Pre-computing teacher logits for training data...")
+        distill_train_dataset: Dataset = _PrecomputedDistillationDataset(
             original_dataset=train_dataset,
             teacher_model=teacher_model_instance,
             tokenizer=self.tokenizer,
             collate_fn_orig=collate_fn_to_use, 
-            device=self.device
+            device=self.device,
+            batch_size=batch_size
         )
         
         distill_val_dataset: Dataset
         if val_dataset:
-            distill_val_dataset = _DistillationWrapperDataset(
+            print("Pre-computing teacher logits for validation data...")
+            distill_val_dataset = _PrecomputedDistillationDataset(
                 original_dataset=val_dataset,
                 teacher_model=teacher_model_instance,
                 tokenizer=self.tokenizer,
                 collate_fn_orig=collate_fn_to_use,
-                device=self.device
+                device=self.device,
+                batch_size=batch_size
             )
         else:
+            # _PrecomputedDistillationDataset を split して使用
             try:
-                train_size = int(0.9 * len(cast(Sized, distill_train_dataset)))
-                val_size = len(cast(Sized, distill_train_dataset)) - train_size
+                train_len = len(cast(Sized, distill_train_dataset))
+                train_size = int(0.9 * train_len)
+                val_size = train_len - train_size
                 if val_size == 0 and train_size > 0:
                      train_size -= 1
                      val_size = 1
@@ -303,12 +313,14 @@ class KnowledgeDistillationManager:
                 else:
                     distill_val_dataset = distill_train_dataset
             except Exception as e:
+                 logger.warning(f"Validation split failed: {e}. Using training set for validation.")
                  distill_val_dataset = distill_train_dataset
 
         distillation_collate_fn = self._create_distillation_collate_fn(
             collate_fn_orig=collate_fn_to_use 
         )
 
+        # ロジットは既に計算済み（CPU Tensor）なので、num_workers を使っても安全
         train_loader = DataLoader(
             distill_train_dataset,
             batch_size=batch_size,
@@ -401,55 +413,72 @@ class KnowledgeDistillationManager:
         return distillation_collate
 
 
-class _DistillationWrapperDataset(Dataset):
+class _PrecomputedDistillationDataset(Dataset):
+    """
+    初期化時に教師モデルのロジットを一括計算してキャッシュするDataset。
+    DataLoader の worker プロセス内でのモデル推論（CUDA初期化エラーの要因）を回避する。
+    """
     def __init__(
         self,
         original_dataset: Dataset,
         teacher_model: nn.Module,
         tokenizer: PreTrainedTokenizerBase,
         collate_fn_orig: Callable[[List[Any]], Any],
-        device: str
+        device: str,
+        batch_size: int = 16
     ):
         self.original_dataset = original_dataset
-        self.teacher_model = teacher_model.to(device).eval()
-        self.tokenizer = tokenizer
-        self.device = device
-        self.collate_fn_orig = collate_fn_orig
+        # データセット自体はロジットのみを保持し、モデルは保持しない（Pickle対策）
+        self.cached_logits: List[torch.Tensor] = []
         
-        if self.collate_fn_orig is None:
-             raise RuntimeError("collate_fn_orig is None")
+        logger.info(f"Pre-computing teacher logits for {len(cast(Sized, original_dataset))} samples...")
         
-        logger.info(f"DistillationWrapperDataset initialized for {len(cast(Sized, self.original_dataset))} samples.")
+        teacher_model.eval()
+        
+        # 推論用のDataLoaderを作成（num_workers=0 でメインプロセス実行）
+        temp_loader = DataLoader(
+            original_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=0,
+            collate_fn=collate_fn_orig
+        )
+        
+        with torch.no_grad():
+            for batch in temp_loader:
+                teacher_logits: torch.Tensor
+                
+                if 'input_ids' in batch:
+                    input_ids = batch['input_ids'].to(device)
+                    attention_mask = batch.get('attention_mask')
+                    if attention_mask is not None:
+                        attention_mask = attention_mask.to(device)
+                    
+                    outputs = teacher_model(input_ids=input_ids, attention_mask=attention_mask)
+                    teacher_logits = outputs.logits
+                    
+                elif 'input_images' in batch:
+                    input_images = batch['input_images'].to(device)
+                    teacher_logits = teacher_model(input_images)
+                    if teacher_logits.dim() == 2:
+                        teacher_logits = teacher_logits.unsqueeze(1)
+                else:
+                    continue
+
+                # ロジットをCPUに移動し、FP16にしてメモリ節約
+                teacher_logits_cpu = teacher_logits.cpu().to(torch.float16)
+                
+                # バッチ次元で分割してリストに追加
+                for i in range(teacher_logits_cpu.size(0)):
+                    self.cached_logits.append(teacher_logits_cpu[i])
+        
+        logger.info("✅ Teacher logits pre-computation complete.")
 
     def __len__(self) -> int:
-        return len(cast(Sized, self.original_dataset))
+        return len(self.cached_logits)
 
-    @torch.no_grad()
     def __getitem__(self, idx: int) -> Tuple[Any, torch.Tensor]:
-        original_item: Any = self.original_dataset[idx]
-        collated_batch: Dict[str, torch.Tensor] = self.collate_fn_orig([original_item])
-        
-        teacher_logits: torch.Tensor
-        
-        if 'input_ids' in collated_batch:
-            input_ids = collated_batch['input_ids'].to(self.device)
-            attention_mask = collated_batch.get('attention_mask')
-            if attention_mask is not None:
-                attention_mask = attention_mask.to(self.device)
-            
-            teacher_outputs = self.teacher_model(input_ids=input_ids, attention_mask=attention_mask)
-            teacher_logits = teacher_outputs.logits 
-        
-        elif 'input_images' in collated_batch:
-            input_images = collated_batch['input_images'].to(self.device)
-            teacher_logits = self.teacher_model(input_images) 
-            
-            if teacher_logits.dim() == 2:
-                teacher_logits = teacher_logits.unsqueeze(1) 
-        
-        else:
-            raise KeyError(f"Neither 'input_ids' nor 'input_images' found.")
-
-        teacher_logits_cpu = teacher_logits.squeeze(0).cpu().to(torch.float16) 
-        
-        return original_item, teacher_logits_cpu
+        # 元のデータ項目と、事前計算済みのロジットを返す
+        original_item = self.original_dataset[idx]
+        cached_logit = self.cached_logits[idx]
+        return original_item, cached_logit
