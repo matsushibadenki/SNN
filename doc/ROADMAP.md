@@ -1,113 +1,89 @@
-# **SNN Project Roadmap**
+# **SNN Project Roadmap (v14.0)**
 
-## **🎯 プロジェクト目標**
+## **🎯 プロジェクト目標: "Artificial Brain" の実現**
 
-人間の脳の動作原理（スパイク、可塑性、階層構造）を模倣し、従来のANN（誤差逆伝播法）への依存を排除した、超低消費電力かつ適応力の高い次世代AIアーキテクチャを実現する。
+人間の脳の動作原理（スパイク、可塑性、階層構造、睡眠、意識）を工学的に模倣し、従来のANN（誤差逆伝播法）への依存を排除した、超低消費電力かつ自律的に進化し続ける次世代AIアーキテクチャを実現する。
 
-## **🚀 重点フェーズ：微分からの完全脱却 (Complete Departure from Differentiation)**
+コアフィロソフィー: "From Simulation to Embodiment"  
+シミュレーション上の知能から、物理的制約（エネルギー、時間、身体性）を持つ実存的な知能への転換を目指す。
 
-現在の「代理勾配（Surrogate Gradient）」を用いた擬似的な微分計算から脱却し、真に生物学的で、ハードウェア実装に適した学習則への移行を目指す詳細ロードマップ。
+## **🚀 戦略的柱 (Strategic Pillars)**
 
-### **Strategy A: 予測符号化と局所学習 (Predictive Coding & Local Learning)**
-
-グローバルな誤差逆伝播（Backpropagation）を行わず、レイヤーごとの局所的な予測誤差最小化によってネットワーク全体を学習させる。
-
-* \[ \] **SNN向け予測符号化 (Predictive Coding for SNNs) の実装**  
-  * \[ \] **階層的予測回路の構築**: 上位層からの予測信号と下位層からの感覚入力の差分（予測誤差）をスパイク列として表現する回路の実装。  
-  * \[ \] **局所的重み更新則の確立**: 予測誤差を最小化するための、シナプス前後の活動のみに依存する重み更新ルールの定式化と実装。  
-  * \[ \] **時間的予測 (Temporal Prediction)**: 次のタイムステップの入力を予測する回帰型結合の実装（静的画像だけでなく動画/時系列データへの対応）。  
-* \[ \] **Forward-Forward Algorithm (SNN版) の適応**  
-  * \[ \] **Goodness関数の定義**: スパイク発火率や同期度合いを用いた、SNNに適した「良さ（Goodness）」の指標策定。  
-  * \[ \] **Positive/Negativeパスの実装**: 正解データ（Positive）と生成/誤データ（Negative）をSNNに流し、局所的な可塑性のみでレイヤーを学習させるパイプラインの構築。  
-  * \[ \] **推論時の活動生成**: 入力のみから、学習したGoodnessを最大化する方向へニューロン活動を収束させる反復処理の実装。  
-* \[ \] **Target Propagation (ターゲット伝播) の導入**  
-  * \[ \] **逆像（Inverse）モデルの学習**: 各レイヤーの出力を入力へマッピングする逆変換オートエンコーダの学習。  
-  * \[ \] **ターゲット信号の伝播**: 誤差勾配ではなく「理想的なニューロン活動（ターゲット）」をトップダウンで伝播させ、局所学習を行うメカニズムの実装。
-
-### **Strategy B: 進化的戦略と構造探索 (Evolutionary Strategies & Structure Search)**
-
-勾配計算そのものを放棄し、集団ベースの探索や摂動によって最適解を見つけるアプローチ。
-
-* \[ \] **Neuroevolution of Augmenting Topologies (NEAT) for SNN**  
-  * \[ \] **スパイクタイミング依存の適応度評価**: 発火タイミングの正確さやエネルギー効率（スパイク数）を適応度関数に組み込む。  
-  * \[ \] **動的なトポロジー変異**: 学習中にシナプス結合やニューロンを追加・削除し、タスクに最適なスパイク回路構造を自己組織化させる。  
-* \[ \] **Evolution Strategies (ES) による重み探索**  
-  * \[ \] **CMA-ES / OpenAI-ES の適用**: 大規模なSNNパラメータ空間において、勾配を使わずに報酬最大化を目指す並列探索の実装。  
-  * \[ \] **ハイパーパラメータの自律調整**: 時定数（$\\tau$）、閾値（$V\_{th}$）、不応期などの生物学的パラメータの進化的最適化。  
-* \[ \] **Perturbation Learning (摂動学習)**  
-  * \[ \] **Weight Perturbation**: シナプス重みに微小なノイズを加え、その結果としての報酬（タスク性能）の変化に基づいて重みを更新する強化学習的アプローチ。  
-  * \[ \] **Node Perturbation**: ニューロンの電流注入にノイズを加え、相関ルールを用いて学習を行う（重み摂動よりスケーラビリティが高い）。
-
-### **Strategy C: 生物学的可塑性の高度化 (Advanced Biological Plasticity)**
-
-単純なSTDPを超え、神経科学的知見に基づいた高度な学習則を工学的に応用する。
-
-* \[ \] **3要素学習則 (Three-Factor Learning Rules) の体系化**  
-  * \[ \] **Global Reward Signal**: ドーパミン等の神経修飾物質を模した「報酬信号」の実装。  
-  * \[ \] **Eligibility Traces (適格性トレース)**: スパイク発火の履歴を分子的な「タグ」として一定時間保持し、遅延報酬に対応するメカニズムの実装。  
-  * \[ \] **R-STDP (Reward-modulated STDP)**: 局所的な STDP とグローバルな報酬信号を掛け合わせた強化学習則の安定化。  
-* \[ \] **メタ可塑性 (Metaplasticity) の導入**  
-  * \[ \] **BCM理論の実装**: ニューロンの過去の活動履歴に応じて、LTP/LTD（増強/抑圧）の閾値を動的にスライドさせ、発火率の恒常性（Homeostasis）を保つ。  
-  * \[ \] **シナプス再スケーリング**: 睡眠期（オフライン時）を模したシナプス強度の全体的な正規化プロセスの導入。  
-* \[ \] **Dendritic Computing (樹状突起計算)**  
-  * \[ \] **マルチコンパートメントモデル**: ニューロンを点（Point Neuron）ではなく、樹状突起を持つ構造としてモデル化し、非線形な局所演算能力を持たせる。  
-  * \[ \] **Segregated Error Signals**: 樹状突起の特定の区画を「誤差信号の受信専用」とし、発火出力に影響を与えずに学習信号を受け取る生物学的バックプロパゲーションの模倣。
+1. **Deep Bio-Calibration (深層生物学的校正):**  
+   * ANNの高度な性能をSNNの初期状態として移植し、生物学的可塑性（STDP/BCM）で環境に適応させる「いいとこ取り」戦略。  
+2. **Neuro-Symbolic Feedback Loop (神経-記号還流):**  
+   * 言語的知識（GraphRAG）を睡眠フェーズでシナプス重み（SNN）に「コンパイル」し、説明可能な知識を直感的な反射へと昇華させる。  
+3. **Neuromorphic OS (脳型オペレーティングシステム):**  
+   * 単なるモデルではなく、複数の認知モジュール（視覚、言語、運動）のリソースと競合を管理するOSとしての脳アーキテクチャ。
 
 ## **🗓️ 実施スケジュールとマイルストーン**
 
-### **Phase 1: Hybrid Validation (現在 \- 3ヶ月)**
+### **✅ Phase 1: Foundation & Efficiency (完了)**
 
-* **目標**: 既存の代理勾配法と生物学的学習則の併用によるベースライン性能の確立。  
-* **実施項目**:  
-  * \[ \] 代理勾配法とSTDPのハイブリッドモデルでのMNIST/CIFAR-10ベンチマーク確立。  
-  * \[ \] 3要素学習則（R-STDP）によるCartPole等の単純制御タスクの解決。  
-  * \[ \] 現行アーキテクチャにおけるエネルギー効率（Sparsity）の計測と評価。
+* **成果:** 代理勾配法による学習基盤、ANN-SNN変換、DVSデータ対応。  
+* **主要技術:** train.py, ann\_to\_snn\_converter.py
 
-### **Phase 2: Local Learning Prototype (3ヶ月 \- 6ヶ月)**
+### **✅ Phase 2: Cognitive Architecture (完了)**
 
-* **目標**: 微分（BPTT）を用いずに、局所的な学習則のみで基礎的なパターン認識タスクを解決するプロトタイプの実装。  
-* **実施項目**:  
-  * \[ \] **Predictive Coding (PC) の実装**:  
-    * SNN向けPCレイヤーの設計と実装。  
-    * 静的画像（MNIST/Fashion-MNIST）の再構成タスクによる、局所誤差最小化の検証。  
-  * \[ \] **Forward-Forward Algorithm**:  
-    * スパイク発火率ベースのGoodness関数を用いたForward-Forward学習ループの実装。  
-    * 逆伝播なしでのMNIST分類精度 95%以上の達成。  
-  * \[ \] **局所学習の安定化**:  
-    * STDPとホメオスタシス（発火率調整）を組み合わせ、発火の爆発や消失を防ぐメカニズムの確立。  
-* **達成基準**: バックプロパゲーションを使用しない完全な局所学習モデルで、MNIST精度98%を達成。
+* **成果:** 認知コンポーネント（海馬、扁桃体、前頭前野）の統合、意識のブロードキャスト（GWT）。  
+* **主要技術:** ArtificialBrain, GlobalWorkspace
 
-### **Phase 3: Scaling & Optimization (6ヶ月 \- 1年)**
+### **✅ Phase 3: Scaling & Hybrid Intelligence (完了)**
 
-* **目標**: 局所学習モデルを深層化（Deep SNN）し、より複雑なタスクへ適用可能にする。同時に、進化的手法を用いて最適な構造を探索する。  
-* **実施項目**:  
-  * \[ \] **進化戦略 (ES/NEAT) の統合**:  
-    * 勾配法に頼らないパラメータ最適化（時定数、閾値）の自動化。  
-    * タスクに応じたネットワーク構造（層の深さ、結合のスパース性）の自動探索パイプラインの構築。  
-  * \[ \] **Deep SNNへのスケーリング**:  
-    * Target Propagation または Layer-wise Training を用いて、ResNet規模（10層以上）のSNNを学習させる。  
-    * CIFAR-10 / CIFAR-100 でのSOTA（State-of-the-Art）に迫る精度の実現。  
-  * \[ \] **ハードウェア実装向け最適化**:  
-    * 浮動小数点演算からの脱却（整数演算化、BitNetライクな重み量子化）。  
-    * イベント駆動型処理の徹底による、推論時の計算コスト最小化。  
-* **達成基準**: 複雑なデータセット（CIFAR-100等）において、ANNと比較して1/100のエネルギー効率で同等の精度を実現。
+* **成果:** $T=1$ 高速推論 (SFormer)、FrankenMoEによるモデル統合、1.58bit量子化。  
+* **主要技術:** SFormer, SpikingFrankenMoE, BitSpikingRWKV
 
-### **Phase 4: Autonomous Intelligence (1年以降)**
+### **✅ Phase 4: Autonomous Intelligence (完了/最適化中)**
 
-* **目標**: 外部教師あり学習から完全に脱却し、環境との相互作用を通じて自律的に学習・適応するエージェントを実現する。  
-* **実施項目**:  
-  * \[ \] **高度な生物学的可塑性の実装**:  
-    * メタ可塑性（BCM理論など）による、継続学習（Continual Learning）能力の実装。  
-    * 破滅的忘却（Catastrophic Forgetting）の回避と、過去の記憶の保持。  
-  * \[ \] **自律エージェントの構築**:  
-    * 強化学習環境（Gymnasium等）において、報酬信号のみを手がかりに行動戦略を学習するSNNエージェントの開発。  
-    * マルチモーダル入力（視覚＋内部状態）を統合する樹状突起計算モデルの適用。  
-  * \[ \] **物理シミュレーション/実機テスト**:  
-    * 物理エンジン上またはロボット実機における、リアルタイム学習と適応動作の実証。  
-* **達成基準**: 未知の環境において、事前の教師データなしでタスクを学習し、環境変化に適応し続ける能力の実証。
+* **成果:** 能動的推論 (Active Inference) による自律行動、HSEOによる自己進化、倫理的選好。  
+* **主要技術:** ActiveInferenceAgent, SelfEvolvingAgentMaster, HSEO
 
-## **🛠️ 技術スタック要件**
+### **🔄 Phase 5: Neuro-Symbolic Evolution (現在 \- 6ヶ月)**
 
-* **Frameworks**: PyTorch (現状ベース), deap/pycma (進化計算), snnTorch/SpikingJelly (比較用)  
-* **Monitoring**: 局所的な学習収束状況を可視化する専用ダッシュボードの開発（重み分布、発火率ヒストグラム、予測誤差推移）。  
-* **Data**: 静的データセットだけでなく、強化学習環境（Gymnasium）や動的視覚センサ（DVS）データの活用。
+**目標:** 言語的知識と神経的直感の双方向ループを完成させ、再学習なしで「教えれば賢くなる」脳を実現する。
+
+* **\[ \] Sleep Consolidation System (睡眠時記憶固定化)**  
+  * GraphRAGに蓄積された知識トリプルを、睡眠中にSNNへの入力として再生（Replay）する。  
+  * Causal Trace Learning (V2) を用い、エピソード記憶を長期的なシナプス重みに焼き付ける。  
+* **\[ \] Neuro-Symbolic Grounding (深層記号接地)**  
+  * SymbolGrounding を強化し、SNNの隠れ層の活動パターン（アトラクタ）と、GraphRAGの概念ノードを動的にリンクさせる。  
+  * 「赤い」という言葉を聞くだけで、視覚野のV4エリアが発火するようなトップダウン信号の実装。  
+* **\[ \] Real-time Knowledge Editing**  
+  * 対話による訂正が即座にGraphRAGに反映され、次回の睡眠サイクルでSNNの振る舞い（バイアス）を修正するパイプラインの確立。
+
+### **📅 Phase 6: Hardware Native Transition (6ヶ月 \- 1年)**
+
+**目標:** GPUシミュレーションの限界（速度・電力）を突破するため、計算基盤をニューロモーフィックハードウェア仕様に完全移行する。
+
+* **\[ \] Deep Bio-Calibration Pipeline**  
+  * ECL (Error Compensation Learning) を拡張し、大規模ANN（Llama/Mistralクラス）の重みを、スパイキングニューロンの物理パラメータ（膜抵抗、閾値）に高精度にマッピングする自動校正システム。  
+* **\[ \] Event-Driven Kernels**  
+  * PyTorch/CUDAへの依存を減らし、スパイクイベントが発生した時のみ計算を行うカスタムCUDAカーネルまたはFPGAロジックへの書き換え。  
+* **\[ \] On-Chip Plasticity**  
+  * 推論（Forward）中にローカルメモリ内で重みを更新する、ハードウェアフレンドリーな学習則（R-STDPの簡易版）の実装。
+
+### **📅 Phase 7: The "Brain" OS (1年以降)**
+
+**目標:** 複数のAIエージェントやモジュールが、単一のハードウェアリソースを共有・競合しながら動作する「脳型OS」の構築。
+
+* **\[ \] Neuromorphic Scheduler (Astrocyte Manager)**  
+  * AstrocyteNetwork をOSのスケジューラに昇格。  
+  * 各領域（視覚野、言語野）のエネルギー消費（スパイク率）を監視し、グルコース（計算リソース）を動的に配分・制限する。  
+* **\[ \] Multi-Agent Competition**  
+  * 「視覚野エージェント」「言語野エージェント」「運動野エージェント」が独立したプロセスとして並列動作。  
+  * Global Workspace を介した通信のみで協調し、全体として一つの人格を形成するマイクロサービス・アーキテクチャ。  
+* **\[ \] Self-Hosted Evolution**  
+  * AI自身が自分のソースコード（または回路構成）を理解し、リコンパイルして自己修正する完全自律ループ。
+
+## **🛠️ 技術スタック要件 (Future)**
+
+* **Core:** PyTorch \-\> **Lava / Norse / Custom CUDA Kernels**  
+* **Memory:** FAISS/NetworkX \-\> **Hyperdimensional Computing (HDC) Vector Stores**  
+* **Optimization:** Optuna \-\> **Evolutionary Strategies (ES) on Hardware**  
+* **Interface:** Gradio \-\> **Direct Neural Interface (Spike Streams)**
+
+## **📊 成功指標 (KPIs)**
+
+1. **Knowledge Retention:** 睡眠サイクル後のタスク遂行精度が、学習前より向上していること。  
+2. **Energy Efficiency:** 同等のタスクにおいて、GPUベースのANNと比較して **100倍** 以上のエネルギー効率。  
+3. **Adaptability:** 未知のタスクに対し、数回の提示（Few-shot）と睡眠を経て適応できること。
