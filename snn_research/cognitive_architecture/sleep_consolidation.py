@@ -1,20 +1,21 @@
 # ファイルパス: snn_research/cognitive_architecture/sleep_consolidation.py
-# 日本語タイトル: 睡眠時記憶固定化システム (GraphRAG to SNN)
-# 機能説明: 
+# Title: 睡眠時記憶固定化システム (GraphRAG to SNN Replay)
+# Description:
+#   ROADMAP Phase 5 "Neuro-Symbolic Evolution" の中核コンポーネント。
 #   GraphRAGに蓄積された言語的・記号的な知識を、睡眠フェーズにおいて
-#   SNN（大脳皮質モデル）への入力として再生し、STDP/BCM則を用いて
-#   シナプス重みとして固定化（Consolidation）する機能。
-#   これにより、「説明されたこと（宣言的記憶）」が「直感（手続き的記憶）」に変換される。
+#   SNN（大脳皮質モデル）への入力として再生し、STDP/BCM/Causal Trace則を用いて
+#   シナプス重みとして固定化（Consolidation）する。
 
 import torch
 import logging
 import random
-from typing import List, Dict, Any, cast
+from typing import List, Dict, Any, Optional
+import networkx as nx
 
 # 既存モジュールのインポート
 from snn_research.cognitive_architecture.rag_snn import RAGSystem
-from snn_research.cognitive_architecture.cortex import Cortex
 from snn_research.core.networks.bio_pc_network import BioPCNetwork
+# 循環参照回避のため型ヒントのみ
 from snn_research.io.spike_encoder import SpikeEncoder
 
 logger = logging.getLogger(__name__)
@@ -22,129 +23,111 @@ logger = logging.getLogger(__name__)
 class SleepConsolidator:
     """
     睡眠中に記号的知識をニューラルネットワークの重みに変換するクラス。
+    "Neuro-Symbolic Feedback Loop" の逆方向パス（記号 -> 神経）を担当する。
     """
     def __init__(
         self, 
         rag_system: RAGSystem, 
-        cortex_snn: BioPCNetwork, # 大脳皮質SNNモデル
+        cortex_snn: BioPCNetwork, # 学習対象のSNN
         spike_encoder: SpikeEncoder,
-        consolidation_epochs: int = 5
+        consolidation_epochs: int = 3,
+        replay_batch_size: int = 4
     ):
         self.rag_system = rag_system
         self.cortex_snn = cortex_snn
         self.spike_encoder = spike_encoder
         self.consolidation_epochs = consolidation_epochs
-
-    def consolidate_knowledge(self, limit: int = 20) -> Dict[str, float]:
-        """
-        GraphRAGから知識を抽出し、SNNにリプレイ学習させる。
+        self.replay_batch_size = replay_batch_size
         
-        Args:
-            limit: 処理する知識エントリの最大数
+        logger.info("💤 SleepConsolidator initialized. Ready to turn knowledge into intuition.")
+
+    def _get_important_concepts(self, limit: int = 20) -> List[str]:
+        """
+        GraphRAGから固定化すべき重要な概念を抽出する。
+        (PageRankや次数中心性などを用いて重要度を判定可能だが、現在はランダムサンプリング)
+        """
+        if not self.rag_system.knowledge_graph or self.rag_system.knowledge_graph.number_of_nodes() == 0:
+            return []
             
-        Returns:
-            学習統計情報
-        """
-        logger.info("💤 Sleep Consolidation: Transferring GraphRAG knowledge to Synapses...")
-        
-        # 1. 重要な知識の抽出 (GraphRAGからランダムまたは重要度順に取得)
-        # 注: RAGSystemに全ノード取得APIが必要だが、ここではnetworkxグラフに直接アクセスすると仮定
-        if not self.rag_system.knowledge_graph:
-            logger.warning("  - Knowledge graph is empty. Skipping consolidation.")
-            return {}
-
         nodes = list(self.rag_system.knowledge_graph.nodes())
-        selected_concepts = random.sample(nodes, min(len(nodes), limit))
+        # 簡易的にランダムサンプリング（将来的には活性度ベースに変更）
+        selected = random.sample(nodes, min(len(nodes), limit))
+        return selected
+
+    def consolidate_knowledge(self) -> Dict[str, float]:
+        """
+        睡眠サイクルを実行し、知識をSNNに焼き付ける。
+        """
+        logger.info("💤 Sleep Phase: Replaying GraphRAG knowledge to Synapses...")
         
+        selected_concepts = self._get_important_concepts()
+        if not selected_concepts:
+            logger.warning("  - No knowledge found to consolidate.")
+            return {"total_synaptic_change": 0.0}
+
         total_plasticity_change = 0.0
-        
-        # SNNを学習モードに設定
         self.cortex_snn.train()
         
+        # 学習ループ
         for epoch in range(self.consolidation_epochs):
             epoch_change = 0.0
             
             for concept in selected_concepts:
-                # 知識の取得 (Subj - Pred - Obj)
-                # 概念に関連するトリプルを取得してテキスト化
+                # 1. 知識の再構成 (Symbol -> Text)
+                # その概念に関連する知識トリプルを取得してテキスト化
+                # ex: "SNN is energy_efficient."
                 triples = self.rag_system.get_subgraph_info(concept)
                 if not triples:
                     continue
-                    
-                # 知識を一つの文脈として結合
+                
                 knowledge_text = " ".join(triples)
                 
-                # 2. スパイクエンコーディング
-                # テキスト知識をスパイクパターンに変換
-                # cortex_snn の入力次元に合わせる必要がある
-                # BioPCNetworkは通常 (Batch, Dim) を受け取る
-                input_dim = self.cortex_snn.layer_dims[0]
+                # 2. スパイクエンコーディング (Text -> Spikes)
+                # SpikeEncoderを使ってテキストをスパイク列に変換
+                # SNNのtime_stepsに合わせる
+                duration = self.cortex_snn.time_steps
                 
-                # SpikeEncoderの既存メソッドを利用 (duration=time_steps)
-                time_steps = self.cortex_snn.time_steps
+                # input_dict形式で渡す
+                spike_pattern = self.spike_encoder.encode(
+                    {"content": knowledge_text}, 
+                    duration=duration
+                )
                 
-                # テキストからスパイクを生成
-                # encode メソッドは (Time, Neurons) を返す場合があるため調整
-                # ここでは簡易的に dummy_input を生成するロジック (実際は encoder を使う)
-                # spike_pattern = self.spike_encoder.encode({"content": knowledge_text}, duration=time_steps)
+                # デバイス転送
+                device = next(self.cortex_snn.parameters()).device
+                spike_pattern = spike_pattern.to(device)
                 
-                # 【重要】記号接地されたエンコーディングが必要
-                # ここでは概念ハッシュ等を使って決定論的なパターンを生成する簡易実装
-                spike_pattern = self._generate_semantic_spikes(knowledge_text, input_dim, time_steps)
-                spike_pattern = spike_pattern.to(next(self.cortex_snn.parameters()).device)
+                # BioPCNetworkは (Batch, Dim) または (Batch, Time, Dim) を期待する
+                # encodeは (T, N) を返す場合があるので調整
+                if spike_pattern.dim() == 2: # (T, N)
+                    # (1, T, N) -> (B, T, N)
+                    model_input = spike_pattern.unsqueeze(0).repeat(self.replay_batch_size, 1, 1)
+                else:
+                    model_input = spike_pattern
 
-                # 3. SNNでの学習 (Forward & Plasticity Update)
+                # 3. SNNでのリプレイ学習 (Forward & Plasticity Update)
+                # 教師なし学習（Heobrian/STDP）または 自己教師あり学習（Predictive Coding）
+                # 入力を「予測すべき対象」として与える
+                
                 self.cortex_snn.reset_state()
                 
-                # 入力を与える (教師なし、あるいは自己教師あり)
-                # BioPCNetworkは入力(x)がターゲット(target)にもなり得る (AutoEncoder的構成の場合)
-                # ここでは入力を予測させる学習を行う
+                # 入力をターゲットとしても使用 (Reconstruction)
+                # BioPCNetworkのforward仕様に合わせて調整
+                # forward(x) -> output
+                _ = self.cortex_snn(model_input, targets=model_input) 
                 
-                # (Batch次元を追加)
-                batch_input = spike_pattern.unsqueeze(0) # (1, Time, Dim) -> BioPCNetは (B, Dim) をT回入力?
-                # BioPCNetwork.forward は (x, targets) を受け取る。
-                # x: (B, Dim) (定常入力) または (B, T, Dim) (時系列)
-                # 実装に合わせて (B, Dim) の平均レートを入力とする
-                rate_input = batch_input.mean(dim=1)
+                # 学習則の適用
+                metrics = self.cortex_snn.run_learning_step(inputs=model_input, targets=model_input)
                 
-                # Forward Pass
-                _ = self.cortex_snn(rate_input, targets=rate_input) # 入力を再現するように学習
-                
-                # 学習則の適用 (Hebbian / STDP / Causal Trace)
-                # run_learning_step は内部で登録されたルールを実行する
-                metrics = self.cortex_snn.run_learning_step(inputs=rate_input, targets=rate_input)
-                
-                # 更新量の集計
+                # 更新量の集計（ログ用）
                 for k, v in metrics.items():
-                    if "magnitude" in k:
+                    if "magnitude" in k and isinstance(v, torch.Tensor):
                         epoch_change += v.item()
-            
+                    elif "magnitude" in k and isinstance(v, float):
+                        epoch_change += v
+
             total_plasticity_change += epoch_change
-            logger.debug(f"  - Epoch {epoch+1} plasticity change: {epoch_change:.4f}")
+            logger.debug(f"  - Sleep Epoch {epoch+1}: Plasticity change magnitude = {epoch_change:.4f}")
 
-        logger.info(f"✅ Consolidation complete. Total synaptic change: {total_plasticity_change:.4f}")
+        logger.info(f"✅ Consolidation complete. Knowledge integrated into synaptic weights. (Total change: {total_plasticity_change:.4f})")
         return {"total_synaptic_change": total_plasticity_change}
-
-    def _generate_semantic_spikes(self, text: str, dim: int, time_steps: int) -> torch.Tensor:
-        """
-        テキストから意味的に一貫したスパイクパターンを生成するヘルパー。
-        (本来はSymbolGroundingやSpikeEncoderの機能だが、ここではデモ用に内包)
-        """
-        import hashlib
-        import numpy as np
-        
-        # テキストのハッシュをシードにする
-        seed = int(hashlib.sha256(text.encode('utf-8')).hexdigest(), 16) % (2**32)
-        rng = np.random.RandomState(seed)
-        
-        # レートコーディング的なパターンを生成
-        # 意味的に近い単語が近いパターンになるわけではない簡易実装だが、
-        # 「同じ知識」に対しては常に「同じスパイク」が生成されることが重要
-        rate_vector = rng.rand(dim)
-        
-        spikes = []
-        for _ in range(time_steps):
-            s = (rng.rand(dim) < rate_vector).astype(np.float32)
-            spikes.append(torch.from_numpy(s))
-            
-        return torch.stack(spikes)
