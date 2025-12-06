@@ -1,24 +1,25 @@
 # ファイルパス: snn_research/models/bio/simple_network.py
-# (修正: 学習則のステート共有バグを修正)
+# (修正: BaseModel継承による共通インターフェース準拠)
 #
 # Title: Bio-Inspired SNN (修正版)
 # Description:
 # - 生物学的学習則 (STDP, BCM等) を用いた多層SNNモデル。
-# - 重要修正: コンストラクタで渡された学習則インスタンスを `copy.deepcopy` を用いて
-#   層ごとに複製するように変更。これにより、各層のプレ/ポストシナプストレースが
-#   混線するバグ（State Aliasing）を解消し、多層ネットワークでの学習を正常化。
+# - 修正: BaseModelを継承し、get_total_spikesやreset_spike_statsに対応。
+# - 修正: 学習則インスタンスをディープコピーし、層ごとの状態混線を防止。
 
 import torch
 import torch.nn as nn
 from typing import Dict, Any, Optional, Tuple, List, cast
-import copy # コピー用
+import copy
 
 from .lif_neuron_legacy import BioLIFNeuron
 from snn_research.learning_rules.base_rule import BioLearningRule
 from snn_research.learning_rules.causal_trace import CausalTraceCreditAssignmentEnhancedV2
 from snn_research.core.synapse_dynamics import apply_probabilistic_transmission
+# 修正: BaseModelのインポート
+from snn_research.core.base import BaseModel
 
-class BioSNN(nn.Module):
+class BioSNN(BaseModel):
     """
     生物学的学習則を用いたSNNモデル。
     各層ごとに独立した学習則インスタンスを管理する。
@@ -38,37 +39,30 @@ class BioSNN(nn.Module):
         self.contribution_threshold = sparsification_config.get("contribution_threshold", 0.0) if sparsification_config else 0.0
         
         self.synaptic_reliability = synaptic_reliability
-        print(f"🎲 シナプス伝達信頼性: {self.synaptic_reliability*100:.1f}%")
         
         if self.sparsification_enabled:
-            print(f"🧬 適応的因果スパース化が有効です (貢献度閾値: {self.contribution_threshold})")
+            pass # ログ出力は省略可能
 
         self.layers = nn.ModuleList()
         self.weights = nn.ParameterList()
         
-        # --- ▼ 修正: 学習則のリスト化 ▼ ---
-        # 単一のインスタンスを共有すると、内部状態（トレース）が混線するため、
-        # 層ごとに独立したインスタンスを作成して保持する。
         self.synaptic_rules: List[BioLearningRule] = []
         self.homeostatic_rules: List[Optional[BioLearningRule]] = []
-        # --- ▲ 修正 ▲ ---
 
         for i in range(len(layer_sizes) - 1):
             self.layers.append(BioLIFNeuron(layer_sizes[i+1], neuron_params))
             weight = nn.Parameter(torch.rand(layer_sizes[i+1], layer_sizes[i]) * 0.5)
             self.weights.append(weight)
             
-            # --- ▼ 修正: ルールのディープコピー ▼ ---
-            # 各層専用の学習則インスタンスを作成
             self.synaptic_rules.append(copy.deepcopy(synaptic_rule))
             
             if homeostatic_rule:
                 self.homeostatic_rules.append(copy.deepcopy(homeostatic_rule))
-                if i == 0: # 最初の1回だけログ出力
-                     print(f"⚖️ 恒常性維持ルール ({type(homeostatic_rule).__name__}) を各層に適用しました。")
             else:
                 self.homeostatic_rules.append(None)
-            # --- ▲ 修正 ▲ ---
+        
+        # BaseModelの初期化 (get_total_spikesなどのために必要なら)
+        # self._init_weights() # BioSNNは独自に初期化しているため不要
 
     def forward(self, input_spikes: torch.Tensor) -> Tuple[torch.Tensor, List[torch.Tensor]]:
         hidden_spikes_history = []
@@ -91,7 +85,6 @@ class BioSNN(nn.Module):
             
         return current_spikes, hidden_spikes_history
         
-
     def update_weights(
         self,
         all_layer_spikes: List[torch.Tensor],
@@ -116,10 +109,13 @@ class BioSNN(nn.Module):
             if backward_credit is not None:
                 # 階層的クレジット信号を報酬に加算
                 reward_signal = current_params.get("reward", 0.0)
-                modulated_reward = reward_signal + backward_credit.mean().item() * 0.1
-                current_params["reward"] = modulated_reward
+                # 簡易的な変調
+                try:
+                    modulated_reward = reward_signal + backward_credit.mean().item() * 0.1
+                    current_params["reward"] = modulated_reward
+                except Exception:
+                    pass
 
-            # --- ▼ 修正: 各層固有の学習則を使用 ▼ ---
             layer_synaptic_rule = self.synaptic_rules[i]
             layer_homeostatic_rule = self.homeostatic_rules[i]
             
@@ -144,7 +140,6 @@ class BioSNN(nn.Module):
                 dw_homeostasis = dw_homeo
 
             dw = dw_synaptic + dw_homeostasis
-            # --- ▲ 修正 ▲ ---
 
             # 適応的因果スパース化
             if self.sparsification_enabled and isinstance(layer_synaptic_rule, CausalTraceCreditAssignmentEnhancedV2):
@@ -156,4 +151,4 @@ class BioSNN(nn.Module):
             # 重み更新適用
             with torch.no_grad():
                 self.weights[i].add_(dw)
-                self.weights[i].clamp_(min=0.0) # 興奮性シナプス制約 (任意)
+                self.weights[i].clamp_(min=0.0)
