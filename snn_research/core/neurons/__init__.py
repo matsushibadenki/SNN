@@ -1,12 +1,10 @@
 # ファイルパス: snn_research/core/neurons/__init__.py
-# (修正: ScaleAndFireNeuronの3次元入力対応 & クラス定義の完全版)
-# Title: SNNニューロンモデル定義
+# Title: SNNニューロンモデル定義 (完全版)
 # Description:
-# - 4次元入力 (B, C, H, W) などの場合、チャネル次元(dim=1)に合わせてパラメータを
-#   (1, C, 1, 1) に変形する _view_params ヘルパーを実装。
-# - AdaptiveLIFNeuron, ProbabilisticLIFNeuron, DualThresholdNeuron, GLIFNeuron, TC_LIF に適用。
-# - ScaleAndFireNeuron が (B, L, C) の3次元入力を正しく処理できるように分岐を追加。
-# - BistableIFNeuron, EvolutionaryLeakLIF をエクスポート。
+# - すべてのニューロンクラスに _view_params ヘルパーメソッドを実装し、
+#   多次元入力 (B, C, H, W) や時系列入力 (B, T, C) に対するパラメータの
+#   ブロードキャストを正しく処理するように修正。
+# - これにより、Conv2d層の後などでパラメータ形状不一致によるエラーを防ぐ。
 
 from typing import Optional, Tuple, Any, List, cast
 import torch
@@ -15,7 +13,7 @@ import torch.nn.functional as F
 import math
 from spikingjelly.activation_based import surrogate, base # type: ignore[import-untyped]
 
-# 新しいニューロンのインポート
+# 依存モジュールのインポート
 from .bif_neuron import BistableIFNeuron
 from .feel_neuron import EvolutionaryLeakLIF
 
@@ -47,7 +45,7 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         noise_intensity: float = 0.0,
         threshold_decay: float = 0.99,
         threshold_step: float = 0.05,
-        v_reset: float = 0.0, # 追加: 互換性のため
+        v_reset: float = 0.0, 
     ):
         super().__init__()
         self.features = features
@@ -169,7 +167,8 @@ class AdaptiveLIFNeuron(base.MemoryModule):
 
 class IzhikevichNeuron(base.MemoryModule):
     """
-    Izhikevich neuron model. (Scalar params, broadcast works automatically)
+    Izhikevich neuron model. 
+    修正: _view_params を追加し、多次元入力に対応。
     """
     def __init__(
         self,
@@ -182,12 +181,15 @@ class IzhikevichNeuron(base.MemoryModule):
     ):
         super().__init__()
         self.features = features
-        self.a = a
-        self.b = b
-        self.c = c
-        self.d = d
+        
+        # パラメータをTensorとして保持し、ブロードキャスト可能にする
+        self.register_buffer('a', torch.full((features,), a))
+        self.register_buffer('b', torch.full((features,), b))
+        self.register_buffer('c', torch.full((features,), c))
+        self.register_buffer('d', torch.full((features,), d))
         self.dt = dt
         self.v_peak = 30.0
+        
         self.surrogate_function = surrogate.ATan(alpha=2.0)
         self.stateful = False
 
@@ -207,19 +209,31 @@ class IzhikevichNeuron(base.MemoryModule):
         self.u = None
         self.spikes.zero_()
         self.total_spikes.zero_()
+        
+    def _view_params(self, param: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        if param.ndim != 1: return param
+        if x.ndim == 4 and x.shape[1] == self.features: return param.view(1, -1, 1, 1)
+        if x.ndim == 3 and x.shape[1] == self.features: return param.view(1, -1, 1)
+        return param
 
     def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         if not self.stateful:
             self.v = None
             self.u = None
             
+        # パラメータのブロードキャスト
+        a = self._view_params(self.a, x)
+        b = self._view_params(self.b, x)
+        c = self._view_params(self.c, x)
+        d = self._view_params(self.d, x)
+
         if self.v is None or self.v.shape != x.shape:
-            self.v = torch.full_like(x, float(self.c))
+            self.v = c.expand_as(x).clone()
         if self.u is None or self.u.shape != x.shape:
-            self.u = torch.full_like(x, float(self.b * self.c))
+            self.u = (b * self.v).clone()
 
         dv = 0.04 * self.v**2 + 5 * self.v + 140 - self.u + x
-        du = self.a * (self.b * self.v - self.u)
+        du = a * (b * self.v - self.u)
         
         self.v = self.v + dv * self.dt
         self.u = self.u + du * self.dt
@@ -227,8 +241,9 @@ class IzhikevichNeuron(base.MemoryModule):
         spike = self.surrogate_function(self.v - self.v_peak)
         
         if spike.ndim > 1:
-            # 簡易集計
-            self.spikes = spike.mean(dim=0) if spike.shape[0] > 0 else spike
+            if x.ndim == 4: self.spikes = spike.mean(dim=(0, 2, 3))
+            elif x.ndim == 3: self.spikes = spike.mean(dim=(0, 1)) if x.shape[2] == self.features else spike.mean(dim=(0, 2))
+            else: self.spikes = spike.mean(dim=0)
         else:
             self.spikes = spike
         
@@ -236,8 +251,8 @@ class IzhikevichNeuron(base.MemoryModule):
             self.total_spikes += spike.detach().sum()
         
         reset_mask = (self.v >= self.v_peak).detach()
-        self.v = torch.where(reset_mask, torch.full_like(self.v, float(self.c)), self.v)
-        self.u = torch.where(reset_mask, self.u + self.d, self.u)
+        self.v = torch.where(reset_mask, c.expand_as(self.v), self.v)
+        self.u = torch.where(reset_mask, self.u + d, self.u)
         
         self.v = torch.clamp(self.v, min=-100.0, max=50.0)
 
@@ -246,6 +261,7 @@ class IzhikevichNeuron(base.MemoryModule):
 class ProbabilisticLIFNeuron(base.MemoryModule):
     """
     Probabilistic LIF Neuron.
+    修正: _view_params を追加。
     """
     log_tau_mem: nn.Parameter
     
@@ -307,10 +323,11 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
         if self.training and self.noise_intensity > 0:
             self.mem += torch.randn_like(self.mem) * self.noise_intensity
 
+        # 確率的発火
         spike_prob = torch.sigmoid((self.mem - self.threshold) / self.temperature)
         spike = (torch.rand_like(self.mem) < spike_prob).float()
 
-        self.spikes = spike.mean() # 簡易
+        self.spikes = spike.mean() 
 
         with torch.no_grad():
             self.total_spikes += spike.detach().sum()
@@ -326,6 +343,7 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
 class GLIFNeuron(base.MemoryModule):
     """
     Gated Leaky Integrate-and-Fire (GLIF) ニューロン。
+    修正: _view_params を追加。
     """
     base_threshold: nn.Parameter
     gate_tau_lin: nn.Linear
@@ -395,6 +413,7 @@ class GLIFNeuron(base.MemoryModule):
         if gate_input.ndim > 2:
             # (B, C, H, W) -> (B, H, W, C)
             gate_input_perm = gate_input.permute(0, 2, 3, 1)
+            # Linear -> (B, H, W, C) -> (B, C, H, W)
             mem_decay_gate = torch.sigmoid(self.gate_tau_lin(gate_input_perm)).permute(0, 3, 1, 2)
         else:
             mem_decay_gate = torch.sigmoid(self.gate_tau_lin(gate_input))
@@ -420,6 +439,7 @@ class GLIFNeuron(base.MemoryModule):
 class TC_LIF(base.MemoryModule):
     """
     Two-Compartment LIF (TC-LIF) ニューロン。
+    修正: _view_params を追加。
     """
     log_tau_s: nn.Parameter
     log_tau_d: nn.Parameter
@@ -499,7 +519,7 @@ class TC_LIF(base.MemoryModule):
         current_tau_d = torch.exp(log_tau_d) + 1.1
         decay_d = torch.exp(-1.0 / current_tau_d)
 
-        # フィードバック項: 簡易的に w_sd * x と同等の形状に拡張する処理は省略
+        # フィードバック項
         dendritic_input = x 
         self.v_d = self.v_d * decay_d + dendritic_input
         
@@ -521,6 +541,7 @@ class TC_LIF(base.MemoryModule):
 class DualThresholdNeuron(base.MemoryModule):
     """
     Dual Threshold Neuron.
+    修正: _view_params を追加。
     """
     log_tau_mem: nn.Parameter
     threshold_high: nn.Parameter
@@ -595,7 +616,7 @@ class DualThresholdNeuron(base.MemoryModule):
         self.spikes = current_spikes_detached
 
         with torch.no_grad():
-            self.total_spikes += current_spikes_detached.sum() # type: ignore[has-type]
+            self.total_spikes += current_spikes_detached.sum() 
         
         reset_mem = self.mem - current_spikes_detached * t_high
         below_low_threshold = reset_mem < t_low
@@ -611,7 +632,8 @@ class DualThresholdNeuron(base.MemoryModule):
 
 class ScaleAndFireNeuron(base.MemoryModule):
     """
-    Scale-and-Fire (SFN) ニューロン. (Stateful logic unchanged as it is usually for dense layers)
+    Scale-and-Fire (SFN) ニューロン. 
+    T=1 で動作し、入力を量子化する。
     """
     def __init__(
         self,
