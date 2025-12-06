@@ -1,8 +1,8 @@
 # ファイルパス: snn_research/models/experimental/moe_model.py
-# Title: Spiking FrankenMoE & Router (堅牢化版)
+# Title: Spiking FrankenMoE & Router (Path Logic Fixed)
 # 機能説明:
 #   複数の学習済みSNNモデル（エキスパート）を統合するMoEモデル。
-#   修正: forwardメソッド内でリセットを確実に行い、タプル戻り値に対応。
+#   修正: エキスパートのチェックポイントロード時に、プロジェクトルート基準の相対パス解決を追加。
 
 import torch
 import torch.nn as nn
@@ -88,6 +88,12 @@ class SpikingFrankenMoE(BaseModel):
         except ImportError:
             raise ImportError("Failed to import SNNCore.")
         
+        # プロジェクトルートの推定 (このファイルの位置から遡る)
+        try:
+            project_root = Path(__file__).resolve().parent.parent.parent.parent
+        except Exception:
+            project_root = Path(".")
+
         for i, (cfg, ckpt_path) in enumerate(zip(expert_configs, expert_checkpoints)):
             logger.info(f"🧟 FrankenMoE: Building Expert {i}...")
             try:
@@ -95,19 +101,17 @@ class SpikingFrankenMoE(BaseModel):
                 
                 # チェックポイントのロード
                 if ckpt_path and str(ckpt_path).lower() != "none":
-                    # パスの解決
+                    load_path = None
+                    
+                    # 1. そのままのパスで確認
                     if os.path.exists(ckpt_path):
                         load_path = ckpt_path
                     else:
-                         # プロジェクトルートからの相対パスとして試行
-                         project_root = Path(__file__).resolve().parent.parent.parent.parent
-                         potential_path = project_root / ckpt_path
-                         if potential_path.exists():
-                             load_path = str(potential_path)
-                         else:
-                             logger.warning(f"Checkpoint path '{ckpt_path}' not found. Using random weights for Expert {i}.")
-                             load_path = None
-
+                        # 2. プロジェクトルートからの相対パスとして試行
+                        potential_path = project_root / ckpt_path
+                        if potential_path.exists():
+                            load_path = str(potential_path)
+                    
                     if load_path:
                         try:
                             state_dict = torch.load(load_path, map_location='cpu')
@@ -123,7 +127,9 @@ class SpikingFrankenMoE(BaseModel):
                             expert_container.model.load_state_dict(new_state_dict, strict=False)
                             logger.info(f"   -> Loaded weights from {load_path}")
                         except Exception as e:
-                            logger.error(f"   -> Error loading weights: {e}. Using random weights.")
+                            logger.error(f"   -> Error loading weights from {load_path}: {e}. Using random weights.")
+                    else:
+                        logger.warning(f"   -> Checkpoint path '{ckpt_path}' not found (Tried abs and relative to {project_root}). Using random weights.")
                 else:
                     logger.info(f"   -> No checkpoint specified. Using random weights for Expert {i}.")
                 
@@ -144,14 +150,13 @@ class SpikingFrankenMoE(BaseModel):
         
         device = input_ids.device
         
-        # --- 修正: 全エキスパートの内部状態をリセット ---
+        # 全エキスパートの内部状態をリセット
         SJ_F.reset_net(self)
         
         # 1. ルーティング入力の準備
         first_expert = self.experts[0]
         text_embeds: torch.Tensor
         
-        # 埋め込み層の取得（エキスパートの構造に依存）
         if hasattr(first_expert, 'embedding'):
              emb_layer = cast(nn.Module, getattr(first_expert, 'embedding'))
              text_embeds = emb_layer(input_ids)
@@ -159,7 +164,7 @@ class SpikingFrankenMoE(BaseModel):
              emb_layer = cast(nn.Module, getattr(first_expert, 'token_embedding'))
              text_embeds = emb_layer(input_ids)
         else:
-             # エキスパートがEmbeddingを持たない場合（稀だが）、ルーター用のEmbeddingを使う
+             # エキスパートがEmbeddingを持たない場合（稀）、ルーター用のEmbeddingを使う
              if self.router_embedding is None:
                  num_embeddings = self.vocab_size
                  self.router_embedding = nn.Embedding(num_embeddings, self.d_model).to(device)
@@ -180,7 +185,6 @@ class SpikingFrankenMoE(BaseModel):
         
         for i, expert in enumerate(self.experts):
             # Expert呼び出し
-            # SNNCoreでラップされたモデルは kwargs を適切に処理できる前提
             out_any = expert(
                 input_ids, 
                 return_spikes=False, # エキスパート内部での集計は不要
@@ -188,7 +192,7 @@ class SpikingFrankenMoE(BaseModel):
                 **kwargs
             )
             
-            # --- 修正: タプル戻り値のハンドリング ---
+            # タプル戻り値のハンドリング
             if isinstance(out_any, tuple):
                 expert_outputs.append(out_any[0]) # (logits, spikes, mem) -> logits
             else:
