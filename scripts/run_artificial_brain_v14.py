@@ -20,9 +20,12 @@ if project_root not in sys.path:
 
 from app.containers import BrainContainer
 
-# ロギング設定
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# ロギング設定 (フォーマットをシンプルに)
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger("BrainRunner")
+# 外部ライブラリのログを抑制
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
 
 def interactive_session(brain):
     """対話モードのメインループ"""
@@ -76,8 +79,6 @@ def main():
     parser.add_argument("--base_config", type=str, default="configs/templates/base_config.yaml", help="Base config")
     parser.add_argument("--mode", type=str, choices=["interactive", "demo"], default="interactive", help="Run mode")
     args = parser.parse_args()
-
-    logger.info("🏗️ Initializing Brain Container...")
     
     # 1. コンテナと設定のロード
     container = BrainContainer()
@@ -90,8 +91,6 @@ def main():
         container.config.from_yaml(args.config)
     else:
         # コンフィグがない場合はデフォルト値を生成して使用（フォールバック）
-        logger.warning(f"Config {args.config} not found. Using internal defaults.")
-        # 最低限の設定を注入
         container.config.from_dict({
             "model": {"architecture_type": "predictive_coding", "d_model": 64, "time_steps": 16},
             "training": {"biologically_plausible": {"neuron": {"type": "lif"}}}
@@ -100,7 +99,6 @@ def main():
     # 2. RAGシステムのセットアップ
     rag_system = container.agent_container.rag_system()
     if not rag_system.vector_store:
-        logger.info("📚 Setting up initial Knowledge Base...")
         rag_system.setup_vector_store()
 
     # 3. 人工脳の構築
