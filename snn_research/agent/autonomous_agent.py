@@ -1,10 +1,11 @@
 # ファイルパス: snn_research/agent/autonomous_agent.py
-# (修正: Web学習の自動トリガー & mypy型エラー修正)
+# (修正: Web学習の自動トリガー & mypy型エラー修正 & 構文エラー修正)
 # Title: Autonomous Agent Base - 実装版
 # Description:
 #   - handle_task メソッドを修正し、データが指定されていない場合に
 #     Webクローラーを起動して自律的に学習データを収集するように変更。
 #   - register_model への引数を明示的にキャストして型エラーを解消。
+#   - 構文エラー (Unmatched '}') を修正。
 
 from typing import Dict, Any, Optional, List, TYPE_CHECKING, Union, cast
 import asyncio
@@ -141,7 +142,7 @@ class AutonomousAgent:
         }
         
         # レジストリに登録 (シミュレーション)
-        # --- 修正: 明示的なキャストによる型エラー回避 ---
+        # --- 修正: 明示的なキャストによる型エラー回避と構文修正 ---
         await self.model_registry.register_model(
             model_id=cast(str, new_model_info["model_id"]),
             task_description=task_description,
@@ -159,5 +160,3 @@ class AutonomousAgent:
         print(f"🤖 Running inference on '{model_path}' with prompt: '{prompt}'")
         # 実際のモデルロードと推論はリソースを食うため、ここではログ出力のみでシミュレート
         print(f"   -> Inference result: [Simulated SNN Output for '{prompt}']")
-
-}
