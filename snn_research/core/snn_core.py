@@ -1,12 +1,14 @@
 # ファイルパス: snn_research/core/snn_core.py
-# (修正済み完全版: get_total_spikes の委譲追加 & デバッグ情報強化 & リセットロジック修正)
+# Title: SNNCore (堅牢化版)
+# Description:
+# - モデル構築時のパラメータ取得を安全にし、循環インポートを回避する構造に整理。
+# - 不明な architecture_type に対して明確なエラーを出す。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional, List, Union, Tuple, cast, Type
+from typing import Dict, Any, Optional
 import logging
-# --- 修正: spikingjelly functional のインポート ---
-# mypyエラー [import-untyped] を抑制するために type: ignore を追加
+# mypyエラー抑制
 from spikingjelly.activation_based import functional # type: ignore
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,7 @@ class SNNCore(nn.Module):
 
     def forward(self, x: Optional[torch.Tensor] = None, **kwargs: Any) -> Any:
         if x is None:
+            # 辞書キーから入力を探す
             for key in ['input_ids', 'input_images', 'input_sequence', 'x']:
                 if key in kwargs:
                     x = kwargs.pop(key)
@@ -47,23 +50,17 @@ class SNNCore(nn.Module):
         return self.model(x, **kwargs)
     
     def reset_state(self) -> None:
-        """
-        モデルの内部状態をリセットする。
-        再帰的なリセット処理 (functional.reset_net) を優先的に使用する。
-        """
-        # 1. SpikingJellyなどの再帰的リセット（これが最も安全）
+        """モデルの内部状態をリセットする。"""
         functional.reset_net(self.model)
 
-        # 2. モデル固有のリセットメソッドがあれば呼ぶ（BaseModelなど）
         if hasattr(self.model, 'reset_state') and callable(getattr(self.model, 'reset_state')):
-             # reset_netと重複する可能性があるが、固有ロジックがある場合に備える
              getattr(self.model, 'reset_state')()
         
         if hasattr(self.model, 'reset_spike_stats'):
              getattr(self.model, 'reset_spike_stats')()
 
     def get_total_spikes(self) -> float:
-        """内部モデルのスパイク総数を取得する。メソッドが存在しない場合は0を返す。"""
+        """内部モデルのスパイク総数を取得する。"""
         if hasattr(self.model, 'get_total_spikes'):
             return self.model.get_total_spikes() # type: ignore
         return 0.0
@@ -74,7 +71,6 @@ class SNNCore(nn.Module):
         time_steps = self.config.get('time_steps', 16)
         
         if not arch_type:
-            # エラー時に現在のConfigキーを表示してデバッグを支援
             logger.error(f"SNNCore Config keys: {list(self.config.keys())}")
             if 'model' in self.config:
                 logger.error(f"Did you mean to pass config['model']? Found 'model' key in config.")
@@ -82,6 +78,8 @@ class SNNCore(nn.Module):
 
         if self.backend != "spikingjelly":
              raise ValueError(f"Unsupported backend: {self.backend}. Only 'spikingjelly' is supported.")
+
+        # --- モデル構築ロジック ---
 
         if arch_type == "spiking_cnn":
             from snn_research.models.cnn.spiking_cnn_model import SpikingCNN
@@ -109,8 +107,8 @@ class SNNCore(nn.Module):
             return HybridCnnSnnModel(
                 vocab_size=self.vocab_size,
                 time_steps=time_steps,
-                ann_frontend=self.config.get('ann_frontend', {}),
-                snn_backend=self.config.get('snn_backend', {}),
+                ann_frontend=self.config.get('ann_frontend', {'name': 'mobilenet_v2', 'output_features': 1280}),
+                snn_backend=self.config.get('snn_backend', {'d_model': 1280, 'n_head': 8, 'num_layers': 4}),
                 neuron_config=neuron_config
             )
         
@@ -136,22 +134,10 @@ class SNNCore(nn.Module):
                 num_layers=self.config.get('num_layers', 3),
                 time_steps=time_steps,
                 neuron_config=neuron_config,
-                forward_delays_per_layer=self.config.get('forward_delays_per_layer', []),
-                backward_delays_per_layer=self.config.get('backward_delays_per_layer', [])
+                forward_delays_per_layer=self.config.get('forward_delays_per_layer', None),
+                backward_delays_per_layer=self.config.get('backward_delays_per_layer', None)
             )
 
-        elif arch_type == "tiny_recursive_model":
-            from snn_research.core.trm_core import TinyRecursiveModel
-            return TinyRecursiveModel(
-                vocab_size=self.vocab_size,
-                d_model=self.config.get('d_model', 64),
-                d_state=self.config.get('d_state', 32),
-                num_layers=self.config.get('num_layers', 1),
-                layer_dims=self.config.get('layer_dims', []),
-                time_steps=time_steps,
-                neuron_config=neuron_config
-            )
-        
         elif arch_type == "franken_moe":
             from snn_research.models.experimental.moe_model import SpikingFrankenMoE
             return SpikingFrankenMoE(
@@ -271,6 +257,18 @@ class SNNCore(nn.Module):
                 vision_config=self.config.get('vision_config', {}),
                 language_config=self.config.get('language_config', {}),
                 projector_config=self.config.get('projector_config', {})
+            )
+        
+        elif arch_type == "tiny_recursive_model":
+            from snn_research.core.trm_core import TinyRecursiveModel
+            return TinyRecursiveModel(
+                vocab_size=self.vocab_size,
+                d_model=self.config.get('d_model', 64),
+                d_state=self.config.get('d_state', 32),
+                num_layers=self.config.get('num_layers', 1),
+                layer_dims=self.config.get('layer_dims', []),
+                time_steps=time_steps,
+                neuron_config=neuron_config
             )
 
         else:
