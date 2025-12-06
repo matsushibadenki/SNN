@@ -4,8 +4,9 @@
 #   ロードマップ Phase 5 & 7 に基づく、人工脳のオペレーティングシステム実装。
 #   認知モジュールのオーケストレーション、エネルギー恒常性維持、
 #   および覚醒-睡眠サイクル（神経-記号還流）を自律的に制御する。
+#   修正: report["phases"] の型エラーを修正するため、Dictの型ヒントを詳細化。
 
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, cast
 import time
 import logging
 import torch
@@ -66,7 +67,7 @@ class ArtificialBrain:
         # --- Kernel Core ---
         self.workspace = global_workspace
         self.astrocyte = astrocyte_network # ニューロモルフィックOSのスケジューラ
-        self.motivation = motivation_system
+        self.motivation_system = motivation_system # 修正: motivation -> motivation_system に統一
         self.sleep_manager = sleep_consolidator
         
         # --- IO Interfaces ---
@@ -223,7 +224,9 @@ class ArtificialBrain:
         logger.info("\n🌙 --- SLEEP CYCLE INITIATED ---")
         logger.info(f"   Initial Fatigue: {self.fatigue_level:.1f}, Energy: {self.energy_level:.1f}")
 
-        report = {"status": "slept", "phases": []}
+        # 修正: phases を List[str] として初期化
+        phases: List[str] = []
+        report: Dict[str, Any] = {"status": "slept", "phases": phases}
 
         # Phase 1: Explicit Consolidation (NREM sleep like)
         # 海馬（短期記憶）-> 大脳皮質（長期記憶/GraphRAG）への転送
@@ -232,7 +235,8 @@ class ArtificialBrain:
             logger.info(f"   📝 Consolidating {len(episodes)} episodes to Cortex (GraphRAG)...")
             for ep in episodes:
                 self.cortex.consolidate_memory(ep)
-            report["phases"].append(f"Consolidated {len(episodes)} episodes")
+            # 修正: phases が List[str] であるため append 可能
+            phases.append(f"Consolidated {len(episodes)} episodes")
         
         # Phase 2: Implicit Consolidation / Dreaming (REM sleep like)
         # GraphRAGからの知識再生によるニューラルネットワークの微調整
@@ -244,7 +248,8 @@ class ArtificialBrain:
             
             logger.info(f"   🦄 Dream Cycle: Replayed {dreams_count} concepts.")
             logger.info(f"   🧠 Neural Plasticity: Total synaptic weight change: {synaptic_change:.4f}")
-            report["phases"].append(f"Dreamed {dreams_count} concepts (DeltaW: {synaptic_change:.4f})")
+            # 修正: phases が List[str] であるため append 可能
+            phases.append(f"Dreamed {dreams_count} concepts (DeltaW: {synaptic_change:.4f})")
             
             # 夢の内容に基づく新たな洞察（仮）
             if synaptic_change > 1.0:
