@@ -1,10 +1,11 @@
 # ファイルパス: snn_research/distillation/knowledge_distillation_manager.py
-# (v13 修正版: mypyエラー修正)
+# (v12 修正版)
 # Title: 知識蒸留 (Knowledge Distillation) 管理マネージャー
 # Description:
-# - 修正: torchvision.models のインポートに type: ignore[import-untyped] を追加。
-# - 修正: train_dataset_raw の変数定義に型ヒント (: Dataset) を追加し、
-#   ConcatDataset の代入による型不一致エラーを解消。
+# - 修正: _get_or_load_teacher_model メソッドにおいて、画像モデル(resnet18等)をロードする際、
+#   未学習のヘッドで初期化してしまう問題を修正。
+#   指定された teacher_model_name と同名の .pth ファイルが存在する場合はそれを重みとしてロードし、
+#   存在しない場合は警告を出してランダム初期化（またはImageNet重み）で続行するように変更。
 
 import torch
 import torch.nn as nn
@@ -17,9 +18,7 @@ import logging
 import asyncio
 from omegaconf import DictConfig
 
-# --- ▼ 修正: type: ignore[import-untyped] を追加 ▼ ---
-import torchvision.models as models  # type: ignore[import-untyped]
-# --- ▲ 修正 ▲ ---
+import torchvision.models as models
 
 from snn_research.distillation.model_registry import ModelRegistry
 from snn_research.training.trainers import DistillationTrainer
@@ -93,7 +92,8 @@ class KnowledgeDistillationManager:
                 # 分類ヘッドをCIFAR-10用に変更 (10クラス)
                 model.fc = torch.nn.Linear(num_ftrs, 10) 
                 
-                # 教師モデルの重みロード処理
+                # --- ▼ 修正: 教師モデルの重みロード処理を追加 ▼ ---
+                # タスク特化の学習済み重みがあればロードする
                 teacher_weights_path = f"models/{self.teacher_model_name}_cifar10.pth"
                 if os.path.exists(teacher_weights_path):
                     print(f"   -> Loading fine-tuned weights from {teacher_weights_path}")
@@ -103,6 +103,7 @@ class KnowledgeDistillationManager:
                     print(f"⚠️ Warning: Fine-tuned weights not found at '{teacher_weights_path}'.")
                     print("   -> The teacher model's classification head is randomly initialized!")
                     print("   -> Distillation efficiency will be extremely low.")
+                # --- ▲ 修正 ▲ ---
                 
             else:
                 model = AutoModelForCausalLM.from_pretrained(self.teacher_model_name)
