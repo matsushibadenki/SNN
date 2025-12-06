@@ -2,7 +2,7 @@
 # Title: Spiking FrankenMoE & Router (Path Logic Fixed)
 # 機能説明:
 #   複数の学習済みSNNモデル（エキスパート）を統合するMoEモデル。
-#   修正: エキスパートのチェックポイントロード時に、プロジェクトルート基準の相対パス解決を追加。
+#   修正: SNNCoreのインポートを遅延させ、循環参照を回避。
 
 import torch
 import torch.nn as nn
@@ -82,11 +82,12 @@ class SpikingFrankenMoE(BaseModel):
         self.experts = nn.ModuleList()
         self.router_embedding = None
         
-        # SNNCoreを動的にインポート（循環参照回避）
+        # --- 修正: 遅延インポートで循環参照を回避 ---
         try:
             from snn_research.core.snn_core import SNNCore
         except ImportError:
-            raise ImportError("Failed to import SNNCore.")
+            raise ImportError("Failed to import SNNCore in SpikingFrankenMoE.")
+        # ----------------------------------------
         
         # プロジェクトルートの推定 (このファイルの位置から遡る)
         try:
