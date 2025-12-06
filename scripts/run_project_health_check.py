@@ -3,16 +3,12 @@
 # Description: 
 #   各コンポーネントの実行だけでなく、生成された成果物やログ内容を検証し、
 #   システムの健全性をより厳密に診断する。
-#   修正: check_log_contains で大文字小文字を無視するように変更。
-#   修正 (v2.2): 標準出力(stdout)だけでなく標準エラー出力(stderr)も結合して検証するように変更。
+#   修正: 標準出力(stdout)だけでなく標準エラー出力(stderr)も結合して検証するように変更。
 
 import subprocess
 import sys
 import logging
 import os
-import re
-import shutil
-from pathlib import Path
 from typing import Callable, Optional, List
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -30,26 +26,17 @@ def run_command(command: List[str], description: str, validator: Optional[Callab
         result = subprocess.run(command, check=True, text=True, capture_output=True)
         
         # --- 修正: 検証用に stdout と stderr を結合 ---
-        # 多くのスクリプトはログを stderr に出すため、両方チェックすることで判定漏れを防ぐ
         combined_output = result.stdout + "\n" + result.stderr
         # -----------------------------------------
         
-        # 標準出力の一部をログに記録（デバッグ用）
-        if len(result.stdout) > 500:
-            logger.info(f"出力抜粋(stdout): {result.stdout[:200]} ... {result.stdout[-200:]}")
-        elif result.stdout.strip():
-            logger.info(f"出力(stdout): {result.stdout}")
+        if result.stdout.strip():
+            logger.info(f"出力(stdout): {result.stdout[:500]}..." if len(result.stdout) > 500 else f"出力(stdout): {result.stdout}")
             
-        # エラー出力があれば記録
         if result.stderr.strip():
-            if len(result.stderr) > 500:
-                 logger.info(f"出力抜粋(stderr): {result.stderr[:200]} ...")
-            else:
-                 logger.info(f"出力(stderr): {result.stderr}")
+            logger.info(f"出力(stderr): {result.stderr[:500]}..." if len(result.stderr) > 500 else f"出力(stderr): {result.stderr}")
 
         # 追加の検証ロジック
         if validator:
-            # 結合した出力に対して検証を行う
             if not validator(combined_output):
                 logger.error(f"--- ❌ 検証失敗: {description} (出力内容または成果物が期待と異なります) ---")
                 return False
@@ -68,7 +55,6 @@ def run_command(command: List[str], description: str, validator: Optional[Callab
 # --- バリデータ関数群 ---
 
 def check_file_exists(filepath: str) -> Callable[[str], bool]:
-    """指定されたファイルが存在するかチェックする"""
     def _check(_: str) -> bool:
         exists = os.path.exists(filepath)
         if not exists:
@@ -79,7 +65,6 @@ def check_file_exists(filepath: str) -> Callable[[str], bool]:
     return _check
 
 def check_log_contains(keyword: str, case_sensitive: bool = False) -> Callable[[str], bool]:
-    """ログに指定されたキーワードが含まれているかチェックする (デフォルトは大文字小文字無視)"""
     def _check(output: str) -> bool:
         if case_sensitive:
             contains = keyword in output
@@ -92,14 +77,11 @@ def check_log_contains(keyword: str, case_sensitive: bool = False) -> Callable[[
     return _check
 
 def check_training_success(log_dir: str) -> Callable[[str], bool]:
-    """学習が正常に進行し、モデルが保存されたかチェックする"""
     def _check(output: str) -> bool:
-        # 1. 損失がNaNになっていないか
         if "nan" in output.lower():
             logger.error("  [Check] 損失(Loss)が NaN になっています。")
             return False
         
-        # 2. ベストモデルが存在するか
         best_model = os.path.join(log_dir, "best_model.pth")
         if not os.path.exists(best_model):
             logger.error(f"  [Check] ベストモデルが保存されていません: {best_model}")
@@ -118,7 +100,7 @@ def main():
     results = {}
     python_cmd = sys.executable
     
-    # --- 1. Train (Gradient) ---
+    # --- 1. Train ---
     log_dir_1 = "runs/smoke_tests"
     results["1. 代理勾配学習 (gradient_based)"] = run_command(
         [python_cmd, "scripts/runners/train.py", 
@@ -216,7 +198,7 @@ def main():
          "--method", "cnn-convert", 
          "--dry-run"], 
         "8. ANN-SNN 変換 (Dry Run)",
-        # 修正: バリデータが stderr も含めてチェックするようになったため、これでパスするはず
+        # 修正: stderr も含めてチェックするため、これでパスするはず
         validator=lambda x: "SNNモデルと設定の準備が完了しました" in x
     )
 
