@@ -3,6 +3,7 @@
 # Description:
 #   FEEL-SNN (NeurIPS 2024) に基づく、学習可能な漏れ係数 (Evolutionary Leak) を持つLIFニューロン。
 #   修正: spikes バッファの更新ロジックをベクトル対応に修正。
+#   修正: _view_params による多次元入力対応。
 
 import torch
 import torch.nn as nn
