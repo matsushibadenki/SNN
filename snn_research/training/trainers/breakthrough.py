@@ -1,9 +1,10 @@
 # ファイルパス: snn_research/training/trainers/breakthrough.py
-# (修正: 評価モードでのAccuracy計算を確実にする)
+# (修正: 評価モードでのAccuracy計算を確実にする & mypy型エラー修正)
 # Title: Breakthrough Trainer (標準SNNトレーナー)
 # Description:
 #   標準的な代理勾配法によるSNN学習を行うトレーナークラス。
 #   修正: _run_step 内で aux_logits の処理に加え、評価モード時に accuracy を明示的に計算して格納。
+#   修正: load_checkpoint の戻り値を int にキャストして mypy エラーを解消。
 
 import torch
 import torch.nn as nn
@@ -361,7 +362,8 @@ class BreakthroughTrainer:
         if self.scheduler and 'scheduler_state_dict' in checkpoint: self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         if self.use_amp and 'scaler_state_dict' in checkpoint: self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
         self.best_metric = checkpoint.get('best_metric', float('inf'))
-        return checkpoint.get('epoch', -1) + 1
+        # --- 修正: int にキャスト ---
+        return int(checkpoint.get('epoch', -1)) + 1
     
     def _compute_ewc_fisher_matrix(self, dataloader: DataLoader, task_name: str) -> None:
         self.model.eval()
