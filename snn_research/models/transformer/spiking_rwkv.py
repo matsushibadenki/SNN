@@ -1,9 +1,10 @@
 # ファイルパス: snn_research/models/transformer/spiking_rwkv.py
-# (修正: ニューロンパラメータのフィルタリング追加 & v_reset対応)
+# (修正: ニューロンパラメータのフィルタリング追加 & v_reset対応 & スパイク集計順序修正)
 # Title: Spiking RWKV (Standard & 1.58bit BitNet)
 # Description:
 # - 修正: ニューロンクラスの初期化時にパラメータフィルタリングを適用し、堅牢性を向上。
-# - 修正: forwardメソッド内で、総ニューロン数を考慮した正確な平均発火率を返すように変更（維持）。
+# - 修正: forwardメソッド内で、総ニューロン数を考慮した正確な平均発火率を返すように変更。
+# - 修正: forwardメソッド内で、get_total_spikes() を set_stateful(False) の前に移動 (重要)。
 
 import torch
 import torch.nn as nn
@@ -218,7 +219,7 @@ class SpikingRWKV(BaseModel):
             
             outputs.append(x_t)
             
-        # --- 修正: 正確な発火率の計算 ---
+        # --- 修正: リセット前にスパイクを集計 ---
         avg_spikes_val = 0.0
         if return_spikes:
             total_spikes = self.get_total_spikes()
@@ -422,7 +423,7 @@ class BitSpikingRWKV(BaseModel):
                 
             outputs.append(x_t)
         
-        # --- 修正: 正確な発火率の計算 ---
+        # --- 修正: リセット前にスパイクを集計 ---
         avg_spikes_val = 0.0
         if return_spikes:
             total_spikes = self.get_total_spikes()
