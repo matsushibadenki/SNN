@@ -1,8 +1,9 @@
 # ファイルパス: snn_research/core/snn_core.py
-# Title: SNNCore (Registry Pattern Integrated)
+# Title: SNNCore (Registry Pattern Integrated & SpikingJelly Compatible)
 # Description:
 # - モデル構築ロジックを ArchitectureRegistry に移譲。
-# - これにより、このクラスは設定管理と共通インターフェース（forward, reset_state）の提供に専念する。
+# - 設定管理と共通インターフェース（forward, reset_state）を提供。
+# - 修正: SpikingJellyの再帰的リセットに対応するため、reset() メソッドを追加。
 
 import torch
 import torch.nn as nn
@@ -61,6 +62,13 @@ class SNNCore(nn.Module):
         
         if hasattr(self.model, 'reset_spike_stats'):
              getattr(self.model, 'reset_spike_stats')()
+
+    def reset(self) -> None:
+        """
+        SpikingJelly互換のリセットメソッド。
+        functional.reset_net() は再帰的に .reset() を呼び出すため、これが必要。
+        """
+        self.reset_state()
 
     def get_total_spikes(self) -> float:
         """内部モデルのスパイク総数を取得する。"""
