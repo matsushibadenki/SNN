@@ -189,9 +189,9 @@ def hpo_run(model_config, task_name, target_script, teacher_model, n_trials, eva
         "--task", task_name,
         "--target_script", target_script,
         "--teacher_model", teacher_model,
-        "--n_trials", str(n_trials),
-        "--eval_epochs", str(eval_epochs),
-        "--metric_name", metric_name,
+        "--n-trials", str(n_trials),
+        "--eval-epochs", str(eval_epochs),
+        "--metric-name", metric_name,
     ]
     if storage: args.extend(["--storage", storage])
     if study_name: args.extend(["--study_name", study_name])
@@ -272,12 +272,14 @@ def train_distill(task, teacher_model, model_config, epochs):
     """
     script_path = "scripts/runners/train.py"
     args = [
-        "--config", "configs/templates/base_config.yaml",
+        "--config", "configs/templates/base_config.yaml", # ベース設定
         "--model_config", model_config,
         "--paradigm", "gradient_based",
         "--override_config", "training.gradient_based.type=distillation",
         "--override_config", f"training.gradient_based.distillation.teacher_model={teacher_model}",
         "--override_config", f"training.epochs={epochs}",
+        # データパスはタスクに応じて適切に設定する必要があるが、ここでは簡易的にデフォルトを使用するか
+        # ユーザーに追加引数を求めるのが望ましい。今回は必須引数 task を task_name として渡す
         "--task_name", task
     ]
     run_script(script_path, args)
@@ -294,7 +296,7 @@ def benchmark_cli():
 @click.option('--experiment', required=True)
 @click.option('--epochs', default=5)
 @click.option('--tag', default="BenchmarkRun")
-@click.option('--model-config', default=None)
+@click.option('--model-config', default=None) # 追加
 def benchmark_run(experiment, epochs, tag, model_config):
     """ベンチマーク実行"""
     script_path = "scripts/run_benchmark_suite.py"
@@ -356,16 +358,20 @@ def agent_cli():
 @click.option('--force-retrain', is_flag=True)
 def agent_solve(task_description, unlabeled_data_path, force_retrain):
     """タスク解決"""
+    # パス修正
     script_path = "scripts/runners/run_agent.py"
     args = ["--task_description", task_description]
     if unlabeled_data_path: args.extend(["--unlabeled_data_path", unlabeled_data_path])
     if force_retrain: args.append("--force_retrain")
     run_script(script_path, args)
 
+# agent evolve コマンドはスクリプトが存在しないため削除
+
 @agent_cli.command(name="rl")
 @click.option('--episodes', default=1000)
 def agent_rl(episodes):
     """強化学習"""
+    # パス修正
     script_path = "scripts/runners/run_rl_agent.py"
     args = ["--episodes", str(episodes)]
     run_script(script_path, args)
@@ -375,6 +381,7 @@ def agent_rl(episodes):
 @click.option('--context-data', required=True)
 def agent_planner(task_request, context_data):
     """プランナー"""
+    # パス修正
     script_path = "scripts/runners/run_planner.py"
     args = ["--task_request", task_request, "--context_data", context_data]
     run_script(script_path, args)
@@ -389,6 +396,7 @@ def agent_brain(prompt, loop, model_config):
     if loop:
         script_path = "scripts/observe_brain_thought_process.py"
     else:
+        # パス修正
         script_path = "scripts/runners/run_brain_simulation.py"
         args.extend(["--prompt", prompt])
     run_script(script_path, args)
@@ -398,6 +406,7 @@ def agent_brain(prompt, loop, model_config):
 @click.option('--model-config', default='configs/models/small.yaml')
 def agent_life_form(duration, model_config):
     """デジタル生命体"""
+    # パス修正
     script_path = "scripts/runners/run_life_form.py"
     args = ["--duration", str(duration), "--model_config", model_config]
     run_script(script_path, args)
@@ -478,6 +487,7 @@ def debug_analyze(tool, skip_mypy, skip_flake8):
     if (tool in ['all', 'flake8']) and not skip_flake8:
         run_external_command(["flake8"] + targets)
     if (tool in ['all', 'mypy']) and not skip_mypy:
+        # パス修正: scripts/runners を追加
         mypy_targets = ["snn_research", "app", "scripts", "tests", "snn-cli.py", "scripts/runners/train.py"]
         run_external_command(["mypy"] + mypy_targets)
 
