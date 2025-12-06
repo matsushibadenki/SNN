@@ -1,15 +1,21 @@
 # ファイルパス: snn_research/models/bio/lif_neuron_legacy.py
-# (修正: スパイク統計の記録を追加)
+# (修正: mypyエラー [has-type] 修正 - 型アノテーション追加)
 # Title: Leaky Integrate-and-Fire (LIF) ニューロンモデル (Legacy)
 # Description: 
 #   生物学的学習則のためのシンプルなLIFニューロン。
-#   修正: 診断ツールとの互換性のため、total_spikesバッファとresetメソッドを追加。
+#   修正: voltages, total_spikes, spikes に明示的な型アノテーションを追加。
 
 import torch
 import torch.nn as nn
+from typing import cast
 
 class BioLIFNeuron(nn.Module):
     """生物学的学習則のためのシンプルなLIFニューロン。"""
+    # クラスレベルで型アノテーションを定義
+    voltages: torch.Tensor
+    total_spikes: torch.Tensor
+    spikes: torch.Tensor
+
     def __init__(self, n_neurons: int, neuron_params: dict, dt: float = 1.0):
         super().__init__()
         self.n_neurons = n_neurons
@@ -19,12 +25,13 @@ class BioLIFNeuron(nn.Module):
         self.v_rest = neuron_params['v_rest']
         self.dt = dt
         
+        # register_buffer は Tensor を登録するが、mypy はそれを認識しない場合があるため
+        # クラスレベルのアノテーションまたはキャストで対応する
         self.register_buffer('voltages', torch.full((n_neurons,), self.v_rest))
-        # 修正: 統計用バッファの追加
         self.register_buffer('total_spikes', torch.tensor(0.0))
         self.register_buffer('spikes', torch.zeros(n_neurons)) # 直近のスパイク
 
-    def reset(self):
+    def reset(self) -> None:
         """状態のリセット"""
         self.voltages.fill_(self.v_rest)
         self.total_spikes.zero_()
