@@ -4,15 +4,12 @@
 #   ロードマップ Phase 5 実装。
 #   ニューラル活動パターン（アトラクタ）と、知識グラフ上の概念（シンボル）を
 #   動的かつ双方向にリンクさせる。
-#   - Bottom-up: ニューロン発火 -> シンボル創発 (ハッシュ化 & クラスタリング)
-#   - Top-down: シンボル -> ニューロン活性化 (プライミング)
 
 import hashlib
 import torch
 import numpy as np
-from typing import Set, Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 import logging
-
 from .rag_snn import RAGSystem
 
 logger = logging.getLogger(__name__)
@@ -24,25 +21,14 @@ class SymbolGrounding:
     def __init__(self, rag_system: RAGSystem, similarity_threshold: float = 0.85):
         self.rag_system = rag_system
         self.similarity_threshold = similarity_threshold
-        self.known_patterns: Dict[str, torch.Tensor] = {} # Hash -> Pattern Centroid
+        self.known_patterns: Dict[str, torch.Tensor] = {} # ConceptID -> Pattern Centroid
         self.concept_counter = 0
         
         logger.info("⚓ SymbolGrounding initialized. Bridging the gap between neurons and symbols.")
 
-    def _get_pattern_hash(self, pattern: torch.Tensor) -> str:
-        """
-        スパイクパターンのハッシュを生成する（簡易的なLocality Sensitive Hashingの代用）。
-        パターンを2値化してハッシュ化する。
-        """
-        # テンソルをCPUへ移動し、2値化
-        binary_pattern = (pattern > 0.5).byte().cpu().numpy()
-        pattern_bytes = binary_pattern.tobytes()
-        return hashlib.sha256(pattern_bytes).hexdigest()
-
     def _find_nearest_concept(self, pattern: torch.Tensor) -> Optional[str]:
         """
         既存の概念パターンの中で、現在のパターンに類似しているものを検索する。
-        (コサイン類似度を使用)
         """
         if not self.known_patterns:
             return None
@@ -55,7 +41,8 @@ class SymbolGrounding:
             centroid_flat = centroid.view(-1).float().to(pattern.device)
             if centroid_flat.shape != pattern_flat.shape:
                 continue
-                
+            
+            # コサイン類似度計算
             sim = torch.nn.functional.cosine_similarity(pattern_flat.unsqueeze(0), centroid_flat.unsqueeze(0)).item()
             if sim > max_sim:
                 max_sim = sim
@@ -69,22 +56,14 @@ class SymbolGrounding:
         """
         [Bottom-up] ニューラル活動パターンをシンボルとして接地する。
         既存の概念に近ければそれを返し、新しければ新規概念を創発させる。
-        
-        Args:
-            pattern (torch.Tensor): 知覚野や思考層の活動テンソル。
-            context (str): 発生した文脈（メタデータ）。
-            
-        Returns:
-            str: 接地された概念ID (Concept ID)。
         """
         # 1. 既存概念との照合
         existing_concept = self._find_nearest_concept(pattern)
         
         if existing_concept:
-            # 既存概念のセントロイドを更新 (オンライン学習)
-            # old_centroid = self.known_patterns[existing_concept]
-            # self.known_patterns[existing_concept] = 0.9 * old_centroid + 0.1 * pattern
-            # logger.debug(f"  -> Grounded to existing concept: {existing_concept}")
+            # 既存概念の更新 (Online Average)
+            old_centroid = self.known_patterns[existing_concept].to(pattern.device)
+            self.known_patterns[existing_concept] = 0.9 * old_centroid + 0.1 * pattern
             
             # コンテキストの強化
             self.rag_system.add_triple(existing_concept, "re-observed_in", context)
@@ -113,13 +92,10 @@ class SymbolGrounding:
         """
         [Bottom-up] 外部観測データ（辞書など）をシンボル化する。
         """
-        # 観測データのハッシュ化（簡易版）
         obs_str = str(sorted(observation.items()))
         obs_hash = hashlib.md5(obs_str.encode()).hexdigest()
         concept_id = f"observation_{obs_hash[:8]}"
         
-        # グラフに存在しなければ登録
-        # (RAGSystem側で重複チェックはあるが、ここではID生成が主)
         self.rag_system.add_triple(concept_id, "is_a", "observation_event")
         self.rag_system.add_triple(concept_id, "observed_in", context)
         
@@ -132,16 +108,7 @@ class SymbolGrounding:
     def get_priming_signal(self, concept_id: str) -> Optional[torch.Tensor]:
         """
         [Top-down] 概念IDから、それに対応するニューラル活動パターン（プライミング信号）を取り出す。
-        「赤い」と言われて視覚野が発火するような現象を再現。
         """
         if concept_id in self.known_patterns:
             return self.known_patterns[concept_id]
-        
-        # RAGから関連概念を検索して、既知のパターンを探す（連想）
-        related_concepts = self.rag_system.search(concept_id, k=3)
-        for related in related_concepts:
-            # 検索結果テキストからIDを抽出するロジックが必要だが、
-            # ここでは簡易的にRAGの検索結果がIDを含んでいると仮定
-            pass
-            
         return None
