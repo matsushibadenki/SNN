@@ -190,11 +190,11 @@ class ArtificialBrain:
                 context_str = f"Context: {conscious_content}"
                 
                 # SNNCore呼び出し (ダミー入力ID生成の簡易ロジック)
-                # 本来はTokenizerが必要だが、ここでは抽象化して実行
                 try:
                     # ダミー推論実行 (モデルの状態更新とスパイク生成のため)
                     # input_ids = tokenizer(context_str)...
-                    dummy_ids = torch.randint(0, 1000, (1, 16)).to(next(self.thinking_engine.parameters()).device)
+                    device = next(self.thinking_engine.parameters()).device
+                    dummy_ids = torch.randint(0, 1000, (1, 16)).to(device)
                     _ = self.thinking_engine(dummy_ids)
                     
                     thought_output = "[Neural Activity Generated]" # 実際はデコードされたテキスト
