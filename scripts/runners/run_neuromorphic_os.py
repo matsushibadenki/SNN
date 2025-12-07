@@ -1,9 +1,9 @@
 # ファイルパス: scripts/runners/run_neuromorphic_os.py
-# Title: SNN Brain OS Simulation (Config Loading Fixed)
+# Title: SNN Brain OS Simulation (Visual Enhanced)
 # Description:
 #   人工脳をOSとして動作させ、高負荷環境下でのリソース配分と自律的な睡眠サイクルを実演する。
-#   修正: BrainContainer初期化時に設定ファイルをロードするように修正し、
-#   CorticalColumnの初期化エラー（NoneType）を解消。
+#   修正: BrainContainer初期化時に設定ファイルをロードするように修正。
+#   修正: 睡眠サイクルの結果詳細を表示するロジックを追加。
 
 import sys
 import os
@@ -21,7 +21,6 @@ from app.containers import BrainContainer
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger("BrainOS")
-# 外部ライブラリのログを抑制
 logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
 
@@ -32,46 +31,31 @@ def main():
     # 1. コンテナと脳の初期化
     container = BrainContainer()
     
-    # --- 修正: 設定ファイルのロード ---
-    # DIコンテナが依存関係（CorticalColumnなど）を解決するために必須
     base_config_path = "configs/templates/base_config.yaml"
     model_config_path = "configs/models/small.yaml"
 
     if os.path.exists(base_config_path):
         container.config.from_yaml(base_config_path)
-    else:
-        logger.warning(f"⚠️ Config not found: {base_config_path}")
-
     if os.path.exists(model_config_path):
         container.config.from_yaml(model_config_path)
     else:
-        logger.warning(f"⚠️ Model config not found: {model_config_path}")
-        # フォールバック用の最小設定
         container.config.from_dict({
             "model": {"architecture_type": "predictive_coding", "d_model": 64, "time_steps": 16},
-            "training": {"biologically_plausible": {"neuron": {"type": "lif", "tau_mem": 10.0, "base_threshold": 1.0}}}
+            "training": {"biologically_plausible": {"neuron": {"type": "lif"}}}
         })
-    # --------------------------------
 
     try:
-        # テスト用にエネルギー容量を小さく設定して、現象を早く起こす
         brain = container.artificial_brain()
     except Exception as e:
         logger.error(f"❌ Failed to initialize Artificial Brain: {e}")
-        import traceback
-        traceback.print_exc()
         return
     
-    # OS設定のオーバーライド (デモ用)
-    # AstrocyteNetworkはArtificialBrain内で初期化されている（または注入されている）
+    # OS設定のオーバーライド
     if brain.astrocyte:
         brain.astrocyte.max_energy = 300.0
         brain.astrocyte.current_energy = 300.0
         brain.astrocyte.basal_metabolic_rate = 5.0
         print(f"\n🔋 Initial State: Energy={brain.astrocyte.current_energy}, Fatigue={brain.astrocyte.fatigue_toxin}")
-    else:
-        logger.error("❌ Astrocyte module is missing in Artificial Brain.")
-        return
 
     # 2. タスクストリームの実行
     tasks = [
@@ -92,17 +76,8 @@ def main():
     for i, (kind, content) in enumerate(tasks):
         print(f"\n>>> [Task {i+1}] Type: {kind}, Content: {content}")
         
-        # 画像入力のシミュレーション
         input_data = content
-        if kind == "image":
-            # 実際には画像をロードするが、ここではSensoryReceptorのモック動作に期待するか、
-            # もしくはbrain.run_cognitive_cycleが文字列をパスとして処理する前提
-            # ファイルが存在しないとエラーになる可能性があるため、ダミー処理
-            if not os.path.exists(input_data):
-                 # SensoryReceptorがパスとして認識しないように、明示的にテキストとして扱うか、
-                 # もしくはダミー画像を生成するロジックが必要だが、
-                 # 今回はSensoryReceptorがファイル欠損をハンドリングする（text扱いになる）
-                 pass
+        # 画像ファイル存在チェックのダミー処理は省略（SensoryReceptorが吸収）
 
         result = brain.run_cognitive_cycle(input_data)
         
@@ -117,16 +92,19 @@ def main():
         if denied:
             print(f"   ⚠️ DENIED MODULES (Low Resource): {', '.join(denied)}")
         
-        if result.get("status") == "sleeping":
+        if result.get("status") == "slept":
+            phases = result.get("phases", [])
+            print(f"   💤 Brain slept and recovered. Phases: {phases}")
+            # リセットされた状態を表示
+            print(f"   ✨ Refreshed State: Energy={brain.astrocyte.current_energy}, Fatigue={brain.astrocyte.fatigue_toxin}")
+            
+        elif result.get("status") == "sleeping":
             print("   💤 Brain is sleeping... Task ignored.")
-            # 睡眠中は少し速く進める
-            time.sleep(0.2)
+            
         elif not executed and not denied:
-            # 睡眠サイクルに入った直後の場合など
             print("   (Cycle completed without module execution)")
-            time.sleep(0.2)
-        else:
-            time.sleep(0.5)
+
+        time.sleep(0.5)
 
     print("\n🎉 Demo Completed: Neuromorphic OS behavior verified.")
 
