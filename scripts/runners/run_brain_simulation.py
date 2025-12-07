@@ -5,7 +5,7 @@
 #   覚醒と睡眠のサイクルを回しながら、ユーザーとの対話を通じて進化する様子をシミュレートする。
 #   CLI引数でモデル設定やモードを切り替え可能。
 #   修正: パス解決のロジックを整理し、ModuleNotFoundErrorを解消。
-#         ヘルスチェック用キーワード "認知サイクル完了" を出力。
+#   修正(v3): ロギング設定を強制(force=True)し、ヘルスチェック用出力をprint(flush=True)に変更して確実に出力させる。
 
 import sys
 import os
@@ -32,9 +32,11 @@ except ImportError as e:
     print(f"sys.path: {sys.path}")
     sys.exit(1)
 
-# ロギング設定 (フォーマットをシンプルに)
-logging.basicConfig(level=logging.INFO, format='%(message)s')
+# ロギング設定 (フォーマットをシンプルに、強制再設定)
+# force=True は Python 3.8+ で有効。既存のハンドラをリセットする。
+logging.basicConfig(level=logging.INFO, format='%(message)s', force=True, stream=sys.stdout)
 logger = logging.getLogger("BrainRunner")
+
 # 外部ライブラリのログを抑制
 logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
@@ -140,10 +142,10 @@ def main():
     # 4. 実行
     if args.prompt:
         # 単一の入力で実行 (ヘルスチェック用)
-        logger.info(f"--- Running single cognitive cycle for input: '{args.prompt}' ---")
+        print(f"--- Running single cognitive cycle for input: '{args.prompt}' ---", flush=True)
         brain.run_cognitive_cycle(args.prompt)
-        # ヘルスチェック通過用キーワードを出力
-        logger.info("認知サイクル完了") 
+        # ヘルスチェック通過用キーワードをprintで出力 (バッファリング回避)
+        print("認知サイクル完了", flush=True)
     else:
         # モード実行
         if args.mode == "interactive":
@@ -166,7 +168,7 @@ def main():
                 import time
                 time.sleep(1)
             # デモ終了時にも出力
-            logger.info("認知サイクル完了")
+            print("認知サイクル完了", flush=True)
 
 if __name__ == "__main__":
     main()
