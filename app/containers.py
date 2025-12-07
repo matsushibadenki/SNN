@@ -1,8 +1,8 @@
 # ファイルパス: app/containers.py
-# ファイル名: DIコンテナ定義 (BrainContainer修正版)
+# ファイル名: DIコンテナ定義 (Fixed)
 # Description:
-# - BrainContainerにtokenizer定義を追加し、NameErrorを修正。
-# - Thinking Engine (SFormer) を定義し、ArtificialBrainに注入。
+# - AgentContainer内の重複・不正な定義を削除 (autonomous_agent, digital_life_form)。
+# - BrainContainer内の不正なif文を修正し、astrocyte_networkを正しく定義。
 
 import torch
 import os
@@ -341,27 +341,6 @@ class AgentContainer(containers.DeclarativeContainer):
         tc=training_container
     )
     
-    autonomous_agent = providers.Callable(
-        lambda ac: ac.autonomous_agent(),
-        ac=agent_container
-    )
-    
-    digital_life_form = providers.Singleton(
-        DigitalLifeForm,
-        planner=providers.Callable(lambda ac: ac.hierarchical_planner(), ac=agent_container),
-        autonomous_agent=autonomous_agent,
-        rl_agent=rl_agent,
-        self_evolving_agent=self_evolving_agent,
-        motivation_system=motivation_system,
-        meta_cognitive_snn=providers.Callable(lambda ac_instance: cast(TrainingContainer, ac_instance.training_container()).meta_cognitive_snn(), ac_instance=agent_container),
-        memory=providers.Callable(lambda ac: ac.memory(), ac=agent_container),
-        physics_evaluator=providers.Singleton(PhysicsEvaluator),
-        symbol_grounding=symbol_grounding,
-        langchain_adapter=app_container.langchain_adapter,
-        global_workspace=global_workspace,
-        active_inference_agent=active_inference_agent
-    )
-
 class AppContainer(containers.DeclarativeContainer):
     config = providers.Configuration()
     
@@ -385,9 +364,7 @@ class BrainContainer(containers.DeclarativeContainer):
     
     device = providers.Factory(get_auto_device)
     
-    # --- 修正: Tokenizerプロバイダの追加 ---
     tokenizer = providers.Factory(get_tokenizer, config_dict=config)
-    # ------------------------------------
 
     global_workspace = providers.Singleton(
         GlobalWorkspace, 
@@ -435,7 +412,7 @@ class BrainContainer(containers.DeclarativeContainer):
     
     symbol_grounding = providers.Singleton(SymbolGrounding, rag_system=agent_container.rag_system)
 
-    # --- 追加: Thinking Engine (メインの思考モデル) ---
+    # Thinking Engine (メインの思考モデル)
     thinking_engine = providers.Singleton(
         SNNCore,
         config=config.model,
@@ -452,8 +429,8 @@ class BrainContainer(containers.DeclarativeContainer):
         replay_batch_size=4
     )
     
-    if astrocyte_network is None:
-        astrocyte_network = providers.Singleton(AstrocyteNetwork)
+    # Astrocyte Network
+    astrocyte_network = providers.Singleton(AstrocyteNetwork)
 
     artificial_brain = providers.Singleton(
         ArtificialBrain, 
@@ -462,7 +439,6 @@ class BrainContainer(containers.DeclarativeContainer):
         sensory_receptor=sensory_receptor, 
         spike_encoder=spike_encoder, 
         actuator=actuator, 
-        # 新しいThinking Engineを注入
         thinking_engine=thinking_engine,
         perception_cortex=perception_cortex, 
         visual_cortex=visual_cortex, 
@@ -479,6 +455,7 @@ class BrainContainer(containers.DeclarativeContainer):
         astrocyte_network=astrocyte_network
     )
     
+    # 以下、Callableラッパー
     rl_agent = providers.Callable(
         lambda ac: cast(TrainingContainer, ac.training_container()).bio_rl_agent(),
         ac=agent_container
