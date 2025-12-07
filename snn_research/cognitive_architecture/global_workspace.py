@@ -1,156 +1,144 @@
 # ファイルパス: snn_research/cognitive_architecture/global_workspace.py
-# (更新)
-#
-# Title: Global Workspace with Attention Mechanism
-#
+# Title: Global Workspace with Attention Mechanism v14.0
 # Description:
-# - mypyエラー修正: ModelRegistryの具象クラスをDIで受け取るように変更。
-# - 改善点: ROADMAPフェーズ4「スパイクベース通信プロトコル」に基づき、SpikeEncoderDecoderを導入。
-# - 改善点 (v2): 設計図に基づき、注意機構(AttentionHub)を統合。
-#              各モジュールからの誤差信号を競合させ、勝者となった情報を
-#              システム全体にブロードキャストする「意識」の仕組みを実装。
-# 修正点(v3): SpikeEncoderDecoderのAPI変更に伴い、メソッド呼び出しを修正。
-# 改善点(v4): 「意識的認知サイクル」実装のため、salienceスコアに基づき情報を競合させ、
-#              勝者となった情報をブロードキャストする機能を追加。
-#              - broadcastをupload_to_workspaceに改名し、salience引数を追加。
-#              - conscious_broadcast_cycleを改修し、最も顕著性の高い情報を選択・ブロードキャストするロジックを実装。
-
+#   グローバルワークスペース理論 (GWT) に基づく意識の中枢。
+#   各モジュールからのボトムアップな注意（Salience）を競合させ、
+#   勝者となった情報をトップダウンに放送（Broadcast）する。
 
 from typing import Dict, Any, List, Callable, Optional, Tuple
-import random
 import operator
+import logging
 
-from snn_research.distillation.model_registry import ModelRegistry
-from snn_research.communication.spike_encoder_decoder import SpikeEncoderDecoder
+logger = logging.getLogger(__name__)
 
 class AttentionHub:
     """
     Winner-Take-All競合により、最も重要な情報を選択する注意メカニズム。
     """
-    def __init__(self, inhibition_strength: float = 0.5):
+    def __init__(self, inhibition_strength: float = 0.5, decay_rate: float = 0.1):
         """
         Args:
-            inhibition_strength (float): 最近選択された情報源に対する抑制の強さ。
+            inhibition_strength (float): 選択された情報源に対する一時的な抑制（Inhibition of Return）。
+            decay_rate (float): 抑制の減衰率。
         """
         self.history: List[str] = []
+        self.inhibition_scores: Dict[str, float] = {}
         self.inhibition_strength = inhibition_strength
+        self.decay_rate = decay_rate
 
     def select_winner(self, salience_signals: Dict[str, float]) -> Optional[str]:
         """
-        顕著性信号の大きさと過去の履歴に基づき、最も注意を向けるべき情報源（勝者）を選択する。
-
-        Args:
-            salience_signals (Dict[str, float]): 各モジュール名とその顕著性スコア。
-
-        Returns:
-            Optional[str]: 勝者となったモジュールの名前。
+        顕著性信号と抑制履歴に基づき、注意を向けるべき「勝者」を選択する。
         """
         if not salience_signals:
             return None
 
-        # 過去に選択された情報源に抑制をかける (Inhibition of Return)
+        # 抑制の減衰
+        for key in list(self.inhibition_scores.keys()):
+            self.inhibition_scores[key] *= (1.0 - self.decay_rate)
+            if self.inhibition_scores[key] < 0.01:
+                del self.inhibition_scores[key]
+
+        # 実効顕著性の計算 (Salience - Inhibition)
         adjusted_signals: Dict[str, float] = {}
-        for name, signal_strength in salience_signals.items():
-            inhibition = self._get_inhibition_factor(name)
-            adjusted_signals[name] = signal_strength * (1 - inhibition)
-            if inhibition > 0:
-                print(f"  - AttentionHub: '{name}' に抑制を適用 (抑制率: {inhibition:.2f})")
+        for name, raw_salience in salience_signals.items():
+            inhibition = self.inhibition_scores.get(name, 0.0)
+            adjusted_signals[name] = max(0.0, raw_salience - inhibition)
 
-        # 最も顕著性が大きいモジュールを選択
+        # Winner-Take-All
+        if not adjusted_signals:
+            return None
+            
         winner = max(adjusted_signals.items(), key=operator.itemgetter(1))[0]
-        print(f"🏆 AttentionHub: '{winner}' が注意を獲得しました (調整後顕著性: {adjusted_signals[winner]:.4f})。")
-
-        # 履歴を更新
+        
+        # 勝者には強い抑制をかけ、次は選ばれにくくする（注意の移動を促す）
+        self.inhibition_scores[winner] = self.inhibition_scores.get(winner, 0.0) + self.inhibition_strength
+        
+        # 履歴更新
         self.history.append(winner)
-        if len(self.history) > 10:  # 履歴の長さを制限
+        if len(self.history) > 20:
             self.history.pop(0)
 
         return winner
 
-    def _get_inhibition_factor(self, module_name: str) -> float:
-        """最近選択された頻度に基づいて抑制係数を計算する。"""
-        recent_wins = self.history[-5:]  # 直近5回の履歴を参照
-        win_count = recent_wins.count(module_name)
-        return self.inhibition_strength * (win_count / 5)
-
 
 class GlobalWorkspace:
     """
-    注意機構を備え、認知アーキテクチャ全体で情報をスパイクパターンとして共有する中央情報ハブ。
+    認知アーキテクチャ全体で情報を共有する中央情報ハブ。
     """
-    def __init__(self, model_registry: ModelRegistry):
-        self.blackboard: Dict[str, Any] = {}
-        self.subscribers: List[Callable] = []
-        self.model_registry = model_registry
-        self.encoder_decoder = SpikeEncoderDecoder()
+    def __init__(self, capacity: int = 7):
+        self.blackboard: Dict[str, Any] = {} # 現在のサイクルでアップロードされた全情報
+        self.subscribers: List[Callable[[str, Any], None]] = []
         self.attention_hub = AttentionHub()
+        
+        # 現在「意識」に上っている内容
         self.conscious_broadcast_content: Optional[Any] = None
+        self.current_context_source: Optional[str] = None
+        
+        logger.info("✨ Global Workspace (Consciousness Hub) initialized.")
+
+    def subscribe(self, callback: Callable[[str, Any], None]):
+        """モジュールがブロードキャストを受信するためのコールバックを登録"""
+        self.subscribers.append(callback)
 
     def upload_to_workspace(self, source: str, data: Any, salience: float):
         """
-        情報をブラックボードに書き込む（アップロードする）。
+        各モジュールが情報をワークスペースにアップロードする。
+        salience (0.0~1.0) はその情報の「重要度・緊急度」。
         """
-        print(f"[GlobalWorkspace] '{source}' から情報を受信 (顕著性: {salience:.2f})...")
+        # logger.debug(f"[GW Upload] Source: {source}, Salience: {salience:.2f}")
         self.blackboard[source] = {"data": data, "salience": salience}
 
     def conscious_broadcast_cycle(self):
         """
-        意識的な情報処理サイクルを実行する。
-        1. 全モジュールから顕著性信号を収集する。
-        2. 注意機構が最も重要な情報（勝者）を選択する。
-        3. 勝者の情報をシステム全体にブロードキャストする。
+        意識的情報処理サイクルを実行する。
+        1. 顕著性マップの作成
+        2. 注意の勝者決定
+        3. 全システムへのブロードキャスト
         """
-        print("\n--- 意識的ブロードキャストサイクル開始 ---")
         if not self.blackboard:
-            print("  - ブラックボードに情報がありません。")
             self.conscious_broadcast_content = None
             return
-            
-        # 1. 顕著性信号を収集
+
+        # 1. 顕著性信号の収集
         salience_signals = {
             source: info["salience"]
             for source, info in self.blackboard.items()
         }
-        print(f"  - 収集された顕著性信号: {salience_signals}")
 
-        # 2. 注意を向ける勝者を選択
+        # 2. 注意の勝者を選択
         winner = self.attention_hub.select_winner(salience_signals)
 
         if winner and winner in self.blackboard:
-            # 3. 勝者の情報をデコードしてブロードキャスト
+            # 3. ブロードキャスト
             winner_info = self.blackboard[winner]
             self.conscious_broadcast_content = winner_info['data']
-            print(f"📡 意識的ブロードキャスト: '{winner}' からの情報を全システムに伝達します。")
-            self._notify_subscribers(winner, self.conscious_broadcast_content)
+            self.current_context_source = winner
+            
+            # 生データにメタデータを付与して送信
+            broadcast_packet = self.conscious_broadcast_content
+            if isinstance(broadcast_packet, dict):
+                broadcast_packet = broadcast_packet.copy()
+                broadcast_packet["source_module"] = winner
+
+            logger.info(f"📡 CONSCIOUS BROADCAST: <{winner}> took the stage (Salience: {winner_info['salience']:.2f})")
+            self._notify_subscribers(winner, broadcast_packet)
         else:
-            print("  - ブロードキャストするべき支配的な情報はありませんでした。")
             self.conscious_broadcast_content = None
-        
-        # サイクル終了後、ブラックボードをクリア
+
+        # サイクル終了後にブラックボードをクリア（短期記憶/海馬などは別途保持するため）
         self.blackboard.clear()
-        print("--- 意識的ブロードキャストサイクル終了 ---\n")
 
-    def subscribe(self, callback: Callable):
-        """情報更新を購読するコールバックを登録する。"""
-        self.subscribers.append(callback)
-
-    def _notify_subscribers(self, source: str, conscious_info: Any):
-        """全ての購読者に通知する。"""
+    def _notify_subscribers(self, source: str, content: Any):
+        """全サブスクライバーに同期的に通知"""
         for callback in self.subscribers:
             try:
-                callback(source, conscious_info)
+                callback(source, content)
             except Exception as e:
-                print(f"Error notifying subscriber {callback.__name__} for '{source}': {e}")
+                logger.error(f"Error notifying subscriber: {e}", exc_info=True)
 
     def get_information(self, source: str) -> Any:
-        """
-        ブラックボードから情報を取得する（デコードは不要）。
-        """
-        source_info = self.blackboard.get(source)
-        return source_info['data'] if source_info else None
-
-    def get_full_context(self) -> Dict[str, Any]:
-        """
-        現在のワークスペースの全コンテキストを取得する。
-        """
-        return {source: info['data'] for source, info in self.blackboard.items()}
+        """特定のソースからの直近の情報を取得する（デバッグ・補完用）"""
+        # 注意: blackboardは毎サイクルクリアされるため、サイクル内でのみ有効
+        info = self.blackboard.get(source)
+        return info['data'] if info else None
