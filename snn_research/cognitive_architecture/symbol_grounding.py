@@ -21,7 +21,8 @@ class SymbolGrounding:
     def __init__(self, rag_system: RAGSystem, similarity_threshold: float = 0.85):
         self.rag_system = rag_system
         self.similarity_threshold = similarity_threshold
-        self.known_patterns: Dict[str, torch.Tensor] = {} # ConceptID -> Pattern Centroid
+        # ConceptID -> Pattern Centroid のマッピング
+        self.known_patterns: Dict[str, torch.Tensor] = {} 
         self.concept_counter = 0
         
         logger.info("⚓ SymbolGrounding initialized. Bridging the gap between neurons and symbols.")
@@ -61,7 +62,7 @@ class SymbolGrounding:
         existing_concept = self._find_nearest_concept(pattern)
         
         if existing_concept:
-            # 既存概念の更新 (Online Average)
+            # 既存概念の更新 (Online Average: パターンの重心を移動)
             old_centroid = self.known_patterns[existing_concept].to(pattern.device)
             self.known_patterns[existing_concept] = 0.9 * old_centroid + 0.1 * pattern
             
@@ -69,7 +70,7 @@ class SymbolGrounding:
             self.rag_system.add_triple(existing_concept, "re-observed_in", context)
             return existing_concept
         
-        # 2. 新規概念の創発
+        # 2. 新規概念の創発 (Emergence)
         self.concept_counter += 1
         new_concept_id = f"neural_concept_{self.concept_counter:04d}"
         
@@ -108,6 +109,7 @@ class SymbolGrounding:
     def get_priming_signal(self, concept_id: str) -> Optional[torch.Tensor]:
         """
         [Top-down] 概念IDから、それに対応するニューラル活動パターン（プライミング信号）を取り出す。
+        言語理解から視覚野へのトップダウン注意制御などに使用。
         """
         if concept_id in self.known_patterns:
             return self.known_patterns[concept_id]
