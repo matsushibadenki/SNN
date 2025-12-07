@@ -1,9 +1,8 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# Title: Artificial Brain Kernel v14.2 (Demo Enhanced)
+# Title: Artificial Brain Kernel v14.3 (Plasticity Integrated)
 # Description:
 #   ロードマップ Phase 5 & 7 に基づく、人工脳のオペレーティングシステム実装。
-#   修正: デモ実行時の可視性を高めるため、主要な状態遷移ログを logger から print に変更。
-#   これにより、CLIデモで睡眠サイクルやリソース枯渇の警告が明確に表示されるようにする。
+#   修正: 睡眠サイクルの実行と、CorticalColumnの可塑性を統合。
 
 from typing import Dict, Any, List, Optional, Union, cast
 import time
@@ -37,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 class ArtificialBrain:
     """
-    Artificial Brain Kernel v14.2
+    Artificial Brain Kernel v14.3
     自律的にエネルギーを管理し、学習（覚醒）と整理（睡眠）を繰り返すニューロシンボリックOS。
     """
     def __init__(
@@ -61,7 +60,7 @@ class ArtificialBrain:
         sleep_consolidator: Optional[SleepConsolidator] = None,
         astrocyte_network: Optional[AstrocyteNetwork] = None
     ):
-        logger.info("🚀 Booting Artificial Brain Kernel v14.1 (OS Mode)...")
+        logger.info("🚀 Booting Artificial Brain Kernel v14.3 (OS Mode)...")
         
         # --- Kernel Core ---
         self.workspace = global_workspace
@@ -95,6 +94,10 @@ class ArtificialBrain:
         self.cycle_count = 0
         self.state = "AWAKE"
         
+        # 状態パラメータ（可視化用）
+        self.energy_level = 100.0 # Legacy property for dashboard
+        self.fatigue_level = 0.0  # Legacy property for dashboard
+        
         # Utilities
         self.image_transform = transforms.Compose([
             transforms.Resize((224, 224)),
@@ -106,7 +109,6 @@ class ArtificialBrain:
     def run_cognitive_cycle(self, raw_input: Any) -> Dict[str, Any]:
         """
         1回の認知サイクルを実行する。
-        各ステップでアストロサイトにリソースを申請し、拒否された場合はスキップする。
         """
         # 1. OS状態チェック
         if self.state in ["SLEEPING", "DREAMING"]:
@@ -133,7 +135,7 @@ class ArtificialBrain:
                 self.visual.perceive_and_upload(img_tensor)
                 report["executed_modules"].append("visual_cortex")
                 
-                # Grounding (中コスト)
+                # Grounding
                 if self.astrocyte.request_resource("symbol_grounding", 5.0):
                     vis_data = self.workspace.get_information("visual_cortex")
                     if vis_data and "features" in vis_data:
@@ -146,13 +148,14 @@ class ArtificialBrain:
         # テキスト/一般処理 (低コスト)
         else:
             if self.astrocyte.request_resource("perception", 2.0):
-                content_str = str(sensory_info['content'])
+                # HybridPerceptionCortexの処理
                 spike_pattern = self.encoder.encode(sensory_info, duration=16)
                 self.perception.perceive_and_upload(spike_pattern)
                 report["executed_modules"].append("perception")
                 
                 # Amygdala (重要・高優先度)
                 if self.astrocyte.request_resource("amygdala", 1.0):
+                    content_str = str(sensory_info['content'])
                     self.amygdala.evaluate_and_upload(content_str)
                     report["executed_modules"].append("amygdala")
             else:
@@ -165,21 +168,17 @@ class ArtificialBrain:
 
         # --- Step 3: High-Level Cognition (高次認知) ---
         if conscious_content:
-            # PFC (意思決定・目標設定)
+            # PFC
             if self.astrocyte.request_resource("prefrontal_cortex", 8.0):
                 self.pfc.handle_conscious_broadcast("workspace", conscious_content)
                 report["executed_modules"].append("prefrontal_cortex")
-            else:
-                report["denied_modules"].append("prefrontal_cortex")
 
-            # Causal Inference (背景処理)
+            # Causal Inference
             if self.astrocyte.request_resource("causal_inference", 10.0):
                 self.causal_engine.handle_conscious_broadcast("workspace", conscious_content)
                 report["executed_modules"].append("causal_inference")
-            else:
-                report["denied_modules"].append("causal_inference")
 
-            # Basal Ganglia (行動選択)
+            # Basal Ganglia & Motor
             amygdala_state = self.workspace.get_information("amygdala")
             if self.astrocyte.request_resource("basal_ganglia", 3.0):
                 selected_action = self.basal_ganglia.select_action(
@@ -196,14 +195,11 @@ class ArtificialBrain:
                     action_name = selected_action.get('action')
                     report["action"] = action_name
                     
-                    # Motor Output (実行)
                     if self.astrocyte.request_resource("motor_cortex", 10.0):
                         motor_commands = self.cerebellum.refine_action_plan(selected_action)
                         execution_log = self.motor.execute_commands(motor_commands)
                         self.actuator.run_command_sequence(execution_log)
                         report["executed_modules"].append("motor_cortex")
-                    else:
-                        report["denied_modules"].append("motor_cortex")
             
             # Hippocampus (エピソード記憶)
             if self.astrocyte.request_resource("hippocampus", 4.0):
@@ -216,15 +212,17 @@ class ArtificialBrain:
                 }
                 self.hippocampus.store_episode(episode)
                 report["executed_modules"].append("hippocampus")
-            else:
-                report["denied_modules"].append("hippocampus")
 
-        # --- Step 4: System Check (睡眠導入判定) ---
+        # --- Step 4: System Check ---
         self.astrocyte.step() # 恒常性維持
         
-        # 疲労毒素が限界、またはエネルギー枯渇で睡眠へ
+        # Dashboard用プロパティの更新
+        self.energy_level = self.astrocyte.current_energy
+        self.fatigue_level = self.astrocyte.fatigue_toxin
+
+        # 睡眠導入判定
         if self.astrocyte.fatigue_toxin > 100.0 or self.astrocyte.current_energy < 50.0:
-            print(f"🥱 Brain limit reached (Fatigue: {self.astrocyte.fatigue_toxin:.1f}, Energy: {self.astrocyte.current_energy:.1f}). Initiating Sleep...")
+            print(f"🥱 Brain limit reached. Initiating Sleep...")
             self.sleep_cycle()
 
         report["energy"] = self.astrocyte.current_energy
@@ -241,7 +239,7 @@ class ArtificialBrain:
         
         phases = []
         
-        # Phase 1: Explicit Consolidation (海馬 -> 皮質)
+        # Phase 1: Explicit Consolidation (海馬 -> 皮質GraphRAG)
         episodes = self.hippocampus.get_and_clear_episodes_for_consolidation()
         if episodes:
             print(f"   📝 Consolidating {len(episodes)} episodes to Cortex (GraphRAG)...")
@@ -249,36 +247,38 @@ class ArtificialBrain:
                 self.cortex.consolidate_memory(ep)
             phases.append(f"Consolidated {len(episodes)} episodes")
         
-        # Phase 2: Generative Replay (Dreaming)
+        # Phase 2: Generative Replay (Dreaming -> SNN Plasticity)
         if self.sleep_manager:
             self.state = "DREAMING"
-            # 夢を見るためのエネルギー消費
             self.astrocyte.request_resource("dreaming", 20.0)
             
+            print("   🦄 Dreaming: Generating replay from knowledge graph...")
             dream_stats = self.sleep_manager.perform_sleep_cycle()
+            
             dreams_count = dream_stats.get('dreams_replayed', 0)
-            print(f"   🦄 Dream Cycle: Replayed {dreams_count} concepts.")
+            syn_change = dream_stats.get('synaptic_change', 0.0)
+            print(f"   🧠 Neural Plasticity: Replayed {dreams_count} concepts, Synaptic Delta: {syn_change:.4f}")
             phases.append(f"Dreamed {dreams_count} concepts")
         else:
-            logger.warning("   ⚠️ SleepManager not attached.")
+            logger.warning("   ⚠️ SleepManager not attached. Skipping generative replay.")
         
-        # Phase 3: Restoration (回復)
-        self.fatigue_level = max(0.0, self.fatigue_level - 80.0)
-        self.energy_level = 100.0
-        # アストロサイトの状態もリセット
+        # Phase 3: Restoration
         self.astrocyte.clear_fatigue(80.0)
         self.astrocyte.replenish_energy(500.0)
+        self.energy_level = self.astrocyte.current_energy
+        self.fatigue_level = self.astrocyte.fatigue_toxin
         
         self.state = "AWAKE"
-        print(f"🌅 --- WAKE UP (Energy: {self.astrocyte.current_energy:.1f}, Fatigue: {self.astrocyte.fatigue_toxin:.1f}) ---")
+        print(f"🌅 --- WAKE UP (Energy: {self.energy_level:.1f}, Fatigue: {self.fatigue_level:.1f}) ---")
         
-        return {"status": "slept", "phases": phases}
+        return {"status": "slept", "phases": phases, "synaptic_change": locals().get('syn_change', 0.0)}
 
     def sleep_and_dream(self):
         """外部からの強制睡眠"""
         self.sleep_cycle()
 
     def correct_knowledge(self, concept: str, correct_info: str, reason: str = "user_correction"):
+        """知識の訂正（Phase 5 Real-time Knowledge Editing）"""
         if self.astrocyte.request_resource("cortex", 5.0):
             logger.info(f"🛠️ Knowledge Correction: '{concept}' -> '{correct_info}'")
             if self.cortex.rag_system:
