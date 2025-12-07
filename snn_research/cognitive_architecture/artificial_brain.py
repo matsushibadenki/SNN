@@ -4,7 +4,6 @@
 #   ロードマップ Phase 5 & 7 に基づく、人工脳のオペレーティングシステム実装。
 #   認知モジュールのオーケストレーション、エネルギー恒常性維持、
 #   および覚醒-睡眠サイクル（神経-記号還流）を自律的に制御する。
-#   修正: report["phases"] の型エラーを修正するため、Dictの型ヒントを詳細化。
 
 from typing import Dict, Any, List, Optional, Union, cast
 import time
@@ -67,7 +66,7 @@ class ArtificialBrain:
         # --- Kernel Core ---
         self.workspace = global_workspace
         self.astrocyte = astrocyte_network # ニューロモルフィックOSのスケジューラ
-        self.motivation_system = motivation_system # 修正: motivation -> motivation_system に統一
+        self.motivation_system = motivation_system
         self.sleep_manager = sleep_consolidator
         
         # --- IO Interfaces ---
@@ -107,8 +106,6 @@ class ArtificialBrain:
         1回の認知サイクルを実行する（覚醒時）。
         感覚 -> 知覚 -> 意識 -> 決定 -> 行動 -> 記憶 -> 恒常性調整
         """
-        start_time = time.time()
-        
         # 1. OS状態チェック (睡眠・エネルギー)
         if self.state in ["SLEEPING", "DREAMING"]:
             logger.info("💤 Brain is sleeping... (Input buffered or ignored)")
@@ -119,7 +116,7 @@ class ArtificialBrain:
             return self.sleep_cycle()
 
         self.cycle_count += 1
-        # 基礎代謝コスト
+        # 基礎代謝コスト (Phase 7: Resource Management)
         self._consume_energy(0.5)
         self.fatigue_level += 0.5
         
@@ -141,7 +138,7 @@ class ArtificialBrain:
         else:
             # 言語/テキスト経路
             content_str = str(sensory_info['content'])
-            # 意味的スパイクエンコーディング
+            # 意味的スパイクエンコーディング (Phase 2)
             spike_pattern = self.encoder.encode(sensory_info, duration=16)
             self.perception.perceive_and_upload(spike_pattern)
             
@@ -198,15 +195,14 @@ class ArtificialBrain:
             }
             self.hippocampus.store_episode(episode)
             
-            # 6. 因果推論の更新
-            # (CausalInferenceEngineはWorkspaceを購読しており自動更新される)
+            # 因果推論の更新 (CausalInferenceEngineはWorkspaceを購読しており自動更新される)
 
         # --- Step 5: Homeostasis (恒常性維持) ---
         if self.astrocyte:
             # アストロサイトによる神経活動の調整（メタ可塑性）
             self.astrocyte.step()
 
-        # 疲労判定
+        # 疲労判定と自動睡眠トリガー
         self._check_fatigue()
         
         report["energy"] = self.energy_level
@@ -224,10 +220,8 @@ class ArtificialBrain:
         logger.info("\n🌙 --- SLEEP CYCLE INITIATED ---")
         logger.info(f"   Initial Fatigue: {self.fatigue_level:.1f}, Energy: {self.energy_level:.1f}")
 
-        # 修正: phases を List[str] として初期化
         phases: List[str] = []
-        report: Dict[str, Any] = {"status": "slept", "phases": phases}
-
+        
         # Phase 1: Explicit Consolidation (NREM sleep like)
         # 海馬（短期記憶）-> 大脳皮質（長期記憶/GraphRAG）への転送
         episodes = self.hippocampus.get_and_clear_episodes_for_consolidation()
@@ -235,11 +229,10 @@ class ArtificialBrain:
             logger.info(f"   📝 Consolidating {len(episodes)} episodes to Cortex (GraphRAG)...")
             for ep in episodes:
                 self.cortex.consolidate_memory(ep)
-            # 修正: phases が List[str] であるため append 可能
             phases.append(f"Consolidated {len(episodes)} episodes")
         
         # Phase 2: Implicit Consolidation / Dreaming (REM sleep like)
-        # GraphRAGからの知識再生によるニューラルネットワークの微調整
+        # GraphRAGからの知識再生によるニューラルネットワークの微調整 (Neuro-Symbolic Replay)
         if self.sleep_manager:
             self.state = "DREAMING"
             dream_stats = self.sleep_manager.perform_sleep_cycle()
@@ -248,7 +241,6 @@ class ArtificialBrain:
             
             logger.info(f"   🦄 Dream Cycle: Replayed {dreams_count} concepts.")
             logger.info(f"   🧠 Neural Plasticity: Total synaptic weight change: {synaptic_change:.4f}")
-            # 修正: phases が List[str] であるため append 可能
             phases.append(f"Dreamed {dreams_count} concepts (DeltaW: {synaptic_change:.4f})")
             
             # 夢の内容に基づく新たな洞察（仮）
@@ -265,7 +257,7 @@ class ArtificialBrain:
         logger.info("🌅 --- WAKE UP ---")
         logger.info(f"   Final Fatigue: {self.fatigue_level:.1f}, Energy: {self.energy_level:.1f}\n")
         
-        return report
+        return {"status": "slept", "phases": phases}
 
     def _consume_energy(self, amount: float):
         """エネルギー消費と枯渇時のペナルティ"""
@@ -276,14 +268,18 @@ class ArtificialBrain:
 
     def _check_fatigue(self):
         """疲労度チェックと自動睡眠トリガー"""
+        # 海馬の容量圧迫も疲労の一種とみなす
         memory_load = len(self.hippocampus.working_memory) / self.hippocampus.capacity
         
         # 疲労が高い、またはワーキングメモリが一杯になったら睡眠
         if self.fatigue_level > 80.0 or memory_load >= 1.0:
             logger.info("🥱 Drowsiness detected. Initiating sleep cycle...")
-            # 自動睡眠
             self.sleep_cycle()
     
+    def sleep_and_dream(self):
+        """手動睡眠トリガー用ラッパー"""
+        self.sleep_cycle()
+
     def correct_knowledge(self, concept: str, correct_info: str, reason: str = "user_correction"):
         """
         ユーザーからの明示的な知識修正を受け付けるインターフェース。
