@@ -1,14 +1,15 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# Title: Artificial Brain Kernel v14.0 (Neuro-Symbolic OS Edition)
+# Title: Artificial Brain Kernel v14.0 (Debug Enabled)
 # Description:
 #   ロードマップ Phase 5 & 7 に基づく、人工脳のオペレーティングシステム実装。
-#   認知モジュールのオーケストレーション、エネルギー恒常性維持、
-#   および覚醒-睡眠サイクル（神経-記号還流）を自律的に制御する。
+#   修正: run_cognitive_cycle 内にデバッグ用の print(flush=True) を追加し、
+#   処理の進行状況を確実にログに出力させる。
 
 from typing import Dict, Any, List, Optional, Union, cast
 import time
 import logging
 import torch
+import sys # 追加
 from torchvision import transforms # type: ignore
 
 # Core Modules
@@ -65,7 +66,7 @@ class ArtificialBrain:
         
         # --- Kernel Core ---
         self.workspace = global_workspace
-        self.astrocyte = astrocyte_network # ニューロモルフィックOSのスケジューラ
+        self.astrocyte = astrocyte_network
         self.motivation_system = motivation_system
         self.sleep_manager = sleep_consolidator
         
@@ -89,9 +90,9 @@ class ArtificialBrain:
         
         # --- System State (Homeostasis) ---
         self.cycle_count = 0
-        self.state = "AWAKE" # AWAKE, SLEEPING, DREAMING
-        self.energy_level = 100.0 # グルコースレベル (%)
-        self.fatigue_level = 0.0  # 疲労度 (睡眠圧)
+        self.state = "AWAKE"
+        self.energy_level = 100.0
+        self.fatigue_level = 0.0
         
         # Utilities
         self.image_transform = transforms.Compose([
@@ -106,6 +107,8 @@ class ArtificialBrain:
         1回の認知サイクルを実行する（覚醒時）。
         感覚 -> 知覚 -> 意識 -> 決定 -> 行動 -> 記憶 -> 恒常性調整
         """
+        print("[Brain] Cycle Started", flush=True) # Debug
+
         # 1. OS状態チェック (睡眠・エネルギー)
         if self.state in ["SLEEPING", "DREAMING"]:
             logger.info("💤 Brain is sleeping... (Input buffered or ignored)")
@@ -116,54 +119,42 @@ class ArtificialBrain:
             return self.sleep_cycle()
 
         self.cycle_count += 1
-        # 基礎代謝コスト (Phase 7: Resource Management)
         self._consume_energy(0.5)
         self.fatigue_level += 0.5
         
         report: Dict[str, Any] = {"cycle": self.cycle_count, "input": str(raw_input)[:50]}
 
         # --- Step 1: Perception & Grounding (入力処理) ---
+        print("[Brain] Step 1: Perception", flush=True) # Debug
         sensory_info = self.receptor.receive(raw_input)
         
         if sensory_info['type'] == 'image':
-            # 視覚経路 (Ventral/Dorsal streams)
             img_tensor = self.image_transform(sensory_info['content']).unsqueeze(0)
             self.visual.perceive_and_upload(img_tensor)
-            
-            # 視覚的シンボル接地 (Neural pattern -> Symbol)
             vis_data = self.workspace.get_information("visual_cortex")
             if vis_data and "features" in vis_data:
                 concept_id = self.grounding.ground_neural_pattern(vis_data["features"], "visual_input")
                 report["grounded_concept"] = concept_id
         else:
-            # 言語/テキスト経路
             content_str = str(sensory_info['content'])
-            # 意味的スパイクエンコーディング (Phase 2)
             spike_pattern = self.encoder.encode(sensory_info, duration=16)
             self.perception.perceive_and_upload(spike_pattern)
-            
-            # 情動評価 (Valence/Arousal)
             self.amygdala.evaluate_and_upload(content_str)
-            
-            # 観測データのシンボル化
             self.grounding.process_observation({"text": content_str}, "text_input")
 
         # --- Step 2: Consciousness (意識の競合とブロードキャスト) ---
-        # GWT (Global Workspace Theory) に基づく情報統合
+        print("[Brain] Step 2: Consciousness", flush=True) # Debug
         self.workspace.conscious_broadcast_cycle()
         conscious_content = self.workspace.conscious_broadcast_content
         report["consciousness"] = str(conscious_content)[:50] if conscious_content else None
 
         # --- Step 3: Decision Making & Action (意思決定) ---
+        print("[Brain] Step 3: Decision Making", flush=True) # Debug
         if conscious_content:
-            # 前頭前野 (PFC): 文脈に基づく目標(Goal)の更新
             self.pfc.handle_conscious_broadcast("workspace", conscious_content)
             
-            # 大脳基底核 (BG): アクションの選択 (Go/No-Go)
-            # 扁桃体の情動価によって閾値が変調される
             amygdala_state = self.workspace.get_information("amygdala")
             selected_action = self.basal_ganglia.select_action(
-                # ここでは簡易的に候補を生成（本来はPlanner等から来る）
                 action_candidates=[
                     {'action': 'reply_text', 'value': 0.8}, 
                     {'action': 'store_memory', 'value': 0.6},
@@ -175,17 +166,13 @@ class ArtificialBrain:
             if selected_action:
                 action_name = selected_action.get('action')
                 report["action"] = action_name
-                
-                # 小脳 & 運動野: 行動の具体化と実行
                 motor_commands = self.cerebellum.refine_action_plan(selected_action)
                 execution_log = self.motor.execute_commands(motor_commands)
                 self.actuator.run_command_sequence(execution_log)
-                
-                # 行動コスト
                 self._consume_energy(2.0)
             
             # --- Step 4: Memory Formation (エピソード記憶) ---
-            # 海馬への一時保管
+            print("[Brain] Step 4: Memory", flush=True) # Debug
             episode = {
                 "timestamp": time.time(),
                 "input": str(raw_input),
@@ -194,36 +181,29 @@ class ArtificialBrain:
                 "emotion": amygdala_state
             }
             self.hippocampus.store_episode(episode)
-            
-            # 因果推論の更新 (CausalInferenceEngineはWorkspaceを購読しており自動更新される)
 
         # --- Step 5: Homeostasis (恒常性維持) ---
+        print("[Brain] Step 5: Homeostasis", flush=True) # Debug
         if self.astrocyte:
-            # アストロサイトによる神経活動の調整（メタ可塑性）
             self.astrocyte.step()
 
-        # 疲労判定と自動睡眠トリガー
         self._check_fatigue()
         
         report["energy"] = self.energy_level
         report["fatigue"] = self.fatigue_level
         
+        print("[Brain] Cycle Finished", flush=True) # Debug
         return report
 
     def sleep_cycle(self) -> Dict[str, Any]:
-        """
-        睡眠サイクルを実行する。
-        Phase 5: Neuro-Symbolic Feedback Loop の核心。
-        GraphRAG(記号)からSNN(神経)への情報の逆流（Replay）を行う。
-        """
+        """睡眠サイクルを実行する。"""
         self.state = "SLEEPING"
         logger.info("\n🌙 --- SLEEP CYCLE INITIATED ---")
         logger.info(f"   Initial Fatigue: {self.fatigue_level:.1f}, Energy: {self.energy_level:.1f}")
 
         phases: List[str] = []
         
-        # Phase 1: Explicit Consolidation (NREM sleep like)
-        # 海馬（短期記憶）-> 大脳皮質（長期記憶/GraphRAG）への転送
+        # Phase 1: Explicit Consolidation
         episodes = self.hippocampus.get_and_clear_episodes_for_consolidation()
         if episodes:
             logger.info(f"   📝 Consolidating {len(episodes)} episodes to Cortex (GraphRAG)...")
@@ -231,63 +211,41 @@ class ArtificialBrain:
                 self.cortex.consolidate_memory(ep)
             phases.append(f"Consolidated {len(episodes)} episodes")
         
-        # Phase 2: Implicit Consolidation / Dreaming (REM sleep like)
-        # GraphRAGからの知識再生によるニューラルネットワークの微調整 (Neuro-Symbolic Replay)
+        # Phase 2: Implicit Consolidation
         if self.sleep_manager:
             self.state = "DREAMING"
             dream_stats = self.sleep_manager.perform_sleep_cycle()
             synaptic_change = dream_stats.get('synaptic_change', 0.0)
             dreams_count = dream_stats.get('dreams_replayed', 0)
-            
             logger.info(f"   🦄 Dream Cycle: Replayed {dreams_count} concepts.")
-            logger.info(f"   🧠 Neural Plasticity: Total synaptic weight change: {synaptic_change:.4f}")
-            phases.append(f"Dreamed {dreams_count} concepts (DeltaW: {synaptic_change:.4f})")
-            
-            # 夢の内容に基づく新たな洞察（仮）
-            if synaptic_change > 1.0:
-                logger.info("   💡 Insight: Significant neural reorganization occurred.")
+            phases.append(f"Dreamed {dreams_count} concepts")
         else:
-            logger.warning("   ⚠️ SleepManager (Consolidator) not attached. Skipping dream phase.")
+            logger.warning("   ⚠️ SleepManager not attached.")
         
         # Phase 3: Restoration
         self.fatigue_level = max(0.0, self.fatigue_level - 80.0)
-        self.energy_level = 100.0 # 完全回復
+        self.energy_level = 100.0
         self.state = "AWAKE"
         
         logger.info("🌅 --- WAKE UP ---")
-        logger.info(f"   Final Fatigue: {self.fatigue_level:.1f}, Energy: {self.energy_level:.1f}\n")
-        
         return {"status": "slept", "phases": phases}
 
     def _consume_energy(self, amount: float):
-        """エネルギー消費と枯渇時のペナルティ"""
         self.energy_level = max(0.0, self.energy_level - amount)
         if self.energy_level < 20.0:
-            # エネルギー不足時は疲労が加速する
             self.fatigue_level += amount * 2.0
 
     def _check_fatigue(self):
-        """疲労度チェックと自動睡眠トリガー"""
-        # 海馬の容量圧迫も疲労の一種とみなす
         memory_load = len(self.hippocampus.working_memory) / self.hippocampus.capacity
-        
-        # 疲労が高い、またはワーキングメモリが一杯になったら睡眠
         if self.fatigue_level > 80.0 or memory_load >= 1.0:
             logger.info("🥱 Drowsiness detected. Initiating sleep cycle...")
             self.sleep_cycle()
     
     def sleep_and_dream(self):
-        """手動睡眠トリガー用ラッパー"""
         self.sleep_cycle()
 
     def correct_knowledge(self, concept: str, correct_info: str, reason: str = "user_correction"):
-        """
-        ユーザーからの明示的な知識修正を受け付けるインターフェース。
-        即座にGraphRAGを更新し、次回の睡眠サイクルでのSNN修正を予約する。
-        """
         logger.info(f"🛠️ Knowledge Correction Request: '{concept}' -> '{correct_info}'")
-        
-        # 1. 知識グラフの更新 (Symbolic Update)
         if self.cortex.rag_system:
             self.cortex.rag_system.update_knowledge(
                 subj=concept, 
@@ -295,9 +253,6 @@ class ArtificialBrain:
                 new_obj=correct_info, 
                 reason=reason
             )
-            
-        # 2. 短期記憶への修正イベントの注入 (Neural Update Trigger)
-        # これにより、次回の睡眠時にこの修正情報が高い優先度でリプレイされる
         correction_episode = {
             "type": "knowledge_correction",
             "concept": concept,
@@ -306,4 +261,3 @@ class ArtificialBrain:
             "timestamp": time.time()
         }
         self.hippocampus.store_episode(correction_episode)
-        logger.info("   -> Correction stored in Hippocampus for sleep consolidation.")
