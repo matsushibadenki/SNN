@@ -4,7 +4,6 @@
 #   3層構造 (L4, L2/3, L5/6) を持つ大脳皮質カラムモデル。
 #   AbstractSNNNetworkを継承し、Causal Trace Learning (V2) による
 #   自律的なシナプス可塑性（学習機能）を実装している。
-#   修正: mypyエラー (init_weights欠如, forwardオーバーライド, 変数型定義, reset呼び出し) を修正。
 
 import torch
 import torch.nn as nn
@@ -14,7 +13,6 @@ from .base import SNNLayerNorm
 from .neurons import AdaptiveLIFNeuron, IzhikevichNeuron
 from .networks.abstract_snn_network import AbstractSNNNetwork
 from snn_research.learning_rules import get_bio_learning_rule, BioLearningRule
-from snn_research.core.synapse_dynamics import apply_probabilistic_transmission
 
 class CorticalLayer(nn.Module):
     """
@@ -97,7 +95,6 @@ class CorticalColumn(AbstractSNNNetwork):
             self._setup_learning_rule("proj_L4_L23", rule_name, learning_rule_config)
             self._setup_learning_rule("proj_L23_L56", rule_name, learning_rule_config)
             self._setup_learning_rule("proj_L56_L4", rule_name, learning_rule_config)
-            # 再帰結合にも学習則を適用
             self._setup_learning_rule("rec_L4", rule_name, learning_rule_config)
             self._setup_learning_rule("rec_L23", rule_name, learning_rule_config)
             self._setup_learning_rule("rec_L56", rule_name, learning_rule_config)
@@ -106,7 +103,7 @@ class CorticalColumn(AbstractSNNNetwork):
         print(f"🧠 CorticalColumn initialized (Plasticity: {'ON' if self.synaptic_rules else 'OFF'}).")
 
     def _init_weights(self) -> None:
-        """重みの初期化 (BaseModelと同様のロジック)"""
+        """重みの初期化"""
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
@@ -118,7 +115,6 @@ class CorticalColumn(AbstractSNNNetwork):
 
     def _setup_learning_rule(self, projection_name: str, rule_name: str, config: Dict[str, Any]):
         """指定された結合のための学習則インスタンスを生成"""
-        # paramsには { 'causal_trace': {...}, 'stdp': {...} } のような構造を渡す
         self.synaptic_rules[projection_name] = get_bio_learning_rule(rule_name, config)
 
     def forward( # type: ignore[override]
@@ -127,7 +123,7 @@ class CorticalColumn(AbstractSNNNetwork):
         prev_states: Optional[Dict[str, torch.Tensor]] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         """
-        順伝播処理。
+        順伝播処理。学習則のための活動履歴も記録する。
         入力が (Batch, Time, Dim) の場合は時間ループを実行する。
         """
         # 時間軸対応
@@ -173,13 +169,12 @@ class CorticalColumn(AbstractSNNNetwork):
         prev_states: Optional[Dict[str, torch.Tensor]] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         """
-        1タイムステップ分の処理。学習のための活動履歴も記録する。
+        1タイムステップ分の処理。
         """
         batch_size = input_signal.shape[0]
         device = input_signal.device
         
         if prev_states is None:
-            # 初回はゼロ初期化
             spikes_L4_prev = torch.zeros(batch_size, self.column_dim, device=device)
             spikes_L23_prev = torch.zeros(batch_size, self.column_dim, device=device)
             spikes_L56_prev = torch.zeros(batch_size, self.column_dim, device=device)
@@ -245,19 +240,13 @@ class CorticalColumn(AbstractSNNNetwork):
     def run_learning_step(self, inputs: torch.Tensor, targets: Optional[torch.Tensor] = None) -> Dict[str, Any]:
         """
         記録された活動に基づいてシナプス重みを更新する。
-        AbstractSNNNetworkのメソッドを実装。
         """
         if not self.training or not self.synaptic_rules:
             return {}
 
         metrics = {}
         total_delta = 0.0
-
-        # 各層の結合に対して学習則を適用
-        # params: {'reward': ...} などを渡す場合はここを拡張
-        # --- 修正: optional_params の型アノテーション追加 ---
         optional_params: Dict[str, Any] = {}
-        # ------------------------------------------------
 
         # 定義されたすべての学習則を実行
         target_projections = [
@@ -303,11 +292,9 @@ class CorticalColumn(AbstractSNNNetwork):
     def reset_state(self) -> None:
         super().reset_state()
         # 各ニューロン層のリセット
-        # --- 修正: cast(Any, ...) を使用して reset メソッドを安全に呼び出す ---
         if hasattr(self.L4.neuron, 'reset'):
             cast(Any, self.L4.neuron).reset()
         if hasattr(self.L23.neuron, 'reset'):
             cast(Any, self.L23.neuron).reset()
         if hasattr(self.L56.neuron, 'reset'):
             cast(Any, self.L56.neuron).reset()
-        # ---------------------------------------------------------------
