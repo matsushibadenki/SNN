@@ -5,6 +5,7 @@
 #   覚醒と睡眠のサイクルを回しながら、ユーザーとの対話を通じて進化する様子をシミュレートする。
 #   CLI引数でモデル設定やモードを切り替え可能。
 #   修正: ヘルスチェックのバリデーションキーワード "認知サイクル完了" を出力するように修正。
+#   修正(v2): プロジェクトルートのパス解決を "../" から "../../" に修正し、appモジュールのインポートエラーを解消。
 
 import sys
 import os
@@ -15,9 +16,11 @@ from pathlib import Path
 from omegaconf import OmegaConf
 
 # プロジェクトルートの設定
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
+# --- 修正: 2階層上 (../../) を指定してプロジェクトルートを正しく取得 ---
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
+# -------------------------------------------------------------------
 
 from app.containers import BrainContainer
 
