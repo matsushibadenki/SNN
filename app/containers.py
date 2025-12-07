@@ -1,8 +1,8 @@
 # ファイルパス: app/containers.py
-# ファイル名: DIコンテナ定義 (修正版)
-# 機能説明: プロジェクト全体の依存関係注入（Dependency Injection）を管理する。
-#          修正: AgentContainer内の未定義変数参照エラーを修正。
-#          修正: DigitalLifeFormの定義場所をBrainContainerに一本化し、依存関係を整理。
+# ファイル名: DIコンテナ定義 (BrainContainer修正版)
+# Description:
+# - BrainContainerにtokenizer定義を追加し、NameErrorを修正。
+# - Thinking Engine (SFormer) を定義し、ArtificialBrainに注入。
 
 import torch
 import os
@@ -341,10 +341,26 @@ class AgentContainer(containers.DeclarativeContainer):
         tc=training_container
     )
     
-    # --- 削除: AgentContainer内での再定義 ---
-    # autonomous_agent = providers.Callable(...) -> 削除
-    # digital_life_form = providers.Singleton(...) -> 削除 (BrainContainerへ移動)
-
+    autonomous_agent = providers.Callable(
+        lambda ac: ac.autonomous_agent(),
+        ac=agent_container
+    )
+    
+    digital_life_form = providers.Singleton(
+        DigitalLifeForm,
+        planner=providers.Callable(lambda ac: ac.hierarchical_planner(), ac=agent_container),
+        autonomous_agent=autonomous_agent,
+        rl_agent=rl_agent,
+        self_evolving_agent=self_evolving_agent,
+        motivation_system=motivation_system,
+        meta_cognitive_snn=providers.Callable(lambda ac_instance: cast(TrainingContainer, ac_instance.training_container()).meta_cognitive_snn(), ac_instance=agent_container),
+        memory=providers.Callable(lambda ac: ac.memory(), ac=agent_container),
+        physics_evaluator=providers.Singleton(PhysicsEvaluator),
+        symbol_grounding=symbol_grounding,
+        langchain_adapter=app_container.langchain_adapter,
+        global_workspace=global_workspace,
+        active_inference_agent=active_inference_agent
+    )
 
 class AppContainer(containers.DeclarativeContainer):
     config = providers.Configuration()
@@ -368,6 +384,10 @@ class BrainContainer(containers.DeclarativeContainer):
     app_container = providers.Container(AppContainer, config=config)
     
     device = providers.Factory(get_auto_device)
+    
+    # --- 修正: Tokenizerプロバイダの追加 ---
+    tokenizer = providers.Factory(get_tokenizer, config_dict=config)
+    # ------------------------------------
 
     global_workspace = providers.Singleton(
         GlobalWorkspace, 
@@ -380,7 +400,7 @@ class BrainContainer(containers.DeclarativeContainer):
     spike_encoder = providers.Singleton(SpikeEncoder, num_neurons=256)
     actuator = providers.Singleton(Actuator, actuator_name="voice_synthesizer")
 
-    # SingletonとしてCorticalColumnを定義 (SleepConsolidatorと共有)
+    # Singletonに変更してSleepConsolidatorと共有
     cortical_column = providers.Singleton(
         CorticalColumn, input_dim=256, output_dim=64, column_dim=128,
         neuron_config=config.training.biologically_plausible.neuron
@@ -415,23 +435,25 @@ class BrainContainer(containers.DeclarativeContainer):
     
     symbol_grounding = providers.Singleton(SymbolGrounding, rag_system=agent_container.rag_system)
 
-    # メイン思考エンジン (SFormer等、config.modelに基づく)
-    # 学習用の snn_model とは別に、脳のコアとして永続化されるインスタンス
+    # --- 追加: Thinking Engine (メインの思考モデル) ---
     thinking_engine = providers.Singleton(
         SNNCore,
         config=config.model,
         vocab_size=providers.Callable(lambda t: len(t), t=tokenizer)
     )
-    
+
     # SleepConsolidatorの定義
     sleep_consolidator = providers.Factory(
         SleepConsolidator,
         rag_system=agent_container.rag_system,
-        cortex_snn=cortical_column, # ここでは知覚野の長期記憶を固定化対象とする
+        cortex_snn=cortical_column, # ここで共有
         spike_encoder=spike_encoder,
         consolidation_epochs=3,
         replay_batch_size=4
     )
+    
+    if astrocyte_network is None:
+        astrocyte_network = providers.Singleton(AstrocyteNetwork)
 
     artificial_brain = providers.Singleton(
         ArtificialBrain, 
@@ -439,8 +461,9 @@ class BrainContainer(containers.DeclarativeContainer):
         motivation_system=motivation_system, 
         sensory_receptor=sensory_receptor, 
         spike_encoder=spike_encoder, 
-        actuator=actuator,
-        thinking_engine=thinking_engine, # [New] 注入
+        actuator=actuator, 
+        # 新しいThinking Engineを注入
+        thinking_engine=thinking_engine,
         perception_cortex=perception_cortex, 
         visual_cortex=visual_cortex, 
         prefrontal_cortex=prefrontal_cortex, 
@@ -455,30 +478,36 @@ class BrainContainer(containers.DeclarativeContainer):
         sleep_consolidator=sleep_consolidator,
         astrocyte_network=astrocyte_network
     )
-        
-    # --- エージェントへのアクセサ (AgentContainerから取得) ---
+    
     rl_agent = providers.Callable(
         lambda ac: cast(TrainingContainer, ac.training_container()).bio_rl_agent(),
         ac=agent_container
     )
     
-    self_evolving_agent = agent_container.self_evolving_agent_master
+    self_evolving_agent = providers.Callable(
+        lambda ac: ac.self_evolving_agent_master(),
+        ac=agent_container
+    )
     
-    active_inference_agent = agent_container.active_inference_agent
+    active_inference_agent = providers.Callable(
+        lambda ac: cast(AgentContainer, ac).active_inference_agent(),
+        ac=agent_container
+    )
     
-    autonomous_agent = agent_container.autonomous_agent
+    autonomous_agent = providers.Callable(
+        lambda ac: ac.autonomous_agent(),
+        ac=agent_container
+    )
     
-    # --- DigitalLifeForm (BrainContainerに統合) ---
     digital_life_form = providers.Singleton(
         DigitalLifeForm,
-        planner=agent_container.hierarchical_planner,
+        planner=providers.Callable(lambda ac: ac.hierarchical_planner(), ac=agent_container),
         autonomous_agent=autonomous_agent,
         rl_agent=rl_agent,
         self_evolving_agent=self_evolving_agent,
         motivation_system=motivation_system,
-        # メタ認知は AgentContainer -> TrainingContainer から取得
         meta_cognitive_snn=providers.Callable(lambda ac_instance: cast(TrainingContainer, ac_instance.training_container()).meta_cognitive_snn(), ac_instance=agent_container),
-        memory=agent_container.memory,
+        memory=providers.Callable(lambda ac: ac.memory(), ac=agent_container),
         physics_evaluator=providers.Singleton(PhysicsEvaluator),
         symbol_grounding=symbol_grounding,
         langchain_adapter=app_container.langchain_adapter,
