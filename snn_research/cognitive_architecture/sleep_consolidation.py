@@ -4,7 +4,6 @@
 #   Neuro-Symbolic Feedback Loopの実装。
 #   GraphRAGの知識をサンプリングし、SNNへの感覚入力として「夢」を生成・再生する。
 #   Causal Trace Learningを用いて、エピソード記憶を長期的なシナプス重みに焼き付ける。
-#   修正: cortex_snn (CorticalColumn) の run_learning_step を呼び出すように強化。
 
 import torch
 import logging
@@ -16,11 +15,6 @@ import numpy as np
 from snn_research.cognitive_architecture.rag_snn import RAGSystem
 from snn_research.io.spike_encoder import SpikeEncoder
 from snn_research.core.base import BaseModel
-# AbstractSNNNetworkをインポートして型チェックに使用
-try:
-    from snn_research.core.networks.abstract_snn_network import AbstractSNNNetwork
-except ImportError:
-    AbstractSNNNetwork = Any # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +29,7 @@ class SleepConsolidator:
         spike_encoder: SpikeEncoder,
         consolidation_epochs: int = 3,
         replay_batch_size: int = 4,
-        synaptic_scaling_factor: float = 0.98 # 0.95 -> 0.98 (マイルドに)
+        synaptic_scaling_factor: float = 0.98 # SHY仮説に基づくダウンスケーリング係数
     ):
         self.rag_system = rag_system
         self.cortex_snn = cortex_snn
@@ -57,7 +51,7 @@ class SleepConsolidator:
         graph = self.rag_system.knowledge_graph
         nodes = list(graph.nodes())
         
-        # サンプリング戦略: 次数中心性による重み付け
+        # サンプリング戦略: 次数中心性による重み付け（重要な概念ほど夢に出やすい）
         degrees = [val for (node, val) in graph.degree()]
         total_degree = sum(degrees)
         
@@ -79,11 +73,11 @@ class SleepConsolidator:
         
         dream_texts = []
         for node in selected_nodes:
-            # その概念周辺のサブグラフ情報を自然言語化
+            # その概念周辺のサブグラフ情報を自然言語化して「夢のシーン」を作る
             # 例: "Cat is a Animal. Cat has whiskers."
             info_list = self.rag_system.get_subgraph_info(node)
             if info_list:
-                # 複数の関係性を一つの「夢のシーン」として結合
+                # 複数の関係性を結合
                 scene = ". ".join(info_list[:3]) + "."
                 dream_texts.append(scene)
                 
@@ -101,7 +95,7 @@ class SleepConsolidator:
             return {"synaptic_change": 0.0, "duration": 0.0, "dreams_replayed": 0}
 
         # 2. ニューラル・リプレイ (Generative Replay on SNN)
-        self.cortex_snn.train() # 学習モードに移行
+        self.cortex_snn.train() # SNNを学習モードに移行
         
         device = torch.device("cpu")
         try:
@@ -110,7 +104,7 @@ class SleepConsolidator:
         
         # モデルのタイムステップ取得
         time_steps = 16 # Default
-        if hasattr(self.cortex_snn, 'time_steps'): # CorticalColumn等は持っていない場合があるため注意
+        if hasattr(self.cortex_snn, 'time_steps'): 
              pass 
         
         total_synaptic_change = 0.0
@@ -126,7 +120,7 @@ class SleepConsolidator:
                 batch_spikes_list = []
                 for text in batch_texts:
                     # テキスト内容をスパイク列にエンコード
-                    # タイムステップ長はエンコーダまたはモデルの仕様に合わせる
+                    # これにより、言語的な知識が神経パルスに変換される
                     spikes = self.spike_encoder.encode(
                         {"content": text, "type": "text"}, 
                         duration=time_steps
@@ -143,8 +137,8 @@ class SleepConsolidator:
                     self.cortex_snn.reset_state() # type: ignore
 
                 # 順伝播: 夢を見る (ニューロン活動の誘起)
-                # CorticalColumnのforwardは (input, prev_states) を取る
-                # 単に入力だけ渡して内部で処理させる
+                # CorticalColumnのforwardは (input, prev_states) を取る場合があるため、
+                # 柔軟に対応する
                 try:
                     _ = self.cortex_snn(input_tensor)
                 except TypeError:
@@ -152,12 +146,11 @@ class SleepConsolidator:
                     _ = self.cortex_snn(input_tensor, None)
                 
                 # 学習則の適用 (run_learning_step)
-                # 自己教師あり学習として、入力の再構成や予測誤差の最小化を図る
+                # 夢見学習ではターゲットなしの自己教師あり学習（Hebbian/STDP）を行う
                 if hasattr(self.cortex_snn, 'run_learning_step'):
-                    # 夢見学習ではターゲットは入力そのもの（自己符号化）に近い
                     metrics = self.cortex_snn.run_learning_step( # type: ignore
                         inputs=input_tensor, 
-                        targets=None # 教師なし/自己教師あり
+                        targets=None
                     )
                     
                     # 更新量の集計
@@ -170,8 +163,8 @@ class SleepConsolidator:
 
             total_synaptic_change += batch_change
 
-        # 3. Synaptic Homeostasis (SHY仮説: 全体的なダウンスケーリング)
-        # 覚醒中に増強されたシナプスを全体的にスケーリングし、重要な記憶だけを残す
+        # 3. Synaptic Homeostasis (SHY仮説)
+        # 覚醒中に増強されたシナプスを全体的にダウンスケーリングし、重要な記憶だけを際立たせる
         self._apply_synaptic_scaling()
         
         duration = time.time() - start_time
