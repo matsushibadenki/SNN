@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/cognitive_architecture/sleep_consolidation.py
-# Title: 睡眠時記憶固定化システム (Generative Replay & Consolidation) v2
+# Title: 睡眠時記憶固定化システム (Generative Replay & Consolidation) v2.1
 # Description:
 #   Neuro-Symbolic Feedback Loopの実装。
 #   GraphRAGの知識をサンプリングし、SNNへの感覚入力として「夢」を生成・再生する。
@@ -52,7 +52,6 @@ class SleepConsolidator:
         nodes = list(graph.nodes())
         
         # サンプリング戦略: 次数中心性による重み付け
-        # よく接続された概念（ハブ）は、記憶の統合において重要であるため
         degrees = [val for (node, val) in graph.degree()]
         total_degree = sum(degrees)
         
@@ -78,13 +77,12 @@ class SleepConsolidator:
             # 例: "Cat is a Animal. Cat has whiskers."
             info_list = self.rag_system.get_subgraph_info(node)
             if info_list:
-                # 複数の事実を結合して一つの「夢のシーン」を作る
                 scene = ". ".join(info_list[:3]) + "."
                 dream_texts.append(scene)
                 
         return dream_texts
 
-    def perform_sleep_cycle(self) -> Dict[str, float]:
+    def perform_sleep_cycle(self) -> Dict[str, Any]:
         """
         睡眠サイクルを実行: 夢の生成 -> SNNでの再生 -> シナプス調整
         """
@@ -93,12 +91,11 @@ class SleepConsolidator:
         # 1. 夢の生成 (Retrieval from Symbolic Memory)
         dream_contents = self._generate_dream_content(limit=12)
         if not dream_contents:
-            return {"synaptic_change": 0.0, "duration": 0.0}
+            return {"synaptic_change": 0.0, "duration": 0.0, "dreams_replayed": 0}
 
         # 2. ニューラル・リプレイ (Generative Replay on SNN)
         self.cortex_snn.train() # 学習モード
         
-        # デバイス検出
         device = torch.device("cpu")
         try:
             device = next(self.cortex_snn.parameters()).device
@@ -144,7 +141,6 @@ class SleepConsolidator:
                         inputs=input_tensor, 
                         targets=input_tensor
                     )
-                    # 更新量の集計
                     for k, v in metrics.items():
                         if "magnitude" in k or "update" in k:
                             val = v.item() if isinstance(v, torch.Tensor) else float(v)
@@ -152,7 +148,7 @@ class SleepConsolidator:
 
             total_synaptic_change += batch_change
 
-        # 3. Synaptic Homeostasis (SHY仮説)
+        # 3. Synaptic Homeostasis (SHY仮説: 全体的なダウンスケーリング)
         self._apply_synaptic_scaling()
         
         duration = time.time() - start_time
