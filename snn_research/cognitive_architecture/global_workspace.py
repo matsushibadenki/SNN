@@ -1,13 +1,17 @@
 # ファイルパス: snn_research/cognitive_architecture/global_workspace.py
-# Title: Global Workspace with Attention Mechanism v14.0
+# Title: Global Workspace with Attention Mechanism v14.1 (Fix: ModelRegistry Injection)
 # Description:
 #   グローバルワークスペース理論 (GWT) に基づく意識の中枢。
 #   各モジュールからのボトムアップな注意（Salience）を競合させ、
 #   勝者となった情報をトップダウンに放送（Broadcast）する。
+#   修正: __init__ に model_registry 引数を追加し、DIコンテナからの注入に対応。
 
-from typing import Dict, Any, List, Callable, Optional, Tuple
+from typing import Dict, Any, List, Callable, Optional, Tuple, TYPE_CHECKING
 import operator
 import logging
+
+if TYPE_CHECKING:
+    from snn_research.distillation.model_registry import ModelRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +70,19 @@ class GlobalWorkspace:
     """
     認知アーキテクチャ全体で情報を共有する中央情報ハブ。
     """
-    def __init__(self, capacity: int = 7):
+    def __init__(self, capacity: int = 7, model_registry: Optional["ModelRegistry"] = None):
+        """
+        Args:
+            capacity (int): ワーキングメモリの容量（同時保持可能な情報の数）。
+            model_registry (ModelRegistry, optional): モデルレジストリへの参照。
+                                                      意識的プロセスがスキルを検索する場合などに使用。
+        """
         self.blackboard: Dict[str, Any] = {} # 現在のサイクルでアップロードされた全情報
         self.subscribers: List[Callable[[str, Any], None]] = []
         self.attention_hub = AttentionHub()
+        
+        # モデルレジストリの保持 (DIコンテナから注入される)
+        self.model_registry = model_registry
         
         # 現在「意識」に上っている内容
         self.conscious_broadcast_content: Optional[Any] = None
