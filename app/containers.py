@@ -1,8 +1,8 @@
 # ファイルパス: app/containers.py
-# ファイル名: DIコンテナ定義 (SleepConsolidator追加版)
+# ファイル名: DIコンテナ定義 (修正版)
 # 機能説明: プロジェクト全体の依存関係注入（Dependency Injection）を管理する。
-#          修正: SleepConsolidator を BrainContainer に追加し、ArtificialBrain に注入。
-#          修正: CorticalColumn を Singleton に変更し、SleepConsolidator と共有可能にした。
+#          修正: AgentContainer内の未定義変数参照エラーを修正。
+#          修正: DigitalLifeFormの定義場所をBrainContainerに一本化し、依存関係を整理。
 
 import torch
 import os
@@ -64,9 +64,7 @@ from snn_research.agent.autonomous_agent import AutonomousAgent
 from snn_research.agent.self_evolving_agent import SelfEvolvingAgentMaster
 from snn_research.cognitive_architecture.physics_evaluator import PhysicsEvaluator
 from snn_research.cognitive_architecture.symbol_grounding import SymbolGrounding
-# --- ▼ 追加: SleepConsolidator をインポート ▼ ---
 from snn_research.cognitive_architecture.sleep_consolidation import SleepConsolidator
-# --- ▲ 追加 ▲ ---
 from app.utils import get_auto_device
 
 import logging
@@ -343,26 +341,10 @@ class AgentContainer(containers.DeclarativeContainer):
         tc=training_container
     )
     
-    autonomous_agent = providers.Callable(
-        lambda ac: ac.autonomous_agent(),
-        ac=agent_container
-    )
-    
-    digital_life_form = providers.Singleton(
-        DigitalLifeForm,
-        planner=providers.Callable(lambda ac: ac.hierarchical_planner(), ac=agent_container),
-        autonomous_agent=autonomous_agent,
-        rl_agent=rl_agent,
-        self_evolving_agent=self_evolving_agent,
-        motivation_system=motivation_system,
-        meta_cognitive_snn=providers.Callable(lambda ac_instance: cast(TrainingContainer, ac_instance.training_container()).meta_cognitive_snn(), ac_instance=agent_container),
-        memory=providers.Callable(lambda ac: ac.memory(), ac=agent_container),
-        physics_evaluator=providers.Singleton(PhysicsEvaluator),
-        symbol_grounding=symbol_grounding,
-        langchain_adapter=app_container.langchain_adapter,
-        global_workspace=global_workspace,
-        active_inference_agent=active_inference_agent
-    )
+    # --- 削除: AgentContainer内での再定義 ---
+    # autonomous_agent = providers.Callable(...) -> 削除
+    # digital_life_form = providers.Singleton(...) -> 削除 (BrainContainerへ移動)
+
 
 class AppContainer(containers.DeclarativeContainer):
     config = providers.Configuration()
@@ -398,7 +380,7 @@ class BrainContainer(containers.DeclarativeContainer):
     spike_encoder = providers.Singleton(SpikeEncoder, num_neurons=256)
     actuator = providers.Singleton(Actuator, actuator_name="voice_synthesizer")
 
-    # --- 修正: FactoryからSingletonに変更してSleepConsolidatorと共有 ---
+    # SingletonとしてCorticalColumnを定義 (SleepConsolidatorと共有)
     cortical_column = providers.Singleton(
         CorticalColumn, input_dim=256, output_dim=64, column_dim=128,
         neuron_config=config.training.biologically_plausible.neuron
@@ -433,13 +415,20 @@ class BrainContainer(containers.DeclarativeContainer):
     
     symbol_grounding = providers.Singleton(SymbolGrounding, rag_system=agent_container.rag_system)
 
-    # --- 追加: SleepConsolidatorの定義 ---
+    # メイン思考エンジン (SFormer等、config.modelに基づく)
+    # 学習用の snn_model とは別に、脳のコアとして永続化されるインスタンス
+    thinking_engine = providers.Singleton(
+        SNNCore,
+        config=config.model,
+        vocab_size=providers.Callable(lambda t: len(t), t=tokenizer)
+    )
+    
+    # SleepConsolidatorの定義
     sleep_consolidator = providers.Factory(
         SleepConsolidator,
         rag_system=agent_container.rag_system,
-        cortex_snn=cortical_column, # ここで共有
+        cortex_snn=cortical_column, # ここでは知覚野の長期記憶を固定化対象とする
         spike_encoder=spike_encoder,
-        # Configの値を使用（デフォルト値設定済み）
         consolidation_epochs=3,
         replay_batch_size=4
     )
@@ -450,7 +439,8 @@ class BrainContainer(containers.DeclarativeContainer):
         motivation_system=motivation_system, 
         sensory_receptor=sensory_receptor, 
         spike_encoder=spike_encoder, 
-        actuator=actuator, 
+        actuator=actuator,
+        thinking_engine=thinking_engine, # [New] 注入
         perception_cortex=perception_cortex, 
         visual_cortex=visual_cortex, 
         prefrontal_cortex=prefrontal_cortex, 
@@ -462,38 +452,33 @@ class BrainContainer(containers.DeclarativeContainer):
         motor_cortex=motor_cortex, 
         causal_inference_engine=causal_inference_engine,
         symbol_grounding=symbol_grounding,
-        sleep_consolidator=sleep_consolidator # 注入
+        sleep_consolidator=sleep_consolidator,
+        astrocyte_network=astrocyte_network
     )
-    
+        
+    # --- エージェントへのアクセサ (AgentContainerから取得) ---
     rl_agent = providers.Callable(
         lambda ac: cast(TrainingContainer, ac.training_container()).bio_rl_agent(),
         ac=agent_container
     )
     
-    self_evolving_agent = providers.Callable(
-        lambda ac: ac.self_evolving_agent_master(),
-        ac=agent_container
-    )
+    self_evolving_agent = agent_container.self_evolving_agent_master
     
-    active_inference_agent = providers.Callable(
-        lambda ac: cast(AgentContainer, ac).active_inference_agent(),
-        ac=agent_container
-    )
+    active_inference_agent = agent_container.active_inference_agent
     
-    autonomous_agent = providers.Callable(
-        lambda ac: ac.autonomous_agent(),
-        ac=agent_container
-    )
+    autonomous_agent = agent_container.autonomous_agent
     
+    # --- DigitalLifeForm (BrainContainerに統合) ---
     digital_life_form = providers.Singleton(
         DigitalLifeForm,
-        planner=providers.Callable(lambda ac: ac.hierarchical_planner(), ac=agent_container),
+        planner=agent_container.hierarchical_planner,
         autonomous_agent=autonomous_agent,
         rl_agent=rl_agent,
         self_evolving_agent=self_evolving_agent,
         motivation_system=motivation_system,
+        # メタ認知は AgentContainer -> TrainingContainer から取得
         meta_cognitive_snn=providers.Callable(lambda ac_instance: cast(TrainingContainer, ac_instance.training_container()).meta_cognitive_snn(), ac_instance=agent_container),
-        memory=providers.Callable(lambda ac: ac.memory(), ac=agent_container),
+        memory=agent_container.memory,
         physics_evaluator=providers.Singleton(PhysicsEvaluator),
         symbol_grounding=symbol_grounding,
         langchain_adapter=app_container.langchain_adapter,
