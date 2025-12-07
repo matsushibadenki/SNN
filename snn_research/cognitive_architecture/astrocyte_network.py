@@ -1,58 +1,128 @@
-# /snn_research/cognitive_architecture/astrocyte_network.py
-#
-# Phase 4: ニューロン群の活動を長期的に調整するアストロサイト・ネットワーク
-#
-# 機能:
-# - グローバルな発火活動を監視し、ネットワーク全体の恒常性を維持する。
-# - 特定のニューロン群の過活動や非活動を検知し、パラメータ（例: 発火閾値）を調整する。
-# - 学習の安定化と、エネルギー効率の最適化に貢献する。
-#
-# 改善点:
-# - ROADMAPの「Astrocyteによる動的ニューロン進化」に基づき、
-#   活動が低いニューロン層をより表現力の高いモデル(Izhikevich)に
-#   動的に置き換える自己進化機能を実装。
-#
-# 修正点:
-# - mypyエラーを解消するため、_find_monitored_neurons内のリストに明示的な型アノテーションを追加。
+# ファイルパス: snn_research/cognitive_architecture/astrocyte_network.py
+# Title: Astrocyte Network (Neuromorphic OS Scheduler) v2.0
+# Description:
+#   ROADMAP Phase 7 "The Brain OS" に基づく実装。
+#   グリア細胞（アストロサイト）の機能を拡張し、脳内のエネルギー（グルコース/計算リソース）を
+#   管理・配分する「ニューロモーフィック・スケジューラ」として機能させる。
+#   各モジュールの活動を監視し、エネルギー不足時には優先度の低いモジュールを抑制（Inhibition）する。
 
 import torch
 import torch.nn as nn
-from typing import List, Dict, Type
+from typing import List, Dict, Type, Optional, Any
+import logging
+import math
 
 from snn_research.core.neurons import AdaptiveLIFNeuron, IzhikevichNeuron
 
+logger = logging.getLogger(__name__)
+
 class AstrocyteNetwork:
     """
-    SNN全体の活動を監視し、恒常性を維持するためのグリア細胞様ネットワーク。
-    ニューロンモデルの動的進化機能も持つ。
+    SNN全体のエネルギー管理と恒常性維持（ホメオスタシス）を担うカーネルモジュール。
+    OSの「タスクスケジューラ」および「パワーマネージャ」に相当する。
     """
-    def __init__(self, snn_model: nn.Module, monitoring_interval: int = 100, evolution_threshold: float = 0.1):
+    def __init__(
+        self, 
+        snn_model: Optional[nn.Module] = None, 
+        monitoring_interval: int = 100, 
+        evolution_threshold: float = 0.1,
+        total_energy_capacity: float = 1000.0,
+        basal_metabolic_rate: float = 0.5
+    ):
         self.snn_model = snn_model
         self.monitoring_interval = monitoring_interval
         self.evolution_threshold = evolution_threshold
-        self.step_counter = 0
         
-        # 監視対象となる適応的ニューロン層を登録
-        self.monitored_neurons: List[nn.Module] = self._find_monitored_neurons()
+        # --- エネルギー管理パラメータ ---
+        self.max_energy = total_energy_capacity
+        self.current_energy = total_energy_capacity
+        self.basal_metabolic_rate = basal_metabolic_rate # 基礎代謝（何もしなくても減る量）
+        self.fatigue_toxin = 0.0 # 疲労毒素（睡眠で除去される）
         
-        # 各層の長期的な平均発火率を記録する
-        self.long_term_spike_rates: Dict[str, torch.Tensor] = {}
-        print(f"✨ アストロサイト・ネットワークが {len(self.monitored_neurons)} 個のニューロン層の監視を開始しました。")
+        # モジュールごとの優先度設定 (デフォルト)
+        self.module_priorities: Dict[str, float] = {
+            "amygdala": 10.0,       # 生存に関わるため最優先
+            "basal_ganglia": 9.0,   # 行動決定
+            "perception": 8.0,      # 状況認識
+            "visual_cortex": 7.0,   # 視覚（高コスト）
+            "hippocampus": 6.0,     # 記憶
+            "prefrontal_cortex": 5.0, # 高次推論（エネルギー不足時はサボる）
+            "cortex": 5.0,
+            "causal_inference": 4.0, # バックグラウンド処理
+            "symbol_grounding": 4.0
+        }
 
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        self.step_counter = 0
+        self.monitored_neurons: List[nn.Module] = []
+        if self.snn_model:
+            self.monitored_neurons = self._find_monitored_neurons()
+            
+        self.long_term_spike_rates: Dict[str, torch.Tensor] = {}
+        
+        logger.info(f"🧠 Astrocyte Network initialized. Energy: {self.current_energy:.1f}")
+
     def _find_monitored_neurons(self) -> List[nn.Module]:
         """モデル内の監視対象ニューロン(LIF or Izhikevich)を再帰的に探索する。"""
         neurons: List[nn.Module] = []
-        for module in self.snn_model.modules():
-            if isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron)):
-                neurons.append(module)
+        if self.snn_model:
+            for module in self.snn_model.modules():
+                if isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron)):
+                    neurons.append(module)
         return neurons
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+
+    def request_resource(self, module_name: str, estimated_cost: float) -> bool:
+        """
+        [OS Scheduler] モジュールからの実行許可リクエストを処理する。
+        
+        Args:
+            module_name (str): リクエスト元のモジュール名。
+            estimated_cost (float): 実行に必要な推定エネルギーコスト。
+            
+        Returns:
+            bool: 実行許可 (True) または 拒否 (False)。
+        """
+        # 1. 基礎代謝の消費
+        self.current_energy = max(0.0, self.current_energy - self.basal_metabolic_rate * 0.1)
+
+        # 2. クリティカル状態チェック
+        if self.current_energy <= 0:
+            logger.warning(f"⚠️ Energy Depleted! Denying request from {module_name}.")
+            return False
+
+        # 3. 優先度に基づく配分ロジック
+        energy_ratio = self.current_energy / self.max_energy
+        priority = self.module_priorities.get(module_name, 5.0)
+        
+        # エネルギーが低下すると、低優先度のタスクは拒否されやすくなる
+        # 閾値: エネルギー50%以下で優先度4未満をカット、20%以下で優先度8未満をカット
+        required_priority = 0.0
+        if energy_ratio < 0.2:
+            required_priority = 8.0
+        elif energy_ratio < 0.5:
+            required_priority = 5.0
+            
+        if priority < required_priority:
+            # logger.debug(f"🛑 Inhibition: {module_name} denied (Low Energy Mode).")
+            return False
+
+        # 4. コスト消費と疲労蓄積
+        self.current_energy -= estimated_cost
+        self.fatigue_toxin += estimated_cost * 0.1 # 活動量に応じて疲労が蓄積
+        
+        return True
+
+    def replenish_energy(self, amount: float):
+        """エネルギーを補充する（食事、休憩など）"""
+        self.current_energy = min(self.max_energy, self.current_energy + amount)
+        # logger.info(f"🍎 Energy replenished: +{amount:.1f} -> {self.current_energy:.1f}")
+
+    def clear_fatigue(self, amount: float):
+        """疲労物質を除去する（睡眠中）"""
+        self.fatigue_toxin = max(0.0, self.fatigue_toxin - amount)
 
     def step(self):
         """
-        学習または推論の各ステップで呼び出され、内部カウンターをインクリメントする。
-        一定間隔で監視・調整ロジックをトリガーする。
+        定期的な監視サイクル。
         """
         self.step_counter += 1
         if self.step_counter % self.monitoring_interval == 0:
@@ -61,20 +131,27 @@ class AstrocyteNetwork:
     @torch.no_grad()
     def monitor_and_regulate(self):
         """
-        ネットワーク全体の活動を監視し、必要に応じて調整・進化を行う。
+        ニューロン活動の監視と恒常性維持。
         """
-        print(f"\n🔬 アストロサイトによるグローバル活動監視 (ステップ: {self.step_counter})")
+        # logger.info(f"🔬 Astrocyte Monitor: Energy={self.current_energy:.1f}, Fatigue={self.fatigue_toxin:.2f}")
         
-        # 監視対象リストを動的に更新
-        self.monitored_neurons = self._find_monitored_neurons()
+        # エネルギー効率が悪すぎる場合、全体的な抑制をかける（抑制性神経伝達物質の放出）
+        if self.current_energy < self.max_energy * 0.3:
+            # logger.info("   📉 Low Energy: Increasing inhibition globally.")
+            self._adjust_global_inhibition(increase=True)
+        else:
+            self._adjust_global_inhibition(increase=False)
+
+        # 個別ニューロンの監視 (既存機能)
+        if not self.monitored_neurons:
+            self.monitored_neurons = self._find_monitored_neurons()
 
         for i, layer in enumerate(self.monitored_neurons):
             layer_name = f"{type(layer).__name__}_{i}"
+            if not hasattr(layer, 'spikes'): continue
             
-            # ニューロンに記録されている実際の平均スパイク活動を直接使用する
             current_rate = layer.spikes.mean().item()
             
-            # 長期的な発火率を更新 (指数移動平均)
             if layer_name in self.long_term_spike_rates:
                 self.long_term_spike_rates[layer_name] = (
                     0.99 * self.long_term_spike_rates[layer_name] + 0.01 * torch.tensor(current_rate)
@@ -82,46 +159,45 @@ class AstrocyteNetwork:
             else:
                 self.long_term_spike_rates[layer_name] = torch.tensor(current_rate)
 
-            long_term_rate = self.long_term_spike_rates[layer_name].item()
-            
-            # --- ホメオスタティック可塑性 ---
+            # 動的進化 (LIF -> Izhikevich)
             if isinstance(layer, AdaptiveLIFNeuron):
                 target_rate = layer.target_spike_rate
-                print(f"  - 層 {layer_name}: 長期平均発火率={long_term_rate:.4f} (目標: {target_rate:.4f})")
-
-                if abs(long_term_rate - target_rate) > target_rate * 0.5:
-                    adjustment_factor = 1.05 if long_term_rate > target_rate else 0.95
-                    new_strength = layer.adaptation_strength * adjustment_factor
-                    print(f"    - 恒常性調整: 適応強度を変更します: {layer.adaptation_strength:.4f} -> {new_strength:.4f}")
-                    layer.adaptation_strength = new_strength
+                long_term_rate = self.long_term_spike_rates[layer_name].item()
                 
-                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-                # --- 動的ニューロン進化 ---
-                # LIFニューロンの活動が著しく低い場合、Izhikevichニューロンに進化させる
                 if long_term_rate < (target_rate * self.evolution_threshold):
-                    print(f"    - 🧬 進化トリガー: {layer_name} の活動が低いため、Izhikevichニューロンへの進化を試みます。")
-                    self._evolve_neuron_model(layer_to_evolve=layer, target_class=IzhikevichNeuron)
-            else:
-                print(f"  - 層 {layer_name}: 長期平均発火率={long_term_rate:.4f} (進化済み)")
+                    # logger.info(f"   🧬 Evolution Triggered for {layer_name}")
+                    self._evolve_neuron_model(layer, IzhikevichNeuron)
+
+    def _adjust_global_inhibition(self, increase: bool):
+        """全ニューロンの閾値を微調整して活動レベルを制御する"""
+        delta = 0.05 if increase else -0.01
+        for neuron in self.monitored_neurons:
+            if hasattr(neuron, 'base_threshold'):
+                if isinstance(neuron.base_threshold, torch.Tensor):
+                    neuron.base_threshold.add_(delta)
+                else:
+                    # floatの場合などは対応外だが通常はParameter
+                    pass
+            elif hasattr(neuron, 'v_threshold'):
+                 # BioLIFNeuronなどの場合
+                 pass
 
     def _evolve_neuron_model(self, layer_to_evolve: nn.Module, target_class: Type[nn.Module]):
-        """
-        指定されたニューロン層を、新しいクラスのインスタンスに置き換える。
-        """
+        """指定されたニューロン層を進化させる"""
+        if not self.snn_model: return
+        
         for name, module in self.snn_model.named_modules():
-            # 親モジュール内の、置き換え対象のニューロン層を見つける
             for child_name, child_module in module.named_children():
                 if child_module is layer_to_evolve:
-                    print(f"    - 発見: '{name}' 内の '{child_name}' を進化させます。")
-                    # 新しいニューロンインスタンスを作成
-                    # 元のニューロンの 'features' 属性を引き継ぐ
                     if hasattr(layer_to_evolve, 'features'):
-                        features = layer_to_evolve.features
+                        features = layer_to_evolve.features # type: ignore
                         new_neuron = target_class(features=features)
+                        # デバイス移動
+                        try:
+                            device = next(layer_to_evolve.parameters()).device
+                            new_neuron.to(device)
+                        except StopIteration: pass
                         
-                        # 親モジュールの属性を新しいニューロンに置き換え
                         setattr(module, child_name, new_neuron)
-                        print(f"    - ✅ 成功: '{child_name}' は {target_class.__name__} に進化しました。")
+                        # logger.info(f"      -> {child_name} evolved to {target_class.__name__}")
                         return
-        print(f"    - ❌ 失敗: モデル内で進化対象のニューロン層を置き換えられませんでした。")
-                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
