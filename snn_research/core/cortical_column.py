@@ -1,10 +1,10 @@
 # ファイルパス: snn_research/core/cortical_column.py
-# Title: Cortical Column with Causal Plasticity (Phase 5 Impl)
+# Title: Cortical Column with Causal Plasticity (Phase 5 Impl / Type Fixed)
 # Description:
 #   3層構造 (L4, L2/3, L5/6) を持つ大脳皮質カラムモデル。
 #   AbstractSNNNetworkを継承し、Causal Trace Learning (V2) による
 #   自律的なシナプス可塑性（学習機能）を実装している。
-#   これにより、睡眠中のリプレイ学習（記憶固定化）が可能となる。
+#   修正: mypyエラー (init_weights欠如, forwardオーバーライド, 変数型定義, reset呼び出し) を修正。
 
 import torch
 import torch.nn as nn
@@ -28,7 +28,7 @@ class CorticalLayer(nn.Module):
         
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # x: (Batch, Features)
-        spikes, mem = self.neuron(x)
+        spikes, mem = self.neuron(x) # type: ignore
         return spikes, mem
 
 class CorticalColumn(AbstractSNNNetwork):
@@ -105,12 +105,23 @@ class CorticalColumn(AbstractSNNNetwork):
         self._init_weights()
         print(f"🧠 CorticalColumn initialized (Plasticity: {'ON' if self.synaptic_rules else 'OFF'}).")
 
+    def _init_weights(self) -> None:
+        """重みの初期化 (BaseModelと同様のロジック)"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.bias, 0)
+                nn.init.constant_(m.weight, 1.0)
+
     def _setup_learning_rule(self, projection_name: str, rule_name: str, config: Dict[str, Any]):
         """指定された結合のための学習則インスタンスを生成"""
         # paramsには { 'causal_trace': {...}, 'stdp': {...} } のような構造を渡す
         self.synaptic_rules[projection_name] = get_bio_learning_rule(rule_name, config)
 
-    def forward(
+    def forward( # type: ignore[override]
         self, 
         input_signal: torch.Tensor, 
         prev_states: Optional[Dict[str, torch.Tensor]] = None
@@ -179,7 +190,6 @@ class CorticalColumn(AbstractSNNNetwork):
 
         # --- Layer 4 ---
         # 入力: Sensory Input + Feedback from L56 + Recurrent
-        # シナプスゆらぎの適用 (apply_probabilistic_transmission) を考慮しても良いが、ここでは簡略化
         in_L4_ff = self.proj_input_L4(input_signal)
         in_L4_fb = self.proj_L56_L4(spikes_L56_prev)
         in_L4_rec = self.rec_L4(spikes_L4_prev)
@@ -245,7 +255,9 @@ class CorticalColumn(AbstractSNNNetwork):
 
         # 各層の結合に対して学習則を適用
         # params: {'reward': ...} などを渡す場合はここを拡張
-        optional_params = {} 
+        # --- 修正: optional_params の型アノテーション追加 ---
+        optional_params: Dict[str, Any] = {}
+        # ------------------------------------------------
 
         # 定義されたすべての学習則を実行
         target_projections = [
@@ -291,6 +303,11 @@ class CorticalColumn(AbstractSNNNetwork):
     def reset_state(self) -> None:
         super().reset_state()
         # 各ニューロン層のリセット
-        if hasattr(self.L4.neuron, 'reset'): self.L4.neuron.reset()
-        if hasattr(self.L23.neuron, 'reset'): self.L23.neuron.reset()
-        if hasattr(self.L56.neuron, 'reset'): self.L56.neuron.reset()
+        # --- 修正: cast(Any, ...) を使用して reset メソッドを安全に呼び出す ---
+        if hasattr(self.L4.neuron, 'reset'):
+            cast(Any, self.L4.neuron).reset()
+        if hasattr(self.L23.neuron, 'reset'):
+            cast(Any, self.L23.neuron).reset()
+        if hasattr(self.L56.neuron, 'reset'):
+            cast(Any, self.L56.neuron).reset()
+        # ---------------------------------------------------------------
