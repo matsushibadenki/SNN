@@ -4,25 +4,33 @@
 #   v14.0の全機能を統合した人工脳の実行スクリプト。
 #   覚醒と睡眠のサイクルを回しながら、ユーザーとの対話を通じて進化する様子をシミュレートする。
 #   CLI引数でモデル設定やモードを切り替え可能。
-#   修正: ヘルスチェックのバリデーションキーワード "認知サイクル完了" を出力するように修正。
-#   修正(v2): プロジェクトルートのパス解決を "../" から "../../" に修正し、appモジュールのインポートエラーを解消。
+#   修正: パス解決のロジックを整理し、ModuleNotFoundErrorを解消。
+#         ヘルスチェック用キーワード "認知サイクル完了" を出力。
 
 import sys
 import os
 import argparse
 import logging
 import asyncio
+import time
 from pathlib import Path
 from omegaconf import OmegaConf
 
-# プロジェクトルートの設定
-# --- 修正: 2階層上 (../../) を指定してプロジェクトルートを正しく取得 ---
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-# -------------------------------------------------------------------
+# --- プロジェクトルート設定 ---
+# このスクリプトは SNN/scripts/runners/ にあると想定
+# SNN/ (プロジェクトルート) を sys.path に追加する
+current_file = Path(__file__).resolve()
+project_root = current_file.parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+# ---------------------------
 
-from app.containers import BrainContainer
+try:
+    from app.containers import BrainContainer
+except ImportError as e:
+    print(f"Error importing app.containers: {e}")
+    print(f"sys.path: {sys.path}")
+    sys.exit(1)
 
 # ロギング設定 (フォーマットをシンプルに)
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -134,7 +142,8 @@ def main():
         # 単一の入力で実行 (ヘルスチェック用)
         logger.info(f"--- Running single cognitive cycle for input: '{args.prompt}' ---")
         brain.run_cognitive_cycle(args.prompt)
-        logger.info("認知サイクル完了") # ヘルスチェック通過用キーワード
+        # ヘルスチェック通過用キーワードを出力
+        logger.info("認知サイクル完了") 
     else:
         # モード実行
         if args.mode == "interactive":
@@ -156,6 +165,7 @@ def main():
                     brain.run_cognitive_cycle(inp)
                 import time
                 time.sleep(1)
+            # デモ終了時にも出力
             logger.info("認知サイクル完了")
 
 if __name__ == "__main__":
