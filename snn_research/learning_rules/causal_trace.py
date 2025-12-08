@@ -1,12 +1,11 @@
 # ファイルパス: snn_research/learning_rules/causal_trace.py
-# Title: 進化版 因果追跡クレジット割り当て学習則 (V2) - Stabilized
+# Title: 進化版 因果追跡クレジット割り当て学習則 (V2) - Stabilized & 型修正
 # Description:
+# - mypyエラー修正: register_buffer 削除、avg_reward の型ヒント、_apply_high_level_rules の型修正。
 # - CausalTraceCreditAssignmentEnhanced を基盤とし、数値安定性と学習の頑健性を向上。
-# - 修正: トレースの正規化、学習率の動的クリッピング、報酬のベースライン補正を追加。
-#   これにより Objective.md 目標⑤（非勾配型学習の確立）に近づける。
 
 import torch
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, Union, cast
 import math
 
 from .reward_modulated_stdp import RewardModulatedSTDP
@@ -16,6 +15,8 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
     文脈変調、競合、高レベル因果連携を導入した、さらに進化した因果学習則。
     数値的安定性を強化。
     """
+    avg_reward: torch.Tensor
+
     def __init__(self, learning_rate: float, a_plus: float, a_minus: float,
                  tau_trace: float, tau_eligibility: float, dt: float = 1.0,
                  credit_time_decay: float = 0.95,
@@ -40,8 +41,9 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         self.competition_k_ratio = competition_k_ratio
         self.rule_based_lr_factor = rule_based_lr_factor
         
-        # 安定化のための移動平均報酬
-        self.register_buffer('avg_reward', torch.tensor(0.0))
+        # 修正: nn.Moduleではないため register_buffer は使えない。
+        # 属性として初期化する。デバイス移動は update 内で管理する。
+        self.avg_reward = torch.tensor(0.0)
         
         print("🧠 V2 Enhanced Causal Trace Credit Assignment rule initialized (Stabilized).")
 
@@ -90,7 +92,8 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         
         return dw
 
-    def _apply_high_level_rules(self, dynamic_lr: float, optional_params: Dict[str, Any]) -> float:
+    # 修正: 引数と戻り値の型を torch.Tensor に変更
+    def _apply_high_level_rules(self, dynamic_lr: torch.Tensor, optional_params: Dict[str, Any]) -> torch.Tensor:
         """CausalInferenceEngineからの抽象ルールに基づき学習率を調整する。"""
         rule = optional_params.get("abstract_causal_rule")
         if rule and isinstance(rule, dict):
@@ -109,6 +112,10 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         V2: 文脈変調、競合、ルール連携を含む更新プロセス。
         """
         if optional_params is None: optional_params = {}
+
+        # デバイスの同期
+        if self.avg_reward.device != weights.device:
+            self.avg_reward = self.avg_reward.to(weights.device)
 
         # --- 1. トレース初期化と更新 ---
         if self.pre_trace is None or self.post_trace is None or self.pre_trace.shape[0] != pre_spikes.shape[0] or self.post_trace.shape[0] != post_spikes.shape[0]:
@@ -156,12 +163,13 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         
         # 報酬のベースライン補正 (Advantage)
         # これにより、常に正の報酬だと重みが発散する問題を防ぐ
+        # self.avg_reward は Tensor
         if abs(reward) > 1e-6:
              with torch.no_grad():
                  self.avg_reward = 0.9 * self.avg_reward + 0.1 * reward
              
              # 報酬が平均より高い場合に強化、低い場合に抑制
-             effective_reward_signal = (reward - self.avg_reward) + causal_credit_signal
+             effective_reward_signal = (reward - self.avg_reward.item()) + causal_credit_signal
         else:
              effective_reward_signal = causal_credit_signal # クレジットのみ
 
@@ -175,9 +183,11 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
             # 貢献度が高いほど学習率を下げる (1.0 -> 0.1)
             stability_factor = 1.1 - contrib_norm 
             
-            dynamic_lr = self.base_learning_rate * stability_factor * self.dynamic_lr_factor
+            # dynamic_lr は Tensor になる
+            dynamic_lr = torch.tensor(self.base_learning_rate, device=weights.device) * stability_factor * self.dynamic_lr_factor
 
             # --- 5. 高レベルルールによる学習率調整 ---
+            # 引数と戻り値を Tensor に統一したため修正
             dynamic_lr = self._apply_high_level_rules(dynamic_lr, optional_params)
 
             # --- 6. 重み変化量の計算 ---
