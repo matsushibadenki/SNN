@@ -1,9 +1,9 @@
 # ファイルパス: snn_research/cognitive_architecture/neuromorphic_scheduler.py
-# Title: Neuromorphic Scheduler (Phase 7 Brain OS Kernel)
+# Title: Neuromorphic Scheduler (Phase 7 Brain OS Kernel) - Type Fix
 # Description:
 #   脳を「OS」と見なし、各認知モジュールを「プロセス」として管理するスケジューラ。
-#   静的な制御フローではなく、各プロセスの「入札（Bid）」と「エネルギー残量」に基づく
-#   動的な実行権の割り当て（調停）を行う。
+#   修正: BrainProcess.__init__ の bid_strategy 型ヒントを修正し、
+#   (module, input, context) の3引数を受け入れるように変更。
 
 import logging
 from typing import List, Dict, Any, Callable, Optional, Tuple
@@ -34,7 +34,9 @@ class BrainProcess:
         self, 
         name: str, 
         module_ref: Any, 
-        bid_strategy: Callable[[Any, Dict[str, Any]], ProcessBid],
+        # --- 修正: 引数3つ (module, input, context) に対応するよう型ヒントを変更 ---
+        bid_strategy: Callable[[Any, Any, Dict[str, Any]], ProcessBid],
+        # -----------------------------------------------------------------------
         execution_func: Callable[[Any, Any], Dict[str, Any]]
     ):
         self.pid = str(uuid.uuid4())[:8]
