@@ -1,14 +1,17 @@
 # ファイルパス: app/utils.py
-# (Phase 3 Complete: Multimodal Batching & UI Restoration - Fixed Collate)
+# (Quality Up: 再現性向上のためのシード固定機能追加)
 #
 # 機能:
 # - Gradioアプリケーション用の共通ユーティリティ。
 # - collate_fn: テキスト(input_ids)と画像(pixel_values)のバッチ化に対応。
-# - 修正: スカラーラベル（分類タスク）のバッチ化に対応 (stack vs pad_sequence)。
+# - set_all_seeds: 乱数シードを固定し、学習の再現性を担保する。
 
 import gradio as gr  # type: ignore[import-untyped]
 from typing import Callable, Iterator, Tuple, List, Optional, Any, Dict
 import torch
+import numpy as np
+import random
+import os
 from transformers import PreTrainedTokenizerBase
 
 def get_auto_device() -> str:
@@ -16,6 +19,27 @@ def get_auto_device() -> str:
     if torch.cuda.is_available(): return "cuda"
     if torch.backends.mps.is_available(): return "mps"
     return "cpu"
+
+def set_all_seeds(seed: int = 42, deterministic: bool = True) -> None:
+    """
+    全ての乱数生成器のシードを固定し、学習の再現性を確保する。
+    
+    Args:
+        seed (int): シード値。
+        deterministic (bool): Trueの場合、CuDNNの決定論的モードを有効にする（速度低下の可能性あり）。
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+
+    if deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        print(f"🔒 All seeds set to {seed} (Deterministic mode: ON)")
+    else:
+        print(f"🔒 All seeds set to {seed} (Deterministic mode: OFF)")
 
 def get_avatar_svgs():
     """
@@ -40,7 +64,7 @@ def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Cal
         # コンテナ
         inputs: List[torch.Tensor] = []
         targets: List[torch.Tensor] = []
-        images: List[torch.Tensor] = [] # 【追加】画像リスト
+        images: List[torch.Tensor] = [] 
         logits: List[torch.Tensor] = []
 
         for item in batch:
@@ -48,7 +72,7 @@ def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Cal
             if isinstance(item, dict):
                 inp = item.get('input_ids')
                 tgt = item.get('labels')
-                img = item.get('pixel_values') # 【追加】
+                img = item.get('pixel_values')
 
                 if inp is not None:
                     inputs.append(torch.tensor(inp) if not isinstance(inp, torch.Tensor) else inp)
@@ -86,14 +110,13 @@ def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Cal
         # テキストのパディング
         padded_inputs = torch.nn.utils.rnn.pad_sequence(inputs, batch_first=True, padding_value=padding_val)
         
-        # --- ▼ 修正: ターゲットのバッチ化 (スカラー vs シーケンス) ▼ ---
+        # ターゲットのバッチ化 (スカラー vs シーケンス)
         if targets and targets[0].ndim == 0:
             # スカラーラベル (分類タスク) -> stack
             padded_targets = torch.stack(targets, dim=0)
         else:
             # シーケンスラベル (生成タスク) -> pad_sequence
             padded_targets = torch.nn.utils.rnn.pad_sequence(targets, batch_first=True, padding_value=-100)
-        # --- ▲ 修正 ▲ ---
 
         attention_mask = torch.ones_like(padded_inputs)
         attention_mask[padded_inputs == padding_val] = 0
@@ -102,7 +125,7 @@ def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Cal
         batch_data["attention_mask"] = attention_mask
         batch_data["labels"] = padded_targets
 
-        # 【追加】画像のスタック (B, C, H, W)
+        # 画像のスタック (B, C, H, W)
         if images:
             batch_data["input_images"] = torch.stack(images, dim=0)
 
@@ -110,7 +133,6 @@ def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Cal
             padded_logits = torch.nn.utils.rnn.pad_sequence(logits, batch_first=True, padding_value=0.0)
             
             # ターゲットとロジットのシーケンス長を合わせる
-            # (注: 分類タスクで蒸留を行う場合、ここのロジックも調整が必要になる可能性があるが、現状はテキスト生成蒸留を想定)
             if padded_targets.ndim > 1: # シーケンスの場合のみ調整
                 seq_len = padded_inputs.shape[1]
                 if padded_targets.shape[1] < seq_len:
@@ -126,7 +148,6 @@ def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Cal
     
     return collate
 
-
 def build_gradio_ui(
     stream_fn: Callable[[str, List[List[Optional[str]]]], Iterator[Tuple[List[List[Optional[str]]], str]]],
     title: str,
@@ -136,7 +157,6 @@ def build_gradio_ui(
 ) -> gr.Blocks:
     """
     共通のGradio Blocks UIを構築する (Gradio 4.20.0 互換)。
-    【復元】削除されていたUI構築ロジックを復元しました。
     """
     with gr.Blocks(theme=theme) as demo:
         gr.Markdown(f"# {title}\n{description}")
