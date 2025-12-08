@@ -1,8 +1,8 @@
 # ファイルパス: snn_research/core/neurons/__init__.py
-# Title: SNNニューロンモデル定義 (型定義完全版)
-# Description:
-# - AdaptiveLIFNeuron にクラスレベルの型アノテーションを追加し、mypyエラーを解消。
-# - avg_firing_rate, mem, adaptive_threshold などのバッファ変数を明示的に定義。
+# 日本語タイトル: SNNニューロンモデル定義 (不応期対応・高機能版)
+# 機能説明:
+# - AdaptiveLIFNeuron に不応期 (Refractory Period) を実装し、生物学的妥当性を向上。
+# - クラスレベルの型アノテーション完備。
 
 from typing import Optional, Tuple, Any, List, cast
 import torch
@@ -29,19 +29,20 @@ __all__ = [
 
 class AdaptiveLIFNeuron(base.MemoryModule):
     """
-    Adaptive Leaky Integrate-and-Fire (LIF) neuron with Homeostatic Plasticity.
+    Adaptive Leaky Integrate-and-Fire (LIF) neuron with Homeostatic Plasticity & Refractory Period.
     """
-    # --- ▼ 追加: クラスレベルの型アノテーション ▼ ---
     log_tau_mem: nn.Parameter
     base_threshold: nn.Parameter
     
-    # register_buffer で登録される変数の型を明示
+    # 状態変数
     avg_firing_rate: torch.Tensor
     mem: Optional[torch.Tensor]
     adaptive_threshold: Optional[torch.Tensor]
     spikes: torch.Tensor
     total_spikes: torch.Tensor
-    # --- ▲ 追加 ▲ ---
+    
+    # 不応期用
+    refractory_count: Optional[torch.Tensor]
 
     def __init__(
         self,
@@ -54,7 +55,8 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         threshold_decay: float = 0.99,
         threshold_step: float = 0.05,
         v_reset: float = 0.0, 
-        homeostasis_rate: float = 0.001
+        homeostasis_rate: float = 0.001,
+        refractory_period: int = 2 # 不応期 (ステップ数)
     ):
         super().__init__()
         self.features = features
@@ -71,12 +73,14 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         self.threshold_step = threshold_step
         self.v_reset = v_reset
         self.homeostasis_rate = homeostasis_rate
+        self.refractory_period = refractory_period
 
         self.surrogate_function = surrogate.ATan(alpha=2.0)
 
         # 状態変数
         self.register_buffer("mem", None)
         self.register_buffer("adaptive_threshold", None)
+        self.register_buffer("refractory_count", None) # 残り不応期ステップ数
         self.register_buffer("avg_firing_rate", torch.zeros(features))
         self.register_buffer("spikes", torch.zeros(features))
         self.register_buffer("total_spikes", torch.tensor(0.0))
@@ -91,7 +95,8 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         super().reset()
         self.mem = None
         self.adaptive_threshold = None
-        # avg_firing_rate はリセットしない
+        self.refractory_count = None
+        # avg_firing_rate はリセットしない (長期学習のため)
         self.spikes.zero_()
         self.total_spikes.zero_()
     
@@ -110,11 +115,14 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         if not self.stateful:
             self.mem = None
             self.adaptive_threshold = None
+            self.refractory_count = None
 
         if self.mem is None or self.mem.shape != x.shape:
             self.mem = torch.zeros_like(x)
         if self.adaptive_threshold is None or self.adaptive_threshold.shape != x.shape:
             self.adaptive_threshold = torch.zeros_like(x)
+        if self.refractory_count is None or self.refractory_count.shape != x.shape:
+            self.refractory_count = torch.zeros_like(x)
 
         log_tau = self._view_params(self.log_tau_mem, x)
         base_thresh = self._view_params(self.base_threshold, x)
@@ -122,17 +130,32 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         current_tau_mem = torch.exp(log_tau) + 1.1
         mem_decay = torch.exp(-1.0 / current_tau_mem)
         
-        self.mem = self.mem * mem_decay + x
+        # --- 不応期の処理 ---
+        # 不応期中のニューロンは入力を受け付けず、膜電位は v_reset に維持される
+        is_refractory = (self.refractory_count > 0).float()
+        
+        # 膜電位の更新: 不応期でない場合のみ積分
+        # V[t] = V[t-1] * decay + x[t] (if not refractory)
+        # V[t] = v_reset (if refractory)
+        integrated_mem = self.mem * mem_decay + x
         
         if self.training and self.noise_intensity > 0:
-            self.mem += torch.randn_like(self.mem) * self.noise_intensity
+            integrated_mem += torch.randn_like(integrated_mem) * self.noise_intensity
         
+        self.mem = (1.0 - is_refractory) * integrated_mem + is_refractory * self.v_reset
+        
+        # 適応閾値の減衰
         self.adaptive_threshold = self.adaptive_threshold * self.threshold_decay
         current_threshold = base_thresh + self.adaptive_threshold
         
-        spike = self.surrogate_function(self.mem - current_threshold)
+        # スパイク生成: 不応期でない場合のみ発火可能
+        spike_potential = self.mem - current_threshold
+        spike = self.surrogate_function(spike_potential)
         
-        # 統計用スパイクカウント
+        # 不応期中は強制的にスパイク 0 (サロゲート勾配も抑制すべきだが簡易的にマスク)
+        spike = spike * (1.0 - is_refractory)
+        
+        # 統計更新
         if spike.ndim > 1:
             if x.ndim == 4:
                  spike_mean_spatial = spike.mean(dim=(0, 2, 3))
@@ -152,22 +175,36 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         with torch.no_grad():
             self.total_spikes += spike.detach().sum()
             
-            # --- Homeostatic Plasticity ---
+            # --- Homeostatic Plasticity (恒常性維持) ---
+            # 平均発火率を目標値に近づけるようベース閾値を調整
             alpha = 0.01
-            # 型アノテーションを追加したため、self.avg_firing_rate は Tensor として認識される
             self.avg_firing_rate = (1 - alpha) * self.avg_firing_rate + alpha * spike_mean_spatial.detach()
             
-            rate_error = self.avg_firing_rate - self.target_spike_rate
-            
             if self.training:
+                # 目標より高い -> 閾値を上げる (抑制)
+                # 目標より低い -> 閾値を下げる (興奮)
+                rate_error = self.avg_firing_rate - self.target_spike_rate
                 delta_th = rate_error * self.homeostasis_rate
                 self.base_threshold.data += delta_th
 
-        reset_mask = spike.detach() 
-        self.mem = self.mem * (1.0 - reset_mask) + self.v_reset * reset_mask
+        # 発火後のリセットと不応期タイマー設定
+        spike_detached = spike.detach()
         
+        # 発火したら不応期カウントを設定
+        new_refractory = spike_detached * self.refractory_period
+        
+        # カウントダウン (0未満にはしない)
+        self.refractory_count = torch.clamp(self.refractory_count - 1, min=0.0)
+        
+        # 発火したニューロンのタイマーを上書き
+        self.refractory_count = torch.max(self.refractory_count, new_refractory)
+        
+        # 膜電位リセット
+        self.mem = self.mem * (1.0 - spike_detached) + self.v_reset * spike_detached
+        
+        # 適応閾値の更新 (発火したら閾値を上げる)
         if self.training:
-            self.adaptive_threshold = self.adaptive_threshold + self.threshold_step * spike.detach()
+            self.adaptive_threshold = self.adaptive_threshold + self.threshold_step * spike_detached
         else:
             with torch.no_grad():
                  self.adaptive_threshold = self.adaptive_threshold + self.threshold_step * spike
@@ -181,7 +218,7 @@ class AdaptiveLIFNeuron(base.MemoryModule):
 
 
 class IzhikevichNeuron(base.MemoryModule):
-    # クラスレベルの型アノテーションを追加
+    # クラスレベルの型アノテーション
     a: torch.Tensor
     b: torch.Tensor
     c: torch.Tensor
