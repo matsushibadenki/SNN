@@ -1,9 +1,8 @@
 # ファイルパス: scripts/run_deep_bio_calibration.py
-# Title: Deep Bio-Calibration 実行スクリプト
+# Title: Deep Bio-Calibration 実行スクリプト (パス修正版)
 # Description:
 #   指定されたSNNモデルに対して、Deep Bio-Calibration (HSEO最適化) を適用する。
-#   既存のモデルをロードし、キャリブレーションデータセットを用いて閾値を微調整し、
-#   最適化されたモデルを保存する。
+#   修正: プロジェクトルートへのパス解決を "../.." から ".." に修正。
 
 import argparse
 import sys
@@ -15,7 +14,8 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, TensorDataset
 
 # プロジェクトルート設定
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+# scripts/ フォルダにあるため、1つ上の階層がプロジェクトルート
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
