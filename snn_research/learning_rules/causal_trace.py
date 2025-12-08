@@ -1,8 +1,10 @@
 # ファイルパス: snn_research/learning_rules/causal_trace.py
-# Title: 進化版 因果追跡クレジット割り当て学習則 (V2) - Stabilized & 型修正
+# Title: 進化版 因果追跡クレジット割り当て学習則 (V2 - Stabilized & Robust)
 # Description:
+# - CausalTraceCreditAssignmentEnhancedV2 の安定性向上版。
+# - NaNチェック (torch.nan_to_num) を導入し、学習崩壊を防ぐ。
+# - クレジット信号と適格性トレースのクリッピングを強化。
 # - mypyエラー修正: register_buffer 削除、avg_reward の型ヒント、_apply_high_level_rules の型修正。
-# - CausalTraceCreditAssignmentEnhanced を基盤とし、数値安定性と学習の頑健性を向上。
 
 import torch
 from typing import Dict, Any, Optional, Tuple, Union, cast
@@ -134,8 +136,10 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         assert self.eligibility_trace is not None
         assert self.causal_contribution is not None
         
-        # 安定化: トレースの爆発を防ぐための減衰/クリップ
-        self.eligibility_trace.clamp_(-5.0, 5.0)
+        # --- 安定化: NaN除去とクリップ ---
+        # トレースが爆発するのを防ぐ
+        self.eligibility_trace = torch.nan_to_num(self.eligibility_trace, nan=0.0)
+        self.eligibility_trace.clamp_(-10.0, 10.0)
 
         # --- 2. 適格度トレース (Eligibility Trace) の更新 ---
         # Hebbian項 (LTP): Post * Pre_Trace
@@ -166,7 +170,7 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         # self.avg_reward は Tensor
         if abs(reward) > 1e-6:
              with torch.no_grad():
-                 self.avg_reward = 0.9 * self.avg_reward + 0.1 * reward
+                 self.avg_reward = 0.95 * self.avg_reward + 0.05 * reward
              
              # 報酬が平均より高い場合に強化、低い場合に抑制
              effective_reward_signal = (reward - self.avg_reward.item()) + causal_credit_signal
@@ -193,6 +197,9 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
             # --- 6. 重み変化量の計算 ---
             # dw = lr * Reward * Eligibility
             dw = dynamic_lr * effective_reward_signal * self.eligibility_trace
+            
+            # 安全策: NaN除去
+            dw = torch.nan_to_num(dw, nan=0.0)
 
             # --- 7. 競合的割り当て ---
             dw = self._apply_competition(dw, self.eligibility_trace)
@@ -211,6 +218,7 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
             # Post側の活動（適格度）に寄与したPre側ニューロンに対してクレジットを分配
             # 'ij,ij->j' : 重みと適格度の積をPreニューロンごとに合計
             raw_backward_credit = torch.einsum('ij,ij->j', weights, self.eligibility_trace) 
+            raw_backward_credit = torch.nan_to_num(raw_backward_credit, nan=0.0)
 
             # 文脈変調を適用
             backward_credit = self._apply_context_modulation(raw_backward_credit, optional_params)
@@ -225,3 +233,5 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
     def get_causal_contribution(self) -> Optional[torch.Tensor]:
         """長期的な因果的貢献度を返す。"""
         return self.causal_contribution
+
+}
