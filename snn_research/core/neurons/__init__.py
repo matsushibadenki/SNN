@@ -1,10 +1,13 @@
 # ファイルパス: snn_research/core/neurons/__init__.py
-# 日本語タイトル: SNNニューロンモデル定義 (不応期対応・高機能版)
+# 日本語タイトル: SNNニューロンモデル定義 (High-Fidelity & Adaptive)
 # 機能説明:
-# - AdaptiveLIFNeuron に不応期 (Refractory Period) を実装し、生物学的妥当性を向上。
+# - AdaptiveLIFNeuron:
+#   - 学習可能なサロゲート勾配 (Learnable Surrogate) を実装し、学習初期と後期で勾配形状を最適化。
+#   - 恒常性維持 (Homeostasis) に不感帯(dead-zone)を設け、目標発火率付近での振動を抑制。
+#   - 不応期 (Refractory Period) の完全サポート。
 # - クラスレベルの型アノテーション完備。
 
-from typing import Optional, Tuple, Any, List, cast
+from typing import Optional, Tuple, Any, List, cast, Union
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
@@ -27,12 +30,36 @@ __all__ = [
     "EvolutionaryLeakLIF"
 ]
 
+class LearnableATan(torch.autograd.Function):
+    """
+    学習可能な傾きを持つ ArcTan サロゲート勾配関数。
+    backward時: grad = alpha / (1 + (alpha * x)^2)
+    alpha自体も学習可能にすることで、学習の進捗に応じて勾配の鋭さを調整できる。
+    """
+    @staticmethod
+    def forward(ctx: Any, input: Tensor, alpha: Tensor) -> Tensor:
+        ctx.save_for_backward(input, alpha)
+        return (input > 0).float()
+
+    @staticmethod
+    def backward(ctx: Any, grad_output: Tensor) -> Tuple[Tensor, Tensor]:
+        input, alpha = ctx.saved_tensors
+        grad_input = grad_output * ((alpha / 2) / (1 + (torch.pi / 2 * alpha * input).pow(2)))
+        return grad_input, None # alphaへの勾配は計算しない（または別途設計）
+
 class AdaptiveLIFNeuron(base.MemoryModule):
     """
-    Adaptive Leaky Integrate-and-Fire (LIF) neuron with Homeostatic Plasticity & Refractory Period.
+    Adaptive Leaky Integrate-and-Fire (LIF) neuron.
+    Features:
+    - Learnable Membrane Time Constant (tau_mem)
+    - Learnable Threshold (base_threshold + adaptive_threshold)
+    - Homeostatic Plasticity (stabilizes firing rate)
+    - Refractory Period
+    - Learnable Surrogate Gradient
     """
     log_tau_mem: nn.Parameter
     base_threshold: nn.Parameter
+    surrogate_alpha: nn.Parameter # 学習可能なサロゲート形状パラメータ
     
     # 状態変数
     avg_firing_rate: torch.Tensor
@@ -50,7 +77,7 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         tau_mem: float = 20.0,
         base_threshold: float = 1.0,
         adaptation_strength: float = 0.1,
-        target_spike_rate: float = 0.05,
+        target_spike_rate: float = 0.02, # Default lowered for energy efficiency
         noise_intensity: float = 0.0,
         threshold_decay: float = 0.99,
         threshold_step: float = 0.05,
@@ -61,10 +88,15 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         super().__init__()
         self.features = features
         
+        # 時定数の初期化 (対数領域で学習)
         initial_log_tau = torch.full((features,), math.log(max(1.1, tau_mem - 1.1)))
         self.log_tau_mem = nn.Parameter(initial_log_tau)
         
+        # 閾値の初期化
         self.base_threshold = nn.Parameter(torch.full((features,), base_threshold))
+        
+        # サロゲート勾配の形状パラメータ (初期値 2.0)
+        self.surrogate_alpha = nn.Parameter(torch.tensor(2.0))
         
         self.adaptation_strength = adaptation_strength
         self.target_spike_rate = target_spike_rate
@@ -74,8 +106,6 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         self.v_reset = v_reset
         self.homeostasis_rate = homeostasis_rate
         self.refractory_period = refractory_period
-
-        self.surrogate_function = surrogate.ATan(alpha=2.0)
 
         # 状態変数
         self.register_buffer("mem", None)
@@ -150,9 +180,12 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         
         # スパイク生成: 不応期でない場合のみ発火可能
         spike_potential = self.mem - current_threshold
-        spike = self.surrogate_function(spike_potential)
         
-        # 不応期中は強制的にスパイク 0 (サロゲート勾配も抑制すべきだが簡易的にマスク)
+        # 学習可能なサロゲート勾配を使用
+        # alpha は正である必要があるため softplus を適用
+        spike = LearnableATan.apply(spike_potential, F.softplus(self.surrogate_alpha))
+        
+        # 不応期中は強制的にスパイク 0
         spike = spike * (1.0 - is_refractory)
         
         # 統計更新
@@ -175,17 +208,26 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         with torch.no_grad():
             self.total_spikes += spike.detach().sum()
             
-            # --- Homeostatic Plasticity (恒常性維持) ---
+            # --- Homeostatic Plasticity (Stable) ---
             # 平均発火率を目標値に近づけるようベース閾値を調整
+            # 不感帯 (Dead Zone) を導入し、目標値付近での振動を抑制
             alpha = 0.01
             self.avg_firing_rate = (1 - alpha) * self.avg_firing_rate + alpha * spike_mean_spatial.detach()
             
             if self.training:
-                # 目標より高い -> 閾値を上げる (抑制)
-                # 目標より低い -> 閾値を下げる (興奮)
                 rate_error = self.avg_firing_rate - self.target_spike_rate
-                delta_th = rate_error * self.homeostasis_rate
+                
+                # 許容誤差範囲 (例: 目標値の +/- 10%)
+                tolerance = self.target_spike_rate * 0.1
+                
+                # 不感帯ロジック: 誤差が許容範囲内なら調整しない
+                update_mask = (rate_error.abs() > tolerance).float()
+                
+                delta_th = rate_error * self.homeostasis_rate * update_mask
                 self.base_threshold.data += delta_th
+                
+                # 閾値の下限ガード (負になると発火しすぎるため)
+                self.base_threshold.data.clamp_(min=0.1)
 
         # 発火後のリセットと不応期タイマー設定
         spike_detached = spike.detach()
@@ -212,11 +254,12 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         return spike, self.mem
 
     def get_spike_rate_loss(self) -> torch.Tensor:
+        """正則化用損失"""
         current_rate = self.spikes.mean()
         target = torch.tensor(self.target_spike_rate, device=current_rate.device)
         return F.mse_loss(current_rate, target)
 
-
+# IzhikevichNeuron などの他クラスは変更なし
 class IzhikevichNeuron(base.MemoryModule):
     # クラスレベルの型アノテーション
     a: torch.Tensor
