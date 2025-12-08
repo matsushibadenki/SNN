@@ -1,14 +1,15 @@
 # ファイルパス: snn_research/models/bio/simple_network.py
-# Title: Bio-Inspired SNN (Robust Implementation)
+# Title: Bio-Inspired SNN (Robust Implementation & Parameter Logic Fixed)
 # Description:
-# - mypyエラー修正: get_total_spikes で layer.total_spikes を明示的にキャスト。
-# - AdaptiveLIFNeuronに対応し、ニューロンの選択肢を広げた。
-# - 重み更新時の安定化処理（クランプ、正規化）を追加。
+# - 生物学的学習則 (STDP, BCM等) を用いた多層SNNモデル。
+# - 修正: ニューロン生成時のパラメータフィルタリングとマッピングを実装し、TypeErrorを解消。
+# - 修正: v_threshold (Legacy) -> base_threshold (AdaptiveLIF) の自動変換を追加。
 
 import torch
 import torch.nn as nn
 from typing import Dict, Any, Optional, Tuple, List, Type, Union, cast
 import copy
+import logging
 
 # 既存の BioLIFNeuron (Legacy) と新しい AdaptiveLIFNeuron をインポート
 from .lif_neuron_legacy import BioLIFNeuron
@@ -17,6 +18,8 @@ from snn_research.learning_rules.base_rule import BioLearningRule
 from snn_research.learning_rules.causal_trace import CausalTraceCreditAssignmentEnhancedV2
 from snn_research.core.synapse_dynamics import apply_probabilistic_transmission
 from snn_research.core.base import BaseModel
+
+logger = logging.getLogger(__name__)
 
 class BioSNN(BaseModel):
     """
@@ -45,27 +48,47 @@ class BioSNN(BaseModel):
         self.synaptic_rules: List[BioLearningRule] = []
         self.homeostatic_rules: List[Optional[BioLearningRule]] = []
 
-        # ニューロンクラスの選択
-        if neuron_type == "adaptive_lif":
-            # neuron_paramsから必要なものを抽出
-            features_key = "features" 
-            # AdaptiveLIFは features 引数を取る
-            def create_neuron(size):
-                 # パラメータ調整
-                 p = neuron_params.copy()
-                 # 必須パラメータ以外を削除または調整
-                 return AdaptiveLIFNeuron(features=size, **p)
-        elif neuron_type == "izhikevich":
-            def create_neuron(size):
-                 p = neuron_params.copy()
-                 return IzhikevichNeuron(features=size, **p)
-        else: # legacy
-            def create_neuron(size):
-                 return BioLIFNeuron(n_neurons=size, neuron_params=neuron_params)
+        # --- ニューロン生成関数の定義 (パラメータ適応ロジックを含む) ---
+        def create_neuron(size: int) -> nn.Module:
+            p = neuron_params.copy()
+
+            if neuron_type == "adaptive_lif":
+                # マッピング: v_threshold -> base_threshold
+                if 'v_threshold' in p:
+                    if 'base_threshold' not in p:
+                        p['base_threshold'] = p['v_threshold']
+                    del p['v_threshold']
+                
+                # 不要なパラメータの削除 (AdaptiveLIFNeuronが受け付けないもの)
+                valid_keys = [
+                    'tau_mem', 'base_threshold', 'adaptation_strength', 
+                    'target_spike_rate', 'noise_intensity', 'threshold_decay', 
+                    'threshold_step', 'v_reset', 'homeostasis_rate'
+                ]
+                filtered_p = {k: v for k, v in p.items() if k in valid_keys}
+                
+                return AdaptiveLIFNeuron(features=size, **filtered_p)
+
+            elif neuron_type == "izhikevich":
+                # Izhikevich用のパラメータフィルタリング
+                valid_keys = ['a', 'b', 'c', 'd', 'dt']
+                filtered_p = {k: v for k, v in p.items() if k in valid_keys}
+                return IzhikevichNeuron(features=size, **filtered_p)
+
+            else: # legacy_lif or default
+                # BioLIFNeuronは v_threshold 等をそのまま期待する
+                # フィルタリングなしで渡す（または必要なものだけ渡す）
+                return BioLIFNeuron(n_neurons=size, neuron_params=p)
+
+        # -----------------------------------------------------------
 
         for i in range(len(layer_sizes) - 1):
             # ニューロン層の追加 (出力側)
-            self.layers.append(create_neuron(layer_sizes[i+1]))
+            try:
+                self.layers.append(create_neuron(layer_sizes[i+1]))
+            except TypeError as e:
+                logger.error(f"Failed to create neuron layer {i} (Type: {neuron_type}). Params: {neuron_params}")
+                raise e
             
             # 重みの初期化 (Xavier init like)
             w_init = torch.randn(layer_sizes[i+1], layer_sizes[i]) * (1.0 / (layer_sizes[i] ** 0.5))
