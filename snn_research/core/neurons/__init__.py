@@ -2,7 +2,7 @@
 # 日本語タイトル: SNNニューロンモデル定義 (High-Fidelity & Adaptive)
 # 機能説明:
 # - AdaptiveLIFNeuron:
-#   - 学習可能なサロゲート勾配 (Learnable Surrogate) を実装し、学習初期と後期で勾配形状を最適化。
+#   - 学習可能なサロゲート勾配 (Learnable Surrogate) を実装し、学習の進行に合わせて勾配形状を最適化。
 #   - 恒常性維持 (Homeostasis) に不感帯(dead-zone)を設け、目標発火率付近での振動を抑制。
 #   - 不応期 (Refractory Period) の完全サポート。
 # - クラスレベルの型アノテーション完備。
