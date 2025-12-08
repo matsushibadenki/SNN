@@ -1,13 +1,13 @@
 # ファイルパス: snn_research/models/bio/simple_network.py
 # Title: Bio-Inspired SNN (Robust Implementation)
 # Description:
-# - 生物学的学習則 (STDP, BCM等) を用いた多層SNNモデル。
-# - 修正: AdaptiveLIFNeuronに対応し、ニューロンの選択肢を広げた。
-# - 修正: 重み更新時の安定化処理（クランプ、正規化）を追加し、Goal 6（自己修正AI）の基盤を強化。
+# - mypyエラー修正: get_total_spikes で layer.total_spikes を明示的にキャスト。
+# - AdaptiveLIFNeuronに対応し、ニューロンの選択肢を広げた。
+# - 重み更新時の安定化処理（クランプ、正規化）を追加。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional, Tuple, List, Type, Union
+from typing import Dict, Any, Optional, Tuple, List, Type, Union, cast
 import copy
 
 # 既存の BioLIFNeuron (Legacy) と新しい AdaptiveLIFNeuron をインポート
@@ -139,7 +139,6 @@ class BioSNN(BaseModel):
 
             # 階層的クレジット信号を報酬に加算
             if backward_credit is not None:
-                reward_signal = current_params.get("reward", 0.0)
                 # クレジット信号による報酬変調 (Pre-synaptic側へのフィードバック)
                 # backward_credit は (Batch, Pre_Neurons) なので平均を取ってスカラー化
                 credit_scalar = backward_credit.mean().item()
@@ -194,7 +193,9 @@ class BioSNN(BaseModel):
         total = 0.0
         for layer in self.layers:
             if hasattr(layer, 'total_spikes'):
-                total += layer.total_spikes.item()
+                # 修正: castを使用してTensorであることを明示してからitem()を呼ぶ
+                spikes_tensor = cast(torch.Tensor, layer.total_spikes)
+                total += spikes_tensor.item()
         return total
 
     def reset_spike_stats(self):
