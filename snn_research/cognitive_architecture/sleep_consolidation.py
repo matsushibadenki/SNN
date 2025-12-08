@@ -6,7 +6,8 @@
 #   改善点:
 #   - 優先度付きサンプリング (Prioritized Replay) を導入。
 #     覚醒中に重要度（Salience）や予測誤差が高かった情報を優先的にリプレイする。
-#   - NREM睡眠（構造化・汎化）とREM睡眠（結合・創造）のフェーズを模倣。
+#   - NREM睡眠（構造化・汎化）とREM睡眠（結合・創造）のフェーズを模倣し、
+#     記憶の固定化と創造的結合を使い分ける。
 
 import torch
 import logging
@@ -63,7 +64,10 @@ class SleepConsolidator:
         
         # メタデータからの重み付け
         if 'salience' in edge_data:
-            priority += float(edge_data['salience']) * 2.0
+            try:
+                priority += float(edge_data['salience']) * 2.0
+            except (ValueError, TypeError):
+                pass
             
         if 'timestamp' in edge_data:
             # 新近性効果: 新しい記憶ほど優先されやすい（が、徐々に統合される）
@@ -72,7 +76,10 @@ class SleepConsolidator:
             
         # 予測誤差や驚きが含まれている場合（metadataに記録されていると仮定）
         if 'surprise' in edge_data:
-            priority += float(edge_data['surprise']) * 3.0
+            try:
+                priority += float(edge_data['surprise']) * 3.0
+            except (ValueError, TypeError):
+                pass
             
         return max(0.1, priority)
 
@@ -111,7 +118,7 @@ class SleepConsolidator:
                         
                     else: # REM
                         # REM: 関連性の薄いものやランダムな結合を試し、創造性を促す
-                        # 一様ランダムサンプリングに近い
+                        # 一様ランダムサンプリングに近い、あるいは逆優先度
                         sampled_edges = random.sample(
                             [e[:3] for e in weighted_edges], 
                             min(len(weighted_edges), num_dreams)
