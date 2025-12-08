@@ -1,10 +1,8 @@
 # ファイルパス: snn_research/core/neurons/__init__.py
-# Title: SNNニューロンモデル定義 (Homeostasis強化版)
+# Title: SNNニューロンモデル定義 (型修正版)
 # Description:
 # - AdaptiveLIFNeuron に Homeostatic Plasticity (恒常的可塑性) を実装。
-#   長期的な平均発火率を監視し、目標値(target_spike_rate)に近づくように
-#   ベース閾値自体を動的に調整する。これにより Objective.md の目標⑩を達成する。
-# - パラメータのブロードキャスト処理(_view_params)を維持。
+# - mypyエラー修正: avg_firing_rate を Tensor にキャストして型を明示。
 
 from typing import Optional, Tuple, Any, List, cast
 import torch
@@ -32,10 +30,6 @@ __all__ = [
 class AdaptiveLIFNeuron(base.MemoryModule):
     """
     Adaptive Leaky Integrate-and-Fire (LIF) neuron with Homeostatic Plasticity.
-    
-    Features:
-    1. Short-term Adaptation: 発火直後に閾値を上げ、不応期を模倣する (adaptive_threshold)。
-    2. Long-term Homeostasis: 長期的な平均発火率を目標値に近づけるよう、ベース閾値を調整する。
     """
     log_tau_mem: nn.Parameter
     base_threshold: nn.Parameter
@@ -46,21 +40,19 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         tau_mem: float = 20.0,
         base_threshold: float = 1.0,
         adaptation_strength: float = 0.1,
-        target_spike_rate: float = 0.05, # 目標発火率 (e.g. 5%)
+        target_spike_rate: float = 0.05,
         noise_intensity: float = 0.0,
-        threshold_decay: float = 0.99,   # 短期適応の減衰
-        threshold_step: float = 0.05,    # 短期適応の上昇幅
+        threshold_decay: float = 0.99,
+        threshold_step: float = 0.05,
         v_reset: float = 0.0, 
-        homeostasis_rate: float = 0.001  # 恒常性維持の学習率 (非常にゆっくり変化)
+        homeostasis_rate: float = 0.001
     ):
         super().__init__()
         self.features = features
         
-        # 膜時定数の対数表現 (学習可能)
         initial_log_tau = torch.full((features,), math.log(max(1.1, tau_mem - 1.1)))
         self.log_tau_mem = nn.Parameter(initial_log_tau)
         
-        # ベース閾値 (恒常性維持により変動するが、勾配降下法でも学習可能)
         self.base_threshold = nn.Parameter(torch.full((features,), base_threshold))
         
         self.adaptation_strength = adaptation_strength
@@ -76,7 +68,7 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         # 状態変数
         self.register_buffer("mem", None)
         self.register_buffer("adaptive_threshold", None)
-        self.register_buffer("avg_firing_rate", torch.zeros(features)) # 長期平均発火率
+        self.register_buffer("avg_firing_rate", torch.zeros(features))
         self.register_buffer("spikes", torch.zeros(features))
         self.register_buffer("total_spikes", torch.tensor(0.0))
         self.stateful = False
@@ -90,23 +82,19 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         super().reset()
         self.mem = None
         self.adaptive_threshold = None
-        # avg_firing_rate はリセットしない (生涯学習的な特性のため)
+        # avg_firing_rate はリセットしない
         self.spikes.zero_()
         self.total_spikes.zero_()
     
     def _view_params(self, param: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-        """入力テンソル x の形状に合わせてパラメータをリシェイプする。"""
         if param.ndim != 1:
             return param
-        # Conv2d出力 (B, C, H, W)
         if x.ndim == 4 and x.shape[1] == self.features:
             return param.view(1, -1, 1, 1)
-        # Conv1d出力 (B, C, L)
         if x.ndim == 3 and x.shape[1] == self.features:
             return param.view(1, -1, 1)
-        # Sequence (B, T, C) -> 想定: paramは (C,)
         if x.ndim == 3 and x.shape[2] == self.features:
-            return param # ブロードキャスト可能
+            return param
         return param
 
     def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
@@ -119,37 +107,31 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         if self.adaptive_threshold is None or self.adaptive_threshold.shape != x.shape:
             self.adaptive_threshold = torch.zeros_like(x)
 
-        # パラメータの準備
         log_tau = self._view_params(self.log_tau_mem, x)
         base_thresh = self._view_params(self.base_threshold, x)
 
         current_tau_mem = torch.exp(log_tau) + 1.1
         mem_decay = torch.exp(-1.0 / current_tau_mem)
         
-        # 1. 膜電位の更新 (Leak + Input)
         self.mem = self.mem * mem_decay + x
         
-        # ノイズ注入 (確率的挙動)
         if self.training and self.noise_intensity > 0:
             self.mem += torch.randn_like(self.mem) * self.noise_intensity
         
-        # 2. 短期閾値適応の減衰
         self.adaptive_threshold = self.adaptive_threshold * self.threshold_decay
         current_threshold = base_thresh + self.adaptive_threshold
         
-        # 3. スパイク生成
         spike = self.surrogate_function(self.mem - current_threshold)
         
-        # 統計用スパイクカウント & 平均発火率更新
-        # 形状に依存せず平均化するためにreduce
+        # 統計用スパイクカウント
         if spike.ndim > 1:
-            if x.ndim == 4: # (B, C, H, W)
+            if x.ndim == 4:
                  spike_mean_spatial = spike.mean(dim=(0, 2, 3))
-            elif x.ndim == 3 and x.shape[2] == self.features: # (B, T, C)
+            elif x.ndim == 3 and x.shape[2] == self.features:
                  spike_mean_spatial = spike.mean(dim=(0, 1))
-            elif x.ndim == 3 and x.shape[1] == self.features: # (B, C, L)
+            elif x.ndim == 3 and x.shape[1] == self.features:
                  spike_mean_spatial = spike.mean(dim=(0, 2))
-            elif x.ndim == 2: # (B, C)
+            elif x.ndim == 2:
                  spike_mean_spatial = spike.mean(dim=0)
             else:
                  spike_mean_spatial = spike.mean()
@@ -161,27 +143,22 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         with torch.no_grad():
             self.total_spikes += spike.detach().sum()
             
-            # --- Homeostatic Plasticity (恒常性維持) ---
-            # 指数移動平均で長期発火率を更新
-            alpha = 0.01 
-            self.avg_firing_rate = (1 - alpha) * self.avg_firing_rate + alpha * spike_mean_spatial.detach()
+            # --- Homeostatic Plasticity ---
+            alpha = 0.01
+            # 修正: avg_firing_rate を Tensor にキャスト
+            avg_rate = cast(Tensor, self.avg_firing_rate)
+            self.avg_firing_rate = (1 - alpha) * avg_rate + alpha * spike_mean_spatial.detach()
             
-            # 目標発火率との誤差
-            rate_error = self.avg_firing_rate - self.target_spike_rate
+            # 再度キャストして使用
+            rate_error = cast(Tensor, self.avg_firing_rate) - self.target_spike_rate
             
-            # ベース閾値を更新 (発火しすぎなら閾値を上げ、しなさすぎなら下げる)
-            # これは勾配法とは独立して行われる生物学的プロセス
             if self.training:
-                # パラメータ自体を操作するため、勾配計算外で実施
                 delta_th = rate_error * self.homeostasis_rate
                 self.base_threshold.data += delta_th
 
-        # 4. リセット (Soft/Hard)
-        # ここではHard Resetを採用 (v_reset)
         reset_mask = spike.detach() 
         self.mem = self.mem * (1.0 - reset_mask) + self.v_reset * reset_mask
         
-        # 5. 短期閾値上昇 (Refractory)
         if self.training:
             self.adaptive_threshold = self.adaptive_threshold + self.threshold_step * spike.detach()
         else:
@@ -191,18 +168,12 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         return spike, self.mem
 
     def get_spike_rate_loss(self) -> torch.Tensor:
-        """正則化項として使用するためのスパイク率損失"""
         current_rate = self.spikes.mean()
         target = torch.tensor(self.target_spike_rate, device=current_rate.device)
         return F.mse_loss(current_rate, target)
 
-# ... (IzhikevichNeuron, ProbabilisticLIFNeuron, GLIFNeuron, TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron は変更なしのため省略) ...
-# (完全なコードとして要求されているため、既存のクラスもここに含める必要がありますが、
-#  行数制限のためAdaptiveLIFNeuronの改善に焦点を当てました。他のクラスは元のコードを維持してください。)
-# ...
 
 class IzhikevichNeuron(base.MemoryModule):
-    # (既存のコードを維持)
     def __init__(
         self,
         features: int,
@@ -229,7 +200,8 @@ class IzhikevichNeuron(base.MemoryModule):
 
     def set_stateful(self, stateful: bool):
         self.stateful = stateful
-        if not stateful: self.reset()
+        if not stateful:
+            self.reset()
 
     def reset(self):
         super().reset()
@@ -280,12 +252,12 @@ class IzhikevichNeuron(base.MemoryModule):
         reset_mask = (self.v >= self.v_peak).detach()
         self.v = torch.where(reset_mask, c.expand_as(self.v), self.v)
         self.u = torch.where(reset_mask, self.u + d, self.u)
+        
         self.v = torch.clamp(self.v, min=-100.0, max=50.0)
 
         return spike, self.v
 
 class ProbabilisticLIFNeuron(base.MemoryModule):
-    # (既存コード維持)
     log_tau_mem: nn.Parameter
     def __init__(self, features: int, tau_mem: float = 20.0, threshold: float = 1.0, temperature: float = 0.5, noise_intensity: float = 0.0, v_reset: float = 0.0):
         super().__init__()
@@ -336,7 +308,6 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
     def get_spike_rate_loss(self) -> torch.Tensor: return torch.tensor(0.0)
 
 class GLIFNeuron(base.MemoryModule):
-    # (既存コード維持)
     base_threshold: nn.Parameter
     gate_tau_lin: nn.Linear
     v_reset: nn.Parameter
@@ -390,7 +361,6 @@ class GLIFNeuron(base.MemoryModule):
         return spike, self.mem
 
 class TC_LIF(base.MemoryModule):
-    # (既存コード維持)
     log_tau_s: nn.Parameter; log_tau_d: nn.Parameter; w_ds: nn.Parameter; w_sd: nn.Parameter; base_threshold: nn.Parameter; v_reset: nn.Parameter
     def __init__(self, features: int, tau_s_init: float = 5.0, tau_d_init: float = 20.0, w_ds_init: float = 0.5, w_sd_init: float = 0.1, base_threshold: float = 1.0, v_reset: float = 0.0):
         super().__init__()
@@ -437,7 +407,6 @@ class TC_LIF(base.MemoryModule):
         return spike, self.v_s
 
 class DualThresholdNeuron(base.MemoryModule):
-    # (既存コード維持)
     log_tau_mem: nn.Parameter; threshold_high: nn.Parameter; threshold_low: nn.Parameter; v_reset: nn.Parameter; spikes: Tensor
     def __init__(self, features: int, tau_mem: float = 20.0, threshold_high_init: float = 1.0, threshold_low_init: float = 0.5, v_reset: float = 0.0):
         super().__init__()
@@ -479,7 +448,6 @@ class DualThresholdNeuron(base.MemoryModule):
         return spike, self.mem
 
 class ScaleAndFireNeuron(base.MemoryModule):
-    # (既存コード維持)
     def __init__(self, features: int, num_levels: int = 8, base_threshold: float = 1.0):
         super().__init__()
         self.features = features
