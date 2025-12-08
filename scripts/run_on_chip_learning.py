@@ -1,8 +1,9 @@
 # ファイルパス: scripts/run_on_chip_learning.py
-# Title: On-Chip Plasticity デモスクリプト
+# Title: On-Chip Plasticity デモスクリプト (ログ出力強化版)
 # Description:
 #   イベント駆動型シミュレータ上で、STDPによる重みのオンライン学習（自己組織化）を実演する。
-#   特定の入力パターンに対して、ニューロンが選択的に反応するように重みが変化することを確認する。
+#   修正: ログが出力されない問題を解決するため、logging設定を強制適用し、
+#   print文による即時出力を追加。
 
 import sys
 import os
@@ -11,21 +12,29 @@ import torch.nn as nn
 import logging
 import numpy as np
 
+# プロジェクトルート設定
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+# ロギング設定 (強制適用)
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout,
+    force=True
+)
+logger = logging.getLogger("OnChipLearning")
+
 from snn_research.hardware.event_driven_simulator import EventDrivenSimulator
 from snn_research.core.neurons import AdaptiveLIFNeuron
 
-# ロギング設定
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
-logger = logging.getLogger("OnChipLearning")
-
 def main():
+    print(">>> Starting On-Chip Plasticity Demo...", flush=True)
     logger.info("🧠 --- On-Chip Plasticity Demo (Phase 6) ---")
     
     # 1. シンプルなモデルの構築 (入力 10 -> 出力 2)
+    print(">>> Building model...", flush=True)
     # 重みはランダム初期化
     model = nn.Sequential(
         nn.Linear(10, 2, bias=False),
@@ -40,6 +49,7 @@ def main():
     logger.info(f"Initial Weights (Mean): {initial_weights.mean():.4f}")
 
     # 2. シミュレータ初期化 (学習有効化)
+    print(">>> Initializing simulator...", flush=True)
     simulator = EventDrivenSimulator(
         model, 
         enable_learning=True, 
@@ -48,6 +58,7 @@ def main():
     )
     
     # 3. 学習データの生成 (パターンAを繰り返す)
+    print(">>> Generating spike patterns...", flush=True)
     # パターンA: 前半のニューロン(0-4)が強く発火
     duration = 50
     input_spikes = torch.zeros(duration, 10)
@@ -64,10 +75,12 @@ def main():
 
     # 4. 実行 (On-Chip Learning)
     logger.info("Starting Event-Driven Simulation with STDP...")
+    print(">>> Running simulation...", flush=True)
     simulator.set_input_spikes(input_spikes)
     stats = simulator.run(max_time=float(duration + 20))
     
     # 5. 結果確認
+    print(">>> Analyzing results...", flush=True)
     final_weights = simulator.weights[0] # Tensor (Simulator内で更新されている)
     weight_diff = final_weights - initial_weights
     
@@ -93,6 +106,7 @@ def main():
             logger.info("   ⚠️ Learning effect weak or LTD dominant.")
 
     logger.info("🎉 On-Chip Plasticity demo finished.")
+    print(">>> Demo finished.", flush=True)
 
 if __name__ == "__main__":
     main()
