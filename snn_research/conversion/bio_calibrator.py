@@ -1,11 +1,11 @@
 # ファイルパス: snn_research/conversion/bio_calibrator.py
-# Title: Deep Bio-Calibrator (HSEO-based SNN Fine-Tuning)
+# Title: Deep Bio-Calibrator (HSEO-based SNN Fine-Tuning) - 型修正版
 # Description:
 #   Roadmap v14.0 "Deep Bio-Calibration" の実装。
 #   HSEO (Hybrid Swarm Evolution Optimization) を用いて、
 #   変換後のSNNモデルのニューロンパラメータ（主に閾値）を
 #   キャリブレーションデータに基づいて自動最適化する。
-#   「ANNの精度」と「SNNの効率」を融合させるための重要なパイプライン。
+#   修正: mypyエラー (Union-attr, Tensor not callable) を修正。
 
 import torch
 import torch.nn as nn
@@ -99,20 +99,32 @@ class DeepBioCalibrator:
                 if i >= max_batches: break
                 
                 # データロード (Datasetの実装に依存)
+                inputs: torch.Tensor
+                targets: torch.Tensor
+
                 if isinstance(batch, (list, tuple)):
                     inputs, targets = batch[0].to(self.device), batch[1].to(self.device)
                 elif isinstance(batch, dict):
-                    inputs = batch.get('input_ids', batch.get('input_images')).to(self.device)
-                    targets = batch.get('labels').to(self.device)
+                    # --- 修正: 安全な取得とキャスト ---
+                    key_in = 'input_ids' if 'input_ids' in batch else 'input_images'
+                    inputs_raw = batch.get(key_in)
+                    targets_raw = batch.get('labels')
+                    
+                    if inputs_raw is None or targets_raw is None:
+                        continue
+                    
+                    inputs = cast(torch.Tensor, inputs_raw).to(self.device)
+                    targets = cast(torch.Tensor, targets_raw).to(self.device)
+                    # -------------------------------
                 else:
                     continue
 
                 # リセット
+                # --- 修正: Anyへのキャストでメソッド呼び出しを許可 ---
                 if hasattr(self.model, 'reset_spike_stats'):
-                    self.model.reset_spike_stats()
+                    cast(Any, self.model).reset_spike_stats()
                 
                 # 順伝播
-                # SNNモデルは (logits, spikes, mem) を返すと想定
                 outputs = self.model(inputs)
                 if isinstance(outputs, tuple):
                     logits = outputs[0]
@@ -134,8 +146,9 @@ class DeepBioCalibrator:
                 total_samples += targets.numel()
                 
                 # スパイク数取得
+                # --- 修正: Anyへのキャストでメソッド呼び出しを許可 ---
                 if hasattr(self.model, 'get_total_spikes'):
-                    total_spikes += self.model.get_total_spikes()
+                    total_spikes += cast(Any, self.model).get_total_spikes()
 
             accuracy = total_correct / total_samples if total_samples > 0 else 0.0
             avg_spikes = total_spikes / total_samples if total_samples > 0 else 0.0
