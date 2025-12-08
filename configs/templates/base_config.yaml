@@ -1,29 +1,9 @@
 # ファイルパス: configs/templates/base_config.yaml
-# コードの最も最初には、ファイルパス、ファイルの内容を示したタイトル、機能の説明を詳細に記述してください。 修正内容は記載する必要はありません。
-# Title: プロジェクト基本設定
+# Title: プロジェクト基本設定 (Quality Updated)
 # Description: 学習、データ、モデルレジストリなどの基本設定を管理。
-# 改善点(v1): 知識蒸留の学習率を調整し、損失の重みを変更。
-# 改善点(v2): probabilistic_neuron の設定を追加。
-# 改善点(v3): SNN5改善レポートに基づき、時空間プルーニングとSpQuant量子化の設定を追加。
-# 改善 (v4): TripletSTDP のパラメータ設定を追加。
-#
-# 改善 (v5):
-# - BCM 学習則のパラメータ設定を追加。
-#
-# 改善 (v6):
-# - HPO結果に基づき、標準学習の最適パラメータを反映
-#
-# 改善 (v7):
-# - 最新のHPO結果を反映（v_threshold=1.427261, lr=1.1e-5, spike_reg=0.962188）
-#
-# 改善 (v8):
-# - 最新のHPO結果を反映（v_threshold=1.327399, lr=4.99e-4, spike_reg=0.986856）
-#
-# 改善 (v9):
-# - Microモデルの学習停滞を解消するため、学習率を 0.005 へ大幅に増加
-#
-# 改善 (v10):
-# - 学習が停滞しランダム予測から脱却できない問題に対応するため、学習率スケジューラを無効化する
+# 改善点:
+# - Objective.md に基づき、目標発火率 (target_spike_rate) を 0.02 (2%) に設定。
+# - 勾配学習時の学習率を調整し、安定性を向上。
 
 # 共通設定
 seed: 42
@@ -39,12 +19,12 @@ data:
 
 # 学習パラメータ設定
 training:
-  paradigm: "gradient_based" # デフォルトをgradient_basedに変更
-  epochs: 15 # デフォルトのエポック数を増やす
-  batch_size: 16 # バッチサイズを少し増やす
+  paradigm: "gradient_based" # デフォルト
+  epochs: 15
+  batch_size: 16
 
   quantization:
-    enabled: false # PyTorch標準QAT
+    enabled: false
     backend: 'fbgemm'
     spquant:
       enabled: false 
@@ -70,14 +50,15 @@ training:
 
   gradient_based:
     type: "distillation" 
-    learning_rate: 0.005 # 学習停滞解消のための高い学習率を維持
-    use_scheduler: false # << FIX: スケジューラを無効化し、高LRを固定
+    learning_rate: 0.001 # 安定重視で微調整
+    use_scheduler: true # スケジューラ有効化
     grad_clip_norm: 1.0
     use_amp: true
     warmup_epochs: 2 
     loss:
       ce_weight: 1.0
-      spike_reg_weight: 0.986856 # HPO最適値
+      spike_reg_weight: 0.1 # スパイク抑制を強化
+      target_spike_rate: 0.02 # Objective.md準拠: 平均発火率 ~2% (0.1Hz - 2Hz for 10-100ms step)
       sparsity_reg_weight: 0.001
       mem_reg_weight: 0.0
       temporal_compression_weight: 0.001
@@ -88,12 +69,13 @@ training:
       loss:
         ce_weight: 0.2 
         distill_weight: 0.8 
-        spike_reg_weight: 0.0005 
+        spike_reg_weight: 0.01 
         sparsity_reg_weight: 0.000005 
         mem_reg_weight: 0.0
         temporal_compression_weight: 0.0
         sparsity_threshold_reg_weight: 0.0
         temperature: 2.5 
+        target_spike_rate: 0.02
 
   biologically_plausible:
     learning_rule: "CAUSAL_TRACE"
@@ -105,12 +87,14 @@ training:
       num_particles: 20
       noise_std: 0.05
     neuron:
-      tau_mem: 10.0
+      tau_mem: 20.0
       v_threshold: 1.0
       v_reset: 0.0
       v_rest: 0.0
       threshold_decay: 0.99
       threshold_step: 0.05
+      target_spike_rate: 0.02 # Bio学習でも低発火率を目指す
+      homeostasis_rate: 0.001
     stdp:
       tau_trace: 20.0
       learning_rate: 0.005
@@ -120,12 +104,10 @@ training:
       tau_trace_triplet: 50.0 
       a_plus_triplet: 0.01    
       a_minus_triplet: 0.001  
-    # --- ▼ 改善 (v5): BCM パラメータを追加 ▼ ---
     bcm:
       learning_rate: 0.001
-      tau_avg: 200.0  # 長期平均（ステップ数）
-      target_rate: 0.1 # 目標とする平均発火率
-    # --- ▲ 改善 (v5) ▲ ---
+      tau_avg: 200.0  
+      target_rate: 0.05 # BCMは少し高めに設定（活動維持のため）
     reward_modulated_stdp:
       tau_eligibility: 100.0
       learning_rate: 0.01
@@ -150,6 +132,7 @@ training:
     loss:
       prediction_weight: 0.0     
       spike_reg_weight: 0.01
+      target_spike_rate: 0.02
       sparsity_reg_weight: 0.0
       mem_reg_weight: 0.0000001
       tcl_weight: 1.0            
@@ -164,6 +147,7 @@ training:
     loss:
       ce_weight: 1.0
       spike_reg_weight: 0.01
+      target_spike_rate: 0.02
       mem_smoothness_weight: 0.001
 
   probabilistic_ensemble:
@@ -198,4 +182,4 @@ app:
 deployment:
   cutoff:
     enabled: true
-    threshold: 0.8  # 確信度が80%を超えたら、その時点で計算を打ち切る（現在は0.95かも）
+    threshold: 0.8
