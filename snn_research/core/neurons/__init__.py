@@ -1,8 +1,8 @@
 # ファイルパス: snn_research/core/neurons/__init__.py
-# Title: SNNニューロンモデル定義 (型修正版)
+# Title: SNNニューロンモデル定義 (型定義完全版)
 # Description:
-# - AdaptiveLIFNeuron に Homeostatic Plasticity (恒常的可塑性) を実装。
-# - mypyエラー修正: avg_firing_rate を Tensor にキャストして型を明示。
+# - AdaptiveLIFNeuron にクラスレベルの型アノテーションを追加し、mypyエラーを解消。
+# - avg_firing_rate, mem, adaptive_threshold などのバッファ変数を明示的に定義。
 
 from typing import Optional, Tuple, Any, List, cast
 import torch
@@ -31,8 +31,17 @@ class AdaptiveLIFNeuron(base.MemoryModule):
     """
     Adaptive Leaky Integrate-and-Fire (LIF) neuron with Homeostatic Plasticity.
     """
+    # --- ▼ 追加: クラスレベルの型アノテーション ▼ ---
     log_tau_mem: nn.Parameter
     base_threshold: nn.Parameter
+    
+    # register_buffer で登録される変数の型を明示
+    avg_firing_rate: torch.Tensor
+    mem: Optional[torch.Tensor]
+    adaptive_threshold: Optional[torch.Tensor]
+    spikes: torch.Tensor
+    total_spikes: torch.Tensor
+    # --- ▲ 追加 ▲ ---
 
     def __init__(
         self,
@@ -145,12 +154,10 @@ class AdaptiveLIFNeuron(base.MemoryModule):
             
             # --- Homeostatic Plasticity ---
             alpha = 0.01
-            # 修正: avg_firing_rate を Tensor にキャスト
-            avg_rate = cast(Tensor, self.avg_firing_rate)
-            self.avg_firing_rate = (1 - alpha) * avg_rate + alpha * spike_mean_spatial.detach()
+            # 型アノテーションを追加したため、self.avg_firing_rate は Tensor として認識される
+            self.avg_firing_rate = (1 - alpha) * self.avg_firing_rate + alpha * spike_mean_spatial.detach()
             
-            # 再度キャストして使用
-            rate_error = cast(Tensor, self.avg_firing_rate) - self.target_spike_rate
+            rate_error = self.avg_firing_rate - self.target_spike_rate
             
             if self.training:
                 delta_th = rate_error * self.homeostasis_rate
@@ -174,6 +181,16 @@ class AdaptiveLIFNeuron(base.MemoryModule):
 
 
 class IzhikevichNeuron(base.MemoryModule):
+    # クラスレベルの型アノテーションを追加
+    a: torch.Tensor
+    b: torch.Tensor
+    c: torch.Tensor
+    d: torch.Tensor
+    v: Optional[torch.Tensor]
+    u: Optional[torch.Tensor]
+    spikes: torch.Tensor
+    total_spikes: torch.Tensor
+
     def __init__(
         self,
         features: int,
@@ -252,13 +269,16 @@ class IzhikevichNeuron(base.MemoryModule):
         reset_mask = (self.v >= self.v_peak).detach()
         self.v = torch.where(reset_mask, c.expand_as(self.v), self.v)
         self.u = torch.where(reset_mask, self.u + d, self.u)
-        
         self.v = torch.clamp(self.v, min=-100.0, max=50.0)
 
         return spike, self.v
 
 class ProbabilisticLIFNeuron(base.MemoryModule):
     log_tau_mem: nn.Parameter
+    mem: Optional[torch.Tensor]
+    spikes: torch.Tensor
+    total_spikes: torch.Tensor
+
     def __init__(self, features: int, tau_mem: float = 20.0, threshold: float = 1.0, temperature: float = 0.5, noise_intensity: float = 0.0, v_reset: float = 0.0):
         super().__init__()
         self.features = features
@@ -311,6 +331,10 @@ class GLIFNeuron(base.MemoryModule):
     base_threshold: nn.Parameter
     gate_tau_lin: nn.Linear
     v_reset: nn.Parameter
+    mem: Optional[torch.Tensor]
+    spikes: torch.Tensor
+    total_spikes: torch.Tensor
+
     def __init__(self, features: int, base_threshold: float = 1.0, gate_input_features: Optional[int] = None, **kwargs: Any):
         super().__init__()
         self.features = features
@@ -362,6 +386,11 @@ class GLIFNeuron(base.MemoryModule):
 
 class TC_LIF(base.MemoryModule):
     log_tau_s: nn.Parameter; log_tau_d: nn.Parameter; w_ds: nn.Parameter; w_sd: nn.Parameter; base_threshold: nn.Parameter; v_reset: nn.Parameter
+    v_s: Optional[torch.Tensor]
+    v_d: Optional[torch.Tensor]
+    spikes: torch.Tensor
+    total_spikes: torch.Tensor
+
     def __init__(self, features: int, tau_s_init: float = 5.0, tau_d_init: float = 20.0, w_ds_init: float = 0.5, w_sd_init: float = 0.1, base_threshold: float = 1.0, v_reset: float = 0.0):
         super().__init__()
         self.features = features
@@ -407,7 +436,11 @@ class TC_LIF(base.MemoryModule):
         return spike, self.v_s
 
 class DualThresholdNeuron(base.MemoryModule):
-    log_tau_mem: nn.Parameter; threshold_high: nn.Parameter; threshold_low: nn.Parameter; v_reset: nn.Parameter; spikes: Tensor
+    log_tau_mem: nn.Parameter; threshold_high: nn.Parameter; threshold_low: nn.Parameter; v_reset: nn.Parameter
+    mem: Optional[torch.Tensor]
+    spikes: torch.Tensor
+    total_spikes: torch.Tensor
+
     def __init__(self, features: int, tau_mem: float = 20.0, threshold_high_init: float = 1.0, threshold_low_init: float = 0.5, v_reset: float = 0.0):
         super().__init__()
         self.features = features
@@ -448,6 +481,9 @@ class DualThresholdNeuron(base.MemoryModule):
         return spike, self.mem
 
 class ScaleAndFireNeuron(base.MemoryModule):
+    spikes: torch.Tensor
+    total_spikes: torch.Tensor
+
     def __init__(self, features: int, num_levels: int = 8, base_threshold: float = 1.0):
         super().__init__()
         self.features = features
