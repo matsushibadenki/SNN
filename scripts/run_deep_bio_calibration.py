@@ -1,9 +1,9 @@
 # ファイルパス: scripts/run_deep_bio_calibration.py
-# Title: Deep Bio-Calibration 実行スクリプト (ターゲット形状修正版)
+# Title: Deep Bio-Calibration 実行スクリプト (ログ出力強化版)
 # Description:
 #   指定されたSNNモデルに対して、Deep Bio-Calibration (HSEO最適化) を適用する。
-#   修正: テキストモデルの場合、ターゲットもシーケンスとして生成するように修正し、
-#   RuntimeError: The size of tensor a (64) must match the size of tensor b (4) を解消。
+#   修正: ログが出力されない問題を解決するため、logging設定を強制適用し、
+#   print文による即時出力を追加。
 
 import argparse
 import sys
@@ -20,12 +20,18 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+# ロギング設定 (強制適用)
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout,
+    force=True
+)
+logger = logging.getLogger(__name__)
+
 from snn_research.conversion.bio_calibrator import DeepBioCalibrator
 from snn_research.core.snn_core import SNNCore
 from app.utils import get_auto_device
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 def create_dummy_calibration_loader(batch_size: int, samples: int, config: Dict[str, Any]) -> DataLoader:
     """
@@ -43,25 +49,22 @@ def create_dummy_calibration_loader(batch_size: int, samples: int, config: Dict[
         input_shape = (3, 32, 32)
         inputs = torch.randn(samples, *input_shape)
         logger.info(f"   -> Image data generated: shape={inputs.shape}")
-        
-        # 画像分類のターゲット (Batch,)
         targets = torch.randint(0, 10, (samples,))
     else:
         # テキストモデル (Batch, SeqLen)
-        # Predictive Coding, Transformer, RWKV, SFormer, SEMM など
-        seq_len = 16 # ダミーのシーケンス長
-        vocab_size = 100 # ダミーの語彙サイズ
-        
+        seq_len = 16 
+        vocab_size = 100 
         inputs = torch.randint(0, vocab_size, (samples, seq_len)).long()
         logger.info(f"   -> Text data generated: shape={inputs.shape}")
-        
-        # --- 修正: テキストモデルのターゲットはシーケンス (Batch, SeqLen) ---
+        # ターゲットもシーケンスとして生成
         targets = torch.randint(0, vocab_size, (samples, seq_len)).long()
         
     dataset = TensorDataset(inputs, targets)
     return DataLoader(dataset, batch_size=batch_size)
 
 def main():
+    print(">>> Script started. Parsing arguments...", flush=True)
+
     parser = argparse.ArgumentParser(description="Run Deep Bio-Calibration for SNN models")
     parser.add_argument("--model_config", type=str, default="configs/models/micro.yaml", help="Path to model config")
     parser.add_argument("--model_path", type=str, required=False, help="Path to trained .pth model (optional)")
@@ -74,7 +77,7 @@ def main():
     logger.info(f"Using device: {device}")
 
     # 1. モデルのロード
-    logger.info("Loading model...")
+    print(">>> Loading model config and building model...", flush=True)
     if not os.path.exists(args.model_config):
         logger.error(f"Config not found: {args.model_config}")
         sys.exit(1)
@@ -89,6 +92,7 @@ def main():
     # SNNCoreでラップされたモデルを作成
     snn_core = SNNCore(config=model_conf, vocab_size=100) # type: ignore
     model = snn_core.model.to(device)
+    logger.info(f"Model built: {type(model).__name__}")
     
     # 重みのロード（あれば）
     if args.model_path and os.path.exists(args.model_path):
@@ -96,18 +100,17 @@ def main():
         state_dict = torch.load(args.model_path, map_location=device)
         if 'model_state_dict' in state_dict:
             state_dict = state_dict['model_state_dict']
-        # キーの調整（必要なら）
         new_state_dict = {k.replace("model.", ""): v for k, v in state_dict.items()}
         model.load_state_dict(new_state_dict, strict=False)
     else:
         logger.info("No weights provided or found. Using initialized weights.")
 
     # 2. データの準備
-    logger.info("Preparing calibration data...")
-    # configを渡して適切なデータを生成
+    print(">>> Preparing calibration data...", flush=True)
     loader = create_dummy_calibration_loader(batch_size=4, samples=32, config=model_conf)
 
     # 3. キャリブレーション実行
+    print(">>> Starting Deep Bio-Calibration (HSEO)...", flush=True)
     calibrator = DeepBioCalibrator(
         model=model,
         calibration_loader=loader,
@@ -119,7 +122,7 @@ def main():
     result = calibrator.calibrate()
     
     # 4. 結果の保存
-    logger.info(f"Saving calibrated model to {args.output_path}")
+    print(f">>> Saving result to {args.output_path}...", flush=True)
     os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
     
     save_data = {
