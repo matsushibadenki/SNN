@@ -1,11 +1,12 @@
 # ファイルパス: snn_research/conversion/bio_calibrator.py
-# Title: Deep Bio-Calibrator (HSEO-based SNN Fine-Tuning) - 型修正版
+# Title: Deep Bio-Calibrator (HSEO-based SNN Fine-Tuning) - ロジック修正版
 # Description:
 #   Roadmap v14.0 "Deep Bio-Calibration" の実装。
 #   HSEO (Hybrid Swarm Evolution Optimization) を用いて、
 #   変換後のSNNモデルのニューロンパラメータ（主に閾値）を
 #   キャリブレーションデータに基づいて自動最適化する。
-#   修正: mypyエラー (Union-attr, Tensor not callable) を修正。
+#   修正: ターゲットのOne-Hot判定ロジックを修正し、シーケンスデータ(LongTensor)が
+#   誤ってargmaxで次元削減されるバグを解消。
 
 import torch
 import torch.nn as nn
@@ -98,14 +99,13 @@ class DeepBioCalibrator:
             for i, batch in enumerate(self.calibration_loader):
                 if i >= max_batches: break
                 
-                # データロード (Datasetの実装に依存)
+                # データロード
                 inputs: torch.Tensor
                 targets: torch.Tensor
 
                 if isinstance(batch, (list, tuple)):
                     inputs, targets = batch[0].to(self.device), batch[1].to(self.device)
                 elif isinstance(batch, dict):
-                    # --- 修正: 安全な取得とキャスト ---
                     key_in = 'input_ids' if 'input_ids' in batch else 'input_images'
                     inputs_raw = batch.get(key_in)
                     targets_raw = batch.get('labels')
@@ -115,12 +115,10 @@ class DeepBioCalibrator:
                     
                     inputs = cast(torch.Tensor, inputs_raw).to(self.device)
                     targets = cast(torch.Tensor, targets_raw).to(self.device)
-                    # -------------------------------
                 else:
                     continue
 
                 # リセット
-                # --- 修正: Anyへのキャストでメソッド呼び出しを許可 ---
                 if hasattr(self.model, 'reset_spike_stats'):
                     cast(Any, self.model).reset_spike_stats()
                 
@@ -132,12 +130,16 @@ class DeepBioCalibrator:
                     logits = outputs
                 
                 # 精度計算
+                # logits: (Batch, SeqLen, VocabSize) or (Batch, NumClasses)
                 preds = logits.argmax(dim=-1)
-                # ターゲットの形状調整
-                if targets.ndim > 1 and targets.shape[-1] > 1: # One-hot
-                    targets = targets.argmax(dim=-1)
                 
-                # シーケンスかスカラーか
+                # --- 修正: ターゲットの形状調整ロジック ---
+                # One-hotかどうかは型(float)で判断するのが安全
+                if targets.ndim > 1 and targets.shape[-1] > 1 and targets.is_floating_point(): 
+                    targets = targets.argmax(dim=-1)
+                # ------------------------------------
+                
+                # シーケンスかスカラーかに関わらずフラット化して比較
                 if preds.shape != targets.shape:
                     preds = preds.view(-1)
                     targets = targets.view(-1)
@@ -146,7 +148,6 @@ class DeepBioCalibrator:
                 total_samples += targets.numel()
                 
                 # スパイク数取得
-                # --- 修正: Anyへのキャストでメソッド呼び出しを許可 ---
                 if hasattr(self.model, 'get_total_spikes'):
                     total_spikes += cast(Any, self.model).get_total_spikes()
 
@@ -154,14 +155,13 @@ class DeepBioCalibrator:
             avg_spikes = total_spikes / total_samples if total_samples > 0 else 0.0
             
             # 3. スコア計算 (最小化対象)
-            # 精度が高いほどスコアは低く、スパイクが多いほどスコアは高くなる（ペナルティ）
             score = (1.0 - accuracy) * self.metric_weight_accuracy + \
                     (avg_spikes * 0.0001) * self.metric_weight_sparsity
             
             return score
 
         finally:
-            # 4. パラメータの復元 (HSEOは非破壊的に探索するため)
+            # 4. パラメータの復元
             for param_tensor, orig_data in original_thresholds:
                 param_tensor.data.copy_(orig_data)
 
