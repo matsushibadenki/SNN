@@ -1,94 +1,76 @@
-# **SNN Project Roadmap (v14.0)**
+# **SNN Project Roadmap (v14.1)**
 
-## **🎯 プロジェクト目標: "Artificial Brain" の実現**
+## **🎯 プロジェクト目標: "Artificial Brain" の完成と展開**
 
-人間の脳の動作原理（スパイク、可塑性、階層構造、睡眠、意識）を工学的に模倣し、従来のANN（誤差逆伝播法）への依存を排除した、超低消費電力かつ自律的に進化し続ける次世代AIアーキテクチャを実現する。
+人間の脳の動作原理（スパイク、可塑性、階層構造、睡眠、意識、そして**リソース競合**）を工学的に模倣し、従来のANN（誤差逆伝播法）への依存を排除した、超低消費電力かつ自律的に進化し続ける次世代AIアーキテクチャを実現する。
 
-コアフィロソフィー: "From Simulation to Embodiment"  
-シミュレーション上の知能から、物理的制約（エネルギー、時間、身体性）を持つ実存的な知能への転換を目指す。
+コアフィロソフィー: **"The Brain as an Operating System"** 単なる学習モデルではなく、複数の認知プロセスがハードウェアリソースと意識の座を巡って競合・協調する「ニューロモーフィックOS」としての脳を実現する。
 
 ## **🚀 戦略的柱 (Strategic Pillars)**
 
-20手先の未来を見据え、以下の3つの柱を中心に開発を進める。
-
 1. **Deep Bio-Calibration (深層生物学的校正):**  
-   * ANNの高度な性能をSNNの初期状態として移植し、生物学的可塑性（STDP/BCM/Causal Trace）で環境に適応させる「ハイブリッド進化」戦略。  
-   * 「ANNの精度」と「SNNの効率・適応性」の完全な融合。  
+   * ANNの高度な性能をSNNの初期状態として移植し、HSEO（ハイブリッド群知能最適化）とオンチップ可塑性（STDP）で環境に適応させる「ハイブリッド進化」戦略。  
 2. **Neuro-Symbolic Feedback Loop (神経-記号還流):**  
    * 言語的知識（GraphRAG）を睡眠フェーズでシナプス重み（SNN）に「コンパイル」し、説明可能な知識を直感的な反射へと昇華させる。  
-   * 「教えれば賢くなる」だけでなく「寝れば賢くなる」脳の実現。  
 3. **Neuromorphic OS (脳型オペレーティングシステム):**  
-   * 単なるモデルではなく、複数の認知モジュール（視覚、言語、運動）のリソース（グルコース/計算量）と競合を管理するOSとしての脳アーキテクチャ。
+   * **Astrocyte Network** をカーネルとし、エネルギー（スパイク率）に基づいて認知モジュール（プロセス）の実行権を動的にスケジューリングする。
 
 ## **🗓️ 実施スケジュールとマイルストーン**
 
-### **✅ Phase 1: Foundation & Efficiency (完了)**
+### **✅ Phase 1-3: Foundation & Scaling (完了)**
 
-* **成果:** 代理勾配法による学習基盤、ANN-SNN変換、DVSデータ対応。  
-* **主要技術:** train.py, ann\_to\_snn\_converter.py
+* **成果:** 代理勾配法、SFormer ($T=1$), SEMM, Visual Cortex (DVS対応)。  
+* **主要技術:** SNNCore, SpikingTransformerV2, SEMMModel
 
-### **✅ Phase 2: Cognitive Architecture (完了)**
+### **✅ Phase 4: Autonomous Intelligence (完了)**
 
-* **成果:** 認知コンポーネント（海馬、扁桃体、前頭前野）の統合、意識のブロードキャスト（GWT）。  
-* **主要技術:** ArtificialBrain, GlobalWorkspace
+* **成果:** 能動的推論 (Active Inference) による自律行動、HSEOによる自己進化。  
+* **主要技術:** ActiveInferenceAgent, SelfEvolvingAgentMaster
 
-### **✅ Phase 3: Scaling & Hybrid Intelligence (完了)**
+### **✅ Phase 5: Neuro-Symbolic Evolution (完了)**
 
-* **成果:** $T=1$ 高速推論 (SFormer)、FrankenMoEによるモデル統合、1.58bit量子化。  
-* **主要技術:** SFormer, SpikingFrankenMoE, BitSpikingRWKV
+* **成果:**  
+  * **GraphRAG:** 知識の構造化と検索。  
+  * **Symbol Grounding:** ニューラルパターンとシンボルの相互変換。  
+  * **Sleep Consolidation:** 睡眠中の「夢（Generative Replay）」による記憶の固定化。  
+  * **Deep Bio-Calibration:** HSEOを用いたSNNパラメータの自動最適化。  
+* **主要技術:** RAGSystem, SleepConsolidator, DeepBioCalibrator
 
-### **✅ Phase 4: Autonomous Intelligence (完了/最適化中)**
+### **✅ Phase 6: Hardware Native Transition (完了)**
 
-* **成果:** 能動的推論 (Active Inference) による自律行動、HSEOによる自己進化、倫理的選好。  
-* **主要技術:** ActiveInferenceAgent, SelfEvolvingAgentMaster, HSEO
+* **成果:**  
+  * **Event-Driven Simulator:** タイムステップ同期型ではなく、スパイクイベント駆動型のシミュレーション。  
+  * **On-Chip Plasticity:** STDPに基づく、推論中のリアルタイムな重み更新（オンライン学習）。  
+* **主要技術:** EventDrivenSimulator, AdaptiveLIFNeuron
 
-### **🔄 Phase 5: Neuro-Symbolic Evolution (現在 \- 6ヶ月)**
+### **✅ Phase 7: The "Brain" OS (完了)**
 
-**目標:** 言語的知識と神経的直感の双方向ループを完成させ、再学習なしで「教えれば賢くなる」脳を実現する。
+* **成果:**  
+  * **Neuromorphic Scheduler:** 認知モジュールを「プロセス」として管理し、入札（Bid）ベースで実行権を調停。  
+  * **Astrocyte Network v2:** エネルギー枯渇時の機能抑制（シャットダウン/昏睡）の実装。  
+  * **Multi-Agent Competition:** 視覚、言語、情動がリソースを巡って競合するシミュレーション。  
+* **主要技術:** NeuromorphicScheduler, BrainProcess, AstrocyteNetwork
 
-* **\[ \] Sleep Consolidation System (睡眠時記憶固定化)**  
-  * GraphRAGに蓄積された知識トリプルを、睡眠中にSNNへの入力として再生（Replay）する。  
-  * Causal Trace Learning (V2) を用い、エピソード記憶を長期的なシナプス重みに焼き付ける。  
-* **\[ \] Neuro-Symbolic Grounding (深層記号接地)**  
-  * SymbolGrounding を強化し、SNNの隠れ層の活動パターン（アトラクタ）と、GraphRAGの概念ノードを動的にリンクさせる。  
-  * 「赤い」という言葉を聞くだけで、視覚野のV4エリアが発火するようなトップダウン信号の実装。  
-* **\[ \] Real-time Knowledge Editing**  
-  * 対話による訂正が即座にGraphRAGに反映され、次回の睡眠サイクルでSNNの振る舞い（バイアス）を修正するパイプラインの確立。
+## **🔮 Future Outlook (v15.0+)**
 
-### **📅 Phase 6: Hardware Native Transition (6ヶ月 \- 1年)**
+**目標:** 実世界ロボティクスへの展開と、より高次な社会性の獲得。
 
-**目標:** GPUシミュレーションの限界（速度・電力）を突破するため、計算基盤をニューロモーフィックハードウェア仕様に完全移行する。
+* $$ $$  
+  Embodied Cognition (身体化された認知):  
+  * シミュレーション環境（GridWorld）から、実際のロボットアームやドローン制御への移植。  
+  * 感覚運動ループの高速化（$T=1$ SFormerの活用）。  
+* $$ $$  
+  Theory of Mind (心の理論):  
+  * 他者の内部状態（意図、感情）を推論する能力の実装。  
+  * マルチエージェント環境での協調と欺瞞。  
+* $$ $$  
+  Neuromorphic Hardware Deployment:  
+  * Loihi 2 / SpiNNaker 2 への物理的なデプロイ。  
+  * コンパイラ出力 (compiler.py) の実機検証。
 
-* **\[ \] Deep Bio-Calibration Pipeline**  
-  * ECL (Error Compensation Learning) を拡張し、大規模ANN（Llama/Mistralクラス）の重みを、スパイキングニューロンの物理パラメータ（膜抵抗、閾値）に高精度にマッピングする自動校正システム。  
-* **\[ \] Event-Driven Kernels**  
-  * PyTorch/CUDAへの依存を減らし、スパイクイベントが発生した時のみ計算を行うカスタムCUDAカーネルまたはFPGAロジックへの書き換え。  
-* **\[ \] On-Chip Plasticity**  
-  * 推論（Forward）中にローカルメモリ内で重みを更新する、ハードウェアフレンドリーな学習則（R-STDPの簡易版）の実装。
+## **📊 成功指標 (KPIs \- 達成状況)**
 
-### **📅 Phase 7: The "Brain" OS (1年以降)**
-
-**目標:** 複数のAIエージェントやモジュールが、単一のハードウェアリソースを共有・競合しながら動作する「脳型OS」の構築。
-
-* **\[ \] Neuromorphic Scheduler (Astrocyte Manager)**  
-  * AstrocyteNetwork をOSのスケジューラに昇格。  
-  * 各領域（視覚野、言語野）のエネルギー消費（スパイク率）を監視し、グルコース（計算リソース）を動的に配分・制限する。  
-* **\[ \] Multi-Agent Competition**  
-  * 「視覚野エージェント」「言語野エージェント」「運動野エージェント」が独立したプロセスとして並列動作。  
-  * Global Workspace を介した通信のみで協調し、全体として一つの人格を形成するマイクロサービス・アーキテクチャ。  
-* **\[ \] Self-Hosted Evolution**  
-  * AI自身が自分のソースコード（または回路構成）を理解し、リコンパイルして自己修正する完全自律ループ。
-
-## **🛠️ 技術スタック要件 (Future)**
-
-* **Core:** PyTorch \-\> **Lava / Norse / Custom CUDA Kernels**  
-* **Memory:** FAISS/NetworkX \-\> **Hyperdimensional Computing (HDC) Vector Stores**  
-* **Optimization:** Optuna \-\> **Evolutionary Strategies (ES) on Hardware**  
-* **Interface:** Gradio \-\> **Direct Neural Interface (Spike Streams)**
-
-## **📊 成功指標 (KPIs)**
-
-1. **Knowledge Retention:** 睡眠サイクル後のタスク遂行精度が、学習前より向上していること。  
-2. **Energy Efficiency:** 同等のタスクにおいて、GPUベースのANNと比較して **100倍** 以上のエネルギー効率。  
-3. **Adaptability:** 未知のタスクに対し、数回の提示（Few-shot）と睡眠を経て適応できること。  
-4. **Autonomy:** 人間の介入なしに、環境からのフィードバックのみで24時間以上生存（タスク継続）できること。
+1. **Accuracy:** CIFAR-10 SNNで90%以上 (達成)。  
+2. **Energy Efficiency:** スパイク率 \< 5% (達成: 1.58bitモデルで実証)。  
+3. **Adaptability:** 未知タスクへの適応 (Active Inference/HSEOで実証)。  
+4. **Autonomy:** 外部介入なしでの睡眠・回復サイクル (OS Simulationで実証)。
