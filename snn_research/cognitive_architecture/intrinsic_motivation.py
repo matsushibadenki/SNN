@@ -105,9 +105,10 @@ class IntrinsicMotivationSystem:
             return 0.0
 
         # 学習進捗の低下（停滞）
-        avg_lp = float(np.mean(list(self.learning_progress)[-10:]))
+        recent_lp = list(self.learning_progress)[-10:]
+        avg_lp = float(np.mean(recent_lp))
         
-        # LPが低いほど停滞度が高い
+        # LPが低いほど停滞度が高い (進捗がない = 退屈)
         stagnation = 1.0 - min(1.0, avg_lp * 10.0)
         
         avg_similarity = float(np.mean(self.task_similarities))
