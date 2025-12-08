@@ -1,15 +1,14 @@
 # ファイルパス: snn_research/conversion/optimization_strategies.py
-# Title: SNN変換最適化戦略 (Deep Bio-Calibration Logic)
+# Title: SNN変換最適化戦略 (Deep Bio-Calibration Logic) - 型修正版
 # Description:
 #   Roadmap v14.0 "Deep Bio-Calibration" を支える最適化ロジック群。
-#   ANNからSNNへの変換時に、層ごとの感度や複雑性に基づいて
-#   タイムステップ数、量子化レベル、ニューロンタイプを動的に決定する。
+#   mypyのエラー（Tensor呼び出し、辞書型推論）を修正。
 
 import torch
 import torch.nn as nn
 import logging
 import math
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, cast
 
 logger = logging.getLogger(__name__)
 
@@ -100,15 +99,20 @@ class LayerWiseOptimizer:
         """
         層を分析し、推奨設定を返す。
         """
-        recommendation = {
+        # --- 修正: 辞書の型を明示的に指定 ---
+        recommendation: Dict[str, Any] = {
             "neuron_type": "lif", # default
             "params_hint": {}
         }
         
         # 重みの分析
         if hasattr(layer, 'weight') and layer.weight is not None:
-            w_mean = layer.weight.mean().item()
-            w_std = layer.weight.std().item()
+            # --- 修正: layer.weight を torch.Tensor にキャスト ---
+            w: torch.Tensor = cast(torch.Tensor, layer.weight)
+            
+            # --- 修正: Tensorのメソッド呼び出し ---
+            w_mean = w.mean().item()
+            w_std = w.std().item()
             
             # 重みの分散が大きい場合 -> ダイナミックレンジの広いニューロン (Izhikevich)
             if w_std > 1.5:
@@ -117,6 +121,7 @@ class LayerWiseOptimizer:
             
             # 重みが極端に小さい場合 -> 閾値を下げるか、感度を上げる
             if abs(w_mean) < 0.01 and w_std < 0.1:
+                # --- 修正: 型ヒントにより params_hint への代入が可能に ---
                 recommendation["params_hint"]["base_threshold"] = 0.5 # 低閾値
         
         # 活性化の分析 (キャリブレーションデータがある場合)
@@ -135,7 +140,8 @@ class LayerWiseOptimizer:
             elif sparsity < 0.1:
                 recommendation["neuron_type"] = "glif"
         
-        self.strategies[layer_name] = recommendation["neuron_type"]
+        # --- 修正: 値を str にキャスト ---
+        self.strategies[layer_name] = cast(str, recommendation["neuron_type"])
         return recommendation
 
     def get_strategy(self, layer_name: str) -> str:
