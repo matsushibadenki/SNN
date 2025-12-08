@@ -5,6 +5,7 @@
 # - NaNチェック (torch.nan_to_num) を導入し、学習崩壊を防ぐ。
 # - クレジット信号と適格性トレースのクリッピングを強化。
 # - mypyエラー修正: register_buffer 削除、avg_reward の型ヒント、_apply_high_level_rules の型修正。
+# - 文末の不要な '}' を削除。
 
 import torch
 from typing import Dict, Any, Optional, Tuple, Union, cast
@@ -233,5 +234,3 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
     def get_causal_contribution(self) -> Optional[torch.Tensor]:
         """長期的な因果的貢献度を返す。"""
         return self.causal_contribution
-
-}
