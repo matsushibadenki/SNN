@@ -1,9 +1,9 @@
 # ファイルパス: scripts/run_deep_bio_calibration.py
-# Title: Deep Bio-Calibration 実行スクリプト (データ生成修正版)
+# Title: Deep Bio-Calibration 実行スクリプト (ターゲット形状修正版)
 # Description:
 #   指定されたSNNモデルに対して、Deep Bio-Calibration (HSEO最適化) を適用する。
-#   修正: モデルアーキテクチャに応じて、テキスト用または画像用のダミーデータを
-#   適切に生成するように修正し、ValueError (too many values to unpack) を解消。
+#   修正: テキストモデルの場合、ターゲットもシーケンスとして生成するように修正し、
+#   RuntimeError: The size of tensor a (64) must match the size of tensor b (4) を解消。
 
 import argparse
 import sys
@@ -41,19 +41,23 @@ def create_dummy_calibration_loader(batch_size: int, samples: int, config: Dict[
     if arch_type in vision_architectures:
         # 画像データ (Batch, C, H, W)
         input_shape = (3, 32, 32)
-        # 画像入力は通常 float
         inputs = torch.randn(samples, *input_shape)
         logger.info(f"   -> Image data generated: shape={inputs.shape}")
+        
+        # 画像分類のターゲット (Batch,)
+        targets = torch.randint(0, 10, (samples,))
     else:
         # テキストモデル (Batch, SeqLen)
         # Predictive Coding, Transformer, RWKV, SFormer, SEMM など
         seq_len = 16 # ダミーのシーケンス長
         vocab_size = 100 # ダミーの語彙サイズ
-        # テキスト入力は long (ID)
+        
         inputs = torch.randint(0, vocab_size, (samples, seq_len)).long()
         logger.info(f"   -> Text data generated: shape={inputs.shape}")
         
-    targets = torch.randint(0, 10, (samples,))
+        # --- 修正: テキストモデルのターゲットはシーケンス (Batch, SeqLen) ---
+        targets = torch.randint(0, vocab_size, (samples, seq_len)).long()
+        
     dataset = TensorDataset(inputs, targets)
     return DataLoader(dataset, batch_size=batch_size)
 
