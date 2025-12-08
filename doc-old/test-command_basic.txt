@@ -1,0 +1,123 @@
+「doc/ROADMAP.md」、「doc/Objective.md」、「doc/スパイキングニューラルネットワーク (SNN) 構築のための包括的技術ロードマップとアーキテクチャ設計書.md」の内容をもとに、このプロジェクトの実装をしてください。
+実装したコードは完璧なコードで教えてください。
+一部実装してあるので、よくプロジェクトの状態を確認し、すでに実装済みの機能は決して削除しないよう注意しながら作業してください。
+
+
+テストモデル作成
+python scripts/runners/train.py \
+--config configs/templates/base_config.yaml \
+--model_config configs/models/micro.yaml \
+--data_path data/smoke_test_data.jsonl \
+--override_config "training.epochs=5" \
+--override_config "training.gradient_based.type=standard"
+
+テストモデルでテスト
+python scripts/runners/train.py \
+--config configs/templates/base_config.yaml \
+--model_config configs/models/micro.yaml \
+--data_path data/smoke_test_data.jsonl \
+--override_config "training.epochs=5"
+
+効率レポートの正式発行
+python scripts/report_sparsity_and_T.py \
+--model_config configs/models/micro.yaml \
+--data_path data/smoke_test_data.jsonl \
+--model_path runs/snn_experiment/best_model.pth
+
+データ消去
+python snn-cli.py clean logs
+
+python snn-cli.py clean models
+
+ヘルスチェック
+python snn-cli.py health-check
+
+
+---------------------
+ダミーANNの作成（ヘルスチェックの一部として実行されます）
+python scripts/run_project_health_check.py
+
+
+---------------------
+精度 (Accuracy) のテストコマンド
+
+python snn-cli.py benchmark evaluate-accuracy \
+--model-path runs/converted/spiking_cnn_from_ann.pth \
+--model-config configs/experiments/cifar10_spikingcnn_config.yaml \
+--model-type SNN \
+--experiment cifar10
+
+効率 (Efficiency) のテストコマンド
+python snn-cli.py diagnostics report-efficiency \
+--model-path runs/specialists/文章要約/best_model.pth \
+--model-config configs/models/medium.yaml \
+--data-path data/smoke_test_data.jsonl
+
+
+--------------
+詳細スパーク（runs/spike_vizに保存される）
+python snn-cli.py debug spike-visualize \
+--model-config configs/models/micro.yaml \
+--timesteps 8 \
+--batch-size 2 \
+--output-prefix "runs/spike_viz/micro_test"
+
+詳細波形スパーク（runs/dynamics_vizに保存される）
+
+snn-cli未実装のためスクリプト直接実行 (引数はアンダースコア)
+
+python scripts/visualize_neuron_dynamics.py \
+--model_config configs/models/micro.yaml \
+--timesteps 8 \
+--output_path "runs/dynamics_viz/micro_dynamics.png"
+
+
+--------------
+スパイク自動チューン（準備学習）
+python scripts/runners/train.py \
+--config configs/templates/base_config.yaml \
+--model_config configs/models/small.yaml \
+--data_path data/smoke_test_data.jsonl \
+--override_config "training.epochs=10" \
+--override_config "training.batch_size=4" \
+--override_config "training.gradient_based.type=standard"
+
+スパイク自動チューン（自動調整）
+python scripts/auto_tune_efficiency.py \
+--model-config configs/models/small.yaml \
+--n-trials 20
+
+
+
+--------------
+1. 念のため古いデータを削除（クリーンな状態で再作成）
+
+rm -rf precomputed_data/smoke_distill
+
+2. 蒸留データの再生成
+
+python scripts/prepare_distillation_data.py  \
+--input_file data/smoke_test_data.jsonl \
+--output_dir precomputed_data/smoke_distill \
+--teacher_model gpt2
+
+3.
+python scripts/runners/train.py \
+--model_config configs/models/bit_rwkv_micro.yaml \
+--data_path precomputed_data/smoke_distill/distillation_data.jsonl \
+--paradigm gradient_based \
+--override_config "training.gradient_based.type=distillation" \
+--override_config "training.gradient_based.distillation.teacher_model=gpt2" \
+--override_config "training.epochs=5" \
+--override_config "device=cpu"  \
+--override_config "training.gradient_based.loss.spike_reg_weight=5.0"
+
+
+-------
+データダウンロード
+python -c "from torchvision.datasets import CIFAR10; CIFAR10(root='data/cifar10', download=True)"
+
+テスト
+python snn-cli.py benchmark run --experiment cifar10_comparison --epochs 5
+-------
+python scripts/train_bio_pc_cifar10.py
