@@ -6,6 +6,8 @@
 #   - 恒常性維持 (Homeostasis) に不感帯(dead-zone)を設け、目標発火率付近での振動を抑制。
 #   - 不応期 (Refractory Period) の完全サポート。
 # - クラスレベルの型アノテーション完備。
+#
+# 修正 (v2): mypyエラー [return-value] を修正。LearnableATan.backward の戻り値型を Optional[Tensor] に変更。
 
 from typing import Optional, Tuple, Any, List, cast, Union
 import torch
@@ -42,7 +44,11 @@ class LearnableATan(torch.autograd.Function):
         return (input > 0).float()
 
     @staticmethod
-    def backward(ctx: Any, grad_output: Tensor) -> Tuple[Tensor, Tensor]:
+    def backward(ctx: Any, grad_output: Tensor) -> Tuple[Tensor, Optional[Tensor]]:
+        """
+        修正: 戻り値の型ヒントを Tuple[Tensor, Tensor] から Tuple[Tensor, Optional[Tensor]] に変更。
+        alpha に対する勾配は計算しないため None を返すが、これが型チェックを通るようにするため。
+        """
         input, alpha = ctx.saved_tensors
         grad_input = grad_output * ((alpha / 2) / (1 + (torch.pi / 2 * alpha * input).pow(2)))
         return grad_input, None # alphaへの勾配は計算しない（または別途設計）
