@@ -1,8 +1,8 @@
 # ファイルパス: scripts/run_on_chip_learning.py
-# Title: On-Chip Plasticity デモスクリプト (パラメータ調整版)
+# Title: On-Chip Plasticity デモスクリプト (発火パラメータ調整版)
 # Description:
 #   イベント駆動型シミュレータ上で、STDPによる重みのオンライン学習（自己組織化）を実演する。
-#   修正: パターン間隔を広げ、ノイズニューロンも発火するようにして学習効果を明確化。
+#   修正: ニューロンが発火するように初期重みと閾値を調整し、学習効果を可視化する。
 
 import sys
 import os
@@ -11,6 +11,7 @@ import torch.nn as nn
 import logging
 import numpy as np
 
+# プロジェクトルート設定
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
@@ -33,46 +34,48 @@ def main():
     
     # 1. モデル構築 (10入力 -> 2出力)
     print(">>> Building model...", flush=True)
+    
+    # 閾値を 0.5 に下げる (発火しやすくする)
     model = nn.Sequential(
         nn.Linear(10, 2, bias=False),
-        AdaptiveLIFNeuron(features=2, tau_mem=10.0, base_threshold=1.0)
+        AdaptiveLIFNeuron(features=2, tau_mem=20.0, base_threshold=0.5) 
     )
     
-    # 初期重みを小さく均一に設定
+    # 初期重みを 0.3 に上げる (0.3 * 3inputs = 0.9 > 0.5 となり発火確実)
     with torch.no_grad():
-        model[0].weight.data.fill_(0.2)
+        model[0].weight.data.fill_(0.3)
     
     initial_weights = model[0].weight.data.clone()
     logger.info(f"Initial Weights (Uniform): {initial_weights.mean():.4f}")
+    logger.info(f"Neuron Threshold: {model[1].base_threshold.mean().item():.2f}")
 
     # 2. シミュレータ初期化
     print(">>> Initializing simulator...", flush=True)
     simulator = EventDrivenSimulator(
         model, 
         enable_learning=True, 
-        learning_rate=0.05, 
+        learning_rate=0.1, # 学習率をさらに上げて効果を明確に
         stdp_window=20.0
     )
     
-    # 3. 学習データの生成 (パターンAを繰り返す)
-    # パターンA: ニューロン 0, 2, 4 が同時発火
-    duration = 200 # 時間を長くする
+    # 3. 学習データの生成
+    print(">>> Generating spike patterns...", flush=True)
+    duration = 200
     input_spikes = torch.zeros(duration, 10)
     
-    pattern_interval = 40 # 間隔を広げてLTDの影響を減らす
+    pattern_interval = 20 # 頻度を上げる
     
     for t in range(0, duration, pattern_interval):
-        # ターゲット (同時発火)
+        # パターンA: 0, 2, 4 が同時発火 -> これらが強化されるはず
         input_spikes[t, 0] = 1.0
         input_spikes[t, 2] = 1.0
         input_spikes[t, 4] = 1.0
         
-        # ノイズ (ランダムなタイミング)
-        # ターゲットと同期しないようにずらす
+        # ノイズ: 8, 9 がランダムに、かつターゲットとズレて発火 -> 強化されない、または抑制
         noise_time = t + 10
         if noise_time < duration:
-            input_spikes[noise_time, 8] = 1.0 # ニューロン8はノイズ
-            input_spikes[noise_time+5, 9] = 1.0 # ニューロン9もノイズ
+            input_spikes[noise_time, 8] = 1.0
+            input_spikes[noise_time + 2, 9] = 1.0
 
     # 4. 実行
     logger.info("Starting Event-Driven Simulation with STDP...")
@@ -90,6 +93,9 @@ def main():
     target_indices = [0, 2, 4]
     noise_indices = [8, 9]
     
+    # 全ニューロンの重み変化を表示してデバッグしやすくする
+    logger.info(f"Weight Changes (All):\n{weight_diff}")
+
     for out_idx in range(2):
         dw_target = weight_diff[out_idx, target_indices].mean().item()
         dw_noise = weight_diff[out_idx, noise_indices].mean().item()
