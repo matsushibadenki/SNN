@@ -1,9 +1,8 @@
 # ファイルパス: snn_research/hardware/event_driven_simulator.py
-# Title: イベント駆動型SNNシミュレータ (Causality Fix)
+# Title: イベント駆動型SNNシミュレータ (Trace Saturation Fix)
 # Description:
 #   ROADMAP Phase 6 "Hardware Native Transition" 実装。
-#   修正: LTD判定のタイミングを修正し、発火を引き起こした入力が罰せられるバグを解消。
-#   ニューロンの update メソッドを decay と fire に分割。
+#   修正: STDPトレースの飽和(Saturation)を導入し、過剰なLTDによる学習崩壊を防ぐ。
 
 import torch
 import torch.nn as nn
@@ -63,11 +62,16 @@ class EventDrivenNeuronState:
 
     def check_fire_and_update_trace(self, current_time: float) -> bool:
         """
-        発火判定を行い、発火した場合はリセットとトレース加算を行う。
+        発火判定を行い、発火した場合はリセットとトレース更新を行う。
         """
         if self.v >= self.v_threshold:
             self.v = self.v_reset
-            self.trace += 1.0 # 発火時にトレースを加算
+            
+            # --- 修正: トレースの更新ロジック ---
+            # 加算し続けるとバースト時に値が爆発するため、上限を設けるかリセットする。
+            # ここでは「発火直後はトレースが最大(1.0)になる」モデルを採用。
+            self.trace = 1.0 
+            
             self.last_spike_time = current_time
             return True
         return False
@@ -153,7 +157,6 @@ class EventDrivenSimulator:
         output_spikes_count = 0
         weight_updates = 0
         
-        # 学習用: 直近の入力イベント時間をキャッシュ
         last_spike_times: Dict[int, Dict[int, float]] = {-1: {}} 
         
         while self.event_queue:
@@ -185,18 +188,15 @@ class EventDrivenSimulator:
                 w = relevant_weights[tgt_neuron_idx].item()
                 target_neuron = self.layers[target_layer_idx][tgt_neuron_idx]
                 
-                # 1. 減衰と統合 (発火判定前)
+                # 1. 減衰と統合
                 self.total_ops += 1
                 target_neuron.decay_and_integrate(self.current_time, w)
                 
                 # --- LTD (Long-Term Depression) ---
-                # Preスパイクが来たとき、Postニューロンのトレース（過去の活動）が高ければ、
-                # 「Postが先に発火していたのにPreが遅れて来た」とみなし、結合を弱める。
-                # 重要: 発火判定の前にチェックすることで、今回の入力による発火をLTDの対象外にする。
                 if self.enable_learning:
-                    # トレースが十分大きい場合のみ
                     if target_neuron.trace > 0.05:
-                        dw = -self.learning_rate * target_neuron.trace * 0.5 # LTDはLTPより少し弱めに
+                        # LTDの強さを少し控えめに設定
+                        dw = -self.learning_rate * target_neuron.trace * 0.25 
                         W[tgt_neuron_idx, src_neuron_idx] += dw
                         weight_updates += 1
 
@@ -214,16 +214,11 @@ class EventDrivenSimulator:
                     heapq.heappush(self.event_queue, new_event)
                     
                     # --- LTP (Long-Term Potentiation) ---
-                    # Postが発火したとき、直近に発火したPreニューロンとの結合を強める (Pre -> Post)。
                     if self.enable_learning:
-                        num_pre_neurons = W.shape[1]
                         pre_spike_times = last_spike_times.get(src_layer_idx, {})
                         
-                        # 全Preニューロンではなく、発火したばかりのPreニューロンとの関係を見るべきだが、
-                        # ここでは簡略化して履歴のあるものをチェック
                         for pre_idx, t_pre in pre_spike_times.items():
                             dt = self.current_time - t_pre
-                            # 時間窓内 (0 < dt < window)
                             if 0 <= dt < self.stdp_window:
                                 stdp_factor = math.exp(-dt / self.stdp_window)
                                 dw = self.learning_rate * stdp_factor
