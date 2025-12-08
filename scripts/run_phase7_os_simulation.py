@@ -1,10 +1,10 @@
 # ファイルパス: scripts/run_phase7_os_simulation.py
-# Title: Phase 7 Brain OS Simulation (Multi-Agent Competition)
+# Title: Phase 7 Brain OS Simulation (Config Fix)
 # Description:
 #   NeuromorphicScheduler を使用して、複数の認知モジュール（視覚、言語、制御）が
 #   限られたエネルギーリソースを巡って競合する様子をシミュレーションする。
-#   「視覚刺激が強いときは言語思考が抑制される」「疲労時は生命維持（情動）のみが動作する」
-#   といった脳のような振る舞いを実証する。
+#   修正: BrainContainer初期化時に設定ファイル（モデル定義）をロードするように修正し、
+#   SNNCoreの初期化エラーを解消。
 
 import sys
 import os
@@ -109,6 +109,32 @@ def main():
 
     # 1. コンテナからコンポーネント取得
     container = BrainContainer()
+    
+    # --- 修正: 設定ファイルのロード (ThinkingEngineの初期化に必要) ---
+    base_config_path = "configs/templates/base_config.yaml"
+    model_config_path = "configs/models/small.yaml"
+    
+    if os.path.exists(base_config_path):
+        container.config.from_yaml(base_config_path)
+    
+    if os.path.exists(model_config_path):
+        container.config.from_yaml(model_config_path)
+    else:
+        # 設定ファイルがない場合のフォールバック
+        print("⚠️ Model config not found, using fallback configuration.")
+        container.config.from_dict({
+            "model": {
+                "architecture_type": "predictive_coding",
+                "d_model": 64,
+                "d_state": 32,
+                "num_layers": 2,
+                "time_steps": 16,
+                "neuron": {"type": "lif"}
+            },
+            "data": {"tokenizer_name": "gpt2"}
+        })
+    # ---------------------------------------------------------
+
     astrocyte = container.astrocyte_network()
     workspace = container.global_workspace()
     
@@ -116,15 +142,21 @@ def main():
     os_kernel = NeuromorphicScheduler(astrocyte, workspace)
     
     # 3. プロセスの登録 (BrainProcessとしてラップ)
-    # 実体モジュールはコンテナから取得するが、ここではBidロジックのデモのため参照だけ渡す
     
-    proc_visual = BrainProcess("VisualCortex", container.visual_cortex(), bid_visual, exec_visual)
+    print("   - Initializing Brain Processes...")
+    
+    # コンポーネントの取得 (設定ロード後に実行)
+    visual_cortex = container.visual_cortex()
+    thinking_engine = container.thinking_engine()
+    amygdala = container.amygdala()
+    
+    proc_visual = BrainProcess("VisualCortex", visual_cortex, bid_visual, exec_visual)
     os_kernel.register_process(proc_visual)
     
-    proc_lang = BrainProcess("ThinkingEngine", container.thinking_engine(), bid_language, exec_language)
+    proc_lang = BrainProcess("ThinkingEngine", thinking_engine, bid_language, exec_language)
     os_kernel.register_process(proc_lang)
     
-    proc_amygdala = BrainProcess("Amygdala", container.amygdala(), bid_amygdala, exec_amygdala)
+    proc_amygdala = BrainProcess("Amygdala", amygdala, bid_amygdala, exec_amygdala)
     os_kernel.register_process(proc_amygdala)
 
     # 4. シミュレーション実行
