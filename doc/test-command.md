@@ -26,6 +26,8 @@ python scripts/run\_project\_health\_check.py
 python snn-cli.py clean logs    \# ログ削除  
 python snn-cli.py clean models  \# モデル削除
 
+<br><br><br>
+
 ## **2\. SNN学習ワークフロー (Training)**
 
 ### **A. 標準・高速学習**
