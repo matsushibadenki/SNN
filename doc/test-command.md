@@ -1,7 +1,7 @@
-# **SNN Project 統合機能テストコマンド一覧 (Master Manual v14.1)**
+# **SNN Project 統合機能テストコマンド一覧 (Master Manual v14.2)**
 
 本ドキュメントは、SNNプロジェクトの全機能を網羅的にチェック・実行するための統合コマンドリストです。  
-Phase 7 ("The Brain" OS) までの全機能をカバーしています。
+Phase 7 ("The Brain" OS) および Performance Validation までの全機能をカバーしています。
 
 ## **1\. 環境準備・メンテナンス (Setup & Maintenance)**
 
@@ -122,4 +122,30 @@ python scripts/visualize\_spike\_patterns.py \\
 ### **UI起動**
 
 \# 標準チャットUI  
-python snn-cli.py ui start  
+python snn-cli.py ui start
+
+## **7\. 性能証明・検証 (Validation & Proof)**
+
+### **性能検証レポートの発行**
+
+目標値（doc/Objective.md）に対する達成度を自動判定し、証明書（Markdownレポート）を発行する。
+
+\# Mediumモデルの性能検証（シミュレーション）  
+python scripts/verify\_performance.py \--model\_config configs/models/medium.yaml
+
+\# ターゲット設定ファイルを指定して実行（より厳しい基準など）  
+python scripts/verify\_performance.py \\  
+    \--model\_config configs/models/medium.yaml \\  
+    \--target\_config configs/validation/targets\_v1.yaml
+
+成功すると、results/verification\_report.md に以下のようなレポートが生成されます：
+
+\#\# ✅ SNN Performance Verification Report
+
+\*\*Overall Status:\*\* PASS
+
+| Metric | SNN Value | Target | Result |  
+| :--- | :--- | :--- | :--- |  
+| Accuracy Check | 0.89 | \>= 95.0% of ANN (0.9300) | OK |  
+| Energy Efficiency Check | 7.59e-04 J | \<= 2.0% of ANN (5.06e-02 J) | OK |  
+...  
