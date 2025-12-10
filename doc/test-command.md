@@ -3,6 +3,8 @@
 本ドキュメントは、SNNプロジェクトの全機能を網羅的にチェック・実行するための統合コマンドリストです。  
 Phase 7 ("The Brain" OS) および Performance Validation までの全機能をカバーしています。
 
+<br><br><br>
+
 ## **1\. 環境準備・メンテナンス (Setup & Maintenance)**
 
 ### **セットアップ**
@@ -55,6 +57,8 @@ python scripts/runners/train.py \\
     \--config configs/experiments/smoke\_test\_config.yaml \\  
     \--model\_config configs/models/small.yaml
 
+<br><br><br>
+
 ## **3\. 脳型OS & 認知アーキテクチャ (Phase 7\)**
 
 ### **A. 脳型OSシミュレーション (NEW)**
@@ -79,6 +83,8 @@ python scripts/run\_hardware\_simulation.py \--model\_config configs/models/micr
 
 python scripts/runners/run\_brain\_v14.py
 
+<br><br><br>
+
 ## **4\. 変換 & 最適化 (Deep Bio-Calibration)**
 
 ### **A. Deep Bio-Calibration (NEW)**
@@ -97,6 +103,8 @@ python scripts/convert\_model.py \\
     \--snn\_model\_config configs/models/micro.yaml \\  
     \--output\_snn\_path runs/converted\_snn.pth
 
+<br><br><br>
+
 ## **5\. エージェント & 自律行動**
 
 ### **自律タスク解決**
@@ -108,6 +116,8 @@ python scripts/runners/run\_agent.py \\
 ### **デジタル生命体**
 
 python scripts/runners/run\_life\_form.py \--duration 60
+
+<br><br><br>
 
 ## **6\. デバッグ & 可視化**
 
@@ -125,6 +135,8 @@ python scripts/visualize\_spike\_patterns.py \\
 
 \# 標準チャットUI  
 python snn-cli.py ui start
+
+<br><br><br>
 
 ## **7\. 性能証明・検証 (Validation & Proof)**
 
