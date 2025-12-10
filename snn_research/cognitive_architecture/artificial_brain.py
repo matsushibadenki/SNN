@@ -143,36 +143,47 @@ class ArtificialBrain:
             # self.visual.set_attention(self.current_priming_signal) # 実装依存
             pass
 
-        # --- Step 1: Perception (入力処理) ---
+        # --- Step 1: Integrated Perception (五感統合処理) ---
+        # 入力を各モダリティのスパイクに変換 (欠損していてもOK)
+        visual_spikes = None
+        audio_spikes = None
+    
         sensory_info = self.receptor.receive(raw_input)
-        
+
+        # 既存のロジックを生かしつつ、スパイク変換を試みる
         if sensory_info['type'] == 'image':
-            if self.astrocyte.request_resource("visual_cortex", 15.0):
-                img_tensor = self.image_transform(sensory_info['content']).unsqueeze(0)
-                self.visual.perceive_and_upload(img_tensor)
-                report["executed_modules"].append("visual_cortex")
-                
-                # Grounding: 視覚特徴をシンボルに接地
-                if self.astrocyte.request_resource("symbol_grounding", 5.0):
-                    vis_data = self.workspace.get_information("visual_cortex")
-                    if vis_data and "features" in vis_data:
-                        concept_id = self.grounding.ground_neural_pattern(vis_data["features"], "visual_input")
-                        report["grounded_concept"] = concept_id
-                        report["executed_modules"].append("symbol_grounding")
-            else:
-                report["denied_modules"].append("visual_cortex")
-        else:
-            if self.astrocyte.request_resource("perception", 2.0):
-                spike_pattern = self.encoder.encode(sensory_info, duration=16)
-                self.perception.perceive_and_upload(spike_pattern)
-                report["executed_modules"].append("perception")
-                
-                if self.astrocyte.request_resource("amygdala", 1.0):
-                    content_str = str(sensory_info['content'])
-                    self.amygdala.evaluate_and_upload(content_str)
-                    report["executed_modules"].append("amygdala")
-            else:
-                report["denied_modules"].append("perception")
+            # 既存: VisualCortexへ
+            img_tensor = self.image_transform(sensory_info['content']).unsqueeze(0)
+            self.visual.perceive_and_upload(img_tensor) # 従来ルート
+        
+            # 新規: 画像をスパイク化して連合野へ (DVS的変換 or CNN出力)
+            # visual_spikes = self.visual.encode_to_spikes(img_tensor) 
+            pass 
+        
+        elif sensory_info['type'] == 'text':
+            # 既存: HybridPerceptionCortexへ
+            spike_pattern = self.encoder.encode(sensory_info, duration=16)
+            self.perception.perceive_and_upload(spike_pattern) # 従来ルート
+        
+            # 新規: テキストスパイクを連合野へ
+            # audio_spikes (text as audio symbol) = spike_pattern
+            audio_spikes = spike_pattern.mean(dim=0) # 時間次元を潰して入力する場合
+
+            # ★ ここで連合野 (Association Cortex) を駆動 ★
+            # 視覚と聴覚(テキスト)が同時に混ざり合う
+            association_activity = self.association_cortex(
+                visual_spikes=visual_spikes, 
+                audio_spikes=audio_spikes
+            )
+    
+            # 連合野の活動パターンから「概念」を想起し、Workspaceへ
+            # これにより「音を聞いただけで映像が浮かぶ」現象を実現
+            if self.astrocyte.request_resource("association", 5.0):
+                self.workspace.upload_to_workspace(
+                source="association_cortex",
+                data={"features": association_activity, "type": "integrated_sensation"},
+                salience=0.5
+            )
 
         # --- Step 2: Consciousness (意識) ---
         self.workspace.conscious_broadcast_cycle()
