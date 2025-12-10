@@ -1,6 +1,6 @@
 # ファイルパス: app/main.py
-# (動的モデルロードUI 修正 v18 - 型安全性向上)
-# DIコンテナを利用した、Gradioリアルタイム対話UIの起動スクリプト
+# タイトル: DIコンテナ・Gradio UI起動スクリプト (CLI対応修正版)
+# 目的: DIコンテナを利用してGradioによるリアルタイム対話UIを起動する。snn-cli.pyからの呼び出しに対応。
 
 import gradio as gr  # type: ignore[import-untyped]
 import argparse
@@ -160,6 +160,9 @@ def main():
     parser.add_argument("--ai_tech_model_path", type=str)
     parser.add_argument("--summarization_model_config", type=str)
     parser.add_argument("--summarization_model_path", type=str)
+    # 追加: snn-cli.py から渡される汎用引数に対応
+    parser.add_argument("--model_config", type=str, help="CLI指定のモデル設定")
+    parser.add_argument("--model_path", type=str, help="CLI指定のモデルパス")
     args = parser.parse_args()
 
     container.config.from_yaml(args.config)
@@ -191,6 +194,8 @@ def main():
     add_model_from_args("cifar10_distilled_from_resnet18", args.cifar_model_config, args.cifar_model_path)
     add_model_from_args("最新のai技術", args.ai_tech_model_config, args.ai_tech_model_path)
     add_model_from_args("文章要約", args.summarization_model_config, args.summarization_model_path)
+    # 追加: CLIから指定されたモデルを追加
+    add_model_from_args("CLI_Selected_Model", args.model_config, args.model_path)
 
     model_choices = ["Select Model"] + list(available_models_dict.keys())
     initial_stats_md = "**Inference Time:** `N/A`\n**Tokens/Second:** `N/A`\n---\n**Total Spikes:** `N/A`\n**Spikes/Second:** `N/A`"
