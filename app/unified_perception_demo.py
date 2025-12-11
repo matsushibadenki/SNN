@@ -1,19 +1,18 @@
 # ファイルパス: app/unified_perception_demo.py
-# 日本語タイトル: Unified Perception Interactive Demo (Gradio)
+# 日本語タイトル: Unified Perception Interactive Demo (Gradio) [Type Fixed]
 # 目的・内容:
-#   Phase 9-6: "Hearing Colors" 現象を可視化するためのWebデモ。
-#   ユーザーは視覚・聴覚の入力をスライダーで制御し、
-#   SNNリザーバ層(LAC)の活性化パターンと、想起された概念(Concept A/B)をリアルタイムで観察できる。
-#   要件: pip install gradio matplotlib
+#   mypyエラー修正版。
+#   - gradioインポート時の型チェックを無視設定に追加。
+#   - trainメソッド内の変数 log に型ヒントを追加。
 
-import gradio as gr
+import gradio as gr # type: ignore[import-untyped]
 import torch
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
 import sys
 import os
-from typing import Tuple, Dict
+from typing import Tuple, Dict, List # Added: List
 
 # プロジェクトルートをパスに追加
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -100,7 +99,8 @@ class BrainSystem:
     def train(self, epochs: int) -> str:
         """連合学習を実行"""
         self.lac.train()
-        log = []
+        # 修正: 型ヒントを追加
+        log: List[str] = []
         
         for epoch in range(epochs):
             # Train Concept A
