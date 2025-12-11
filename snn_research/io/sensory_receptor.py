@@ -1,4 +1,3 @@
-# snn_research/io/sensory_receptor.py
 # ファイルパス: snn_research/io/sensory_receptor.py
 # タイトル: 感覚受容器モジュール (Multimodal Receptor)
 #
@@ -49,7 +48,8 @@ class SensoryReceptor:
         """
         data_type = "unknown"
         content = data
-        metadata = {}
+        # mypyが Dict[str, str] など狭い型に推論しないよう、Any型を明示する
+        metadata: Dict[str, Any] = {}
 
         # 1. 文字列入力の処理 (パス判定 or テキスト)
         if isinstance(data, str):
@@ -117,20 +117,23 @@ class SensoryReceptor:
         # 4. オブジェクト直接入力
         elif PIL_AVAILABLE and isinstance(data, Image.Image):
             data_type = "image"
+            # mypyに対してcontentがImage型であることを保証するための変数を使用
+            img_content: Image.Image = data
             if preprocess:
-                content = self._preprocess_image(data)
-            metadata['size'] = content.size
+                img_content = self._preprocess_image(data)
+            content = img_content
+            metadata['size'] = img_content.size
 
         elif PIL_AVAILABLE and isinstance(data, np.ndarray):
             # Numpy配列 -> 画像またはその他信号とみなす
             if data.ndim in [2, 3]: # おそらく画像
                 data_type = "image" # または 'tensor'
                 try:
-                    img = Image.fromarray(data)
+                    img_from_arr = Image.fromarray(data)
                     if preprocess:
-                        content = self._preprocess_image(img)
+                        content = self._preprocess_image(img_from_arr)
                     else:
-                        content = img
+                        content = img_from_arr
                 except:
                     data_type = "tensor"
             else:
