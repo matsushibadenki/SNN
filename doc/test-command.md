@@ -1,9 +1,7 @@
-# **SNN Project 統合機能テストコマンド一覧 (Master Manual v14.2)**
+# **SNN Project 統合機能テストコマンド一覧 (Master Manual v15.3)**
 
 本ドキュメントは、SNNプロジェクトの全機能を網羅的にチェック・実行するための統合コマンドリストです。  
-Phase 7 ("The Brain" OS) および Performance Validation までの全機能をカバーしています。
-
-<br><br><br>
+Phase 9 ("Unified Perception") までの全機能をカバーしています。
 
 ## **1\. 環境準備・メンテナンス (Setup & Maintenance)**
 
@@ -28,9 +26,57 @@ python scripts/run\_project\_health\_check.py
 python snn-cli.py clean logs    \# ログ削除  
 python snn-cli.py clean models  \# モデル削除
 
-<br><br><br>
+## **2\. 新機能検証 (Phase 8 & 9: Unified Perception & Reasoning)**
 
-## **2\. SNN学習ワークフロー (Training)**
+**v15.3で追加された重要機能の単体・統合テスト。**
+
+### **A. SNN-DSA (Dynamic Sparse Attention)**
+
+動的スパース注意機構を持つTransformerの学習能力を検証。
+
+python scripts/verify\_dsa\_learning.py
+
+* **期待される結果:** Accuracy \> 90% で "PASSED" が表示される。
+
+### **B. GRPO (Group Relative Policy Optimization)**
+
+論理推論能力（思考の軌跡の自己改善）を検証。
+
+python tests/test\_grpo\_logic.py
+
+* **期待される結果:** 重み更新が確認され、テストがPASSする。
+
+### **C. DVS & Universal Encoder**
+
+ニューロモルフィックデータセットと統一エンコーダの動作検証。
+
+\# DVSパイプライン (N-MNIST Mock)  
+python tests/test\_dvs\_pipeline.py
+
+\# Universal Spike Encoder (Image/Audio/Text/DVS)  
+python tests/test\_universal\_encoder.py
+
+### **D. Liquid Association Cortex (LAC) & 五感統合**
+
+リザーバ層によるモダリティ統合と、共感覚的想起デモ。
+
+\# LAC統合テスト (基本動作)  
+python tests/test\_liquid\_association.py
+
+\# Cross-Modal Demo ("Hearing Colors") \- 音から色を想起  
+python scripts/run\_cross\_modal\_demo.py
+
+* **期待される結果:** Association Improvement がプラスになり、音声のみから視覚概念が想起される。
+
+### **E. Interactive Web Demo**
+
+ブラウザ上で「Hearing Colors」を体験する。
+
+python app/unified\_perception\_demo.py
+
+* **操作:** ブラウザで http://localhost:7860 にアクセス。
+
+## **3\. SNN学習ワークフロー (Training \- Legacy & Standard)**
 
 ### **A. 標準・高速学習**
 
@@ -57,17 +103,15 @@ python scripts/runners/train.py \\
     \--config configs/experiments/smoke\_test\_config.yaml \\  
     \--model\_config configs/models/small.yaml
 
-<br><br><br>
+## **4\. 脳型OS & 認知アーキテクチャ (Phase 7\)**
 
-## **3\. 脳型OS & 認知アーキテクチャ (Phase 7\)**
-
-### **A. 脳型OSシミュレーション (NEW)**
+### **A. 脳型OSシミュレーション**
 
 複数の認知モジュールがリソースを巡って競合する様子のデモ。
 
 python scripts/run\_phase7\_os\_simulation.py
 
-### **B. イベント駆動 & オンチップ学習 (NEW)**
+### **B. イベント駆動 & オンチップ学習**
 
 ハードウェアネイティブな学習のデモ。
 
@@ -83,11 +127,9 @@ python scripts/run\_hardware\_simulation.py \--model\_config configs/models/micr
 
 python scripts/runners/run\_brain\_v14.py
 
-<br><br><br>
+## **5\. 変換 & 最適化 (Deep Bio-Calibration)**
 
-## **4\. 変換 & 最適化 (Deep Bio-Calibration)**
-
-### **A. Deep Bio-Calibration (NEW)**
+### **A. Deep Bio-Calibration**
 
 HSEOを用いてSNNパラメータを自動チューニングする。
 
@@ -103,9 +145,7 @@ python scripts/convert\_model.py \\
     \--snn\_model\_config configs/models/micro.yaml \\  
     \--output\_snn\_path runs/converted\_snn.pth
 
-<br><br><br>
-
-## **5\. エージェント & 自律行動**
+## **6\. エージェント & 自律行動**
 
 ### **自律タスク解決**
 
@@ -116,27 +156,6 @@ python scripts/runners/run\_agent.py \\
 ### **デジタル生命体**
 
 python scripts/runners/run\_life\_form.py \--duration 60
-
-<br><br><br>
-
-## **6\. デバッグ & 可視化**
-
-### **スパイク活動・ダイナミクス**
-
-\# スパイク統計  
-python scripts/debug\_spike\_activity.py \\  
-    \--model\_config configs/models/micro.yaml \--timesteps 16
-
-\# ラスタプロット (画像生成)  
-python scripts/visualize\_spike\_patterns.py \\  
-    \--model\_config configs/models/micro.yaml
-
-### **UI起動**
-
-\# 標準チャットUI  
-python snn-cli.py ui start
-
-<br><br><br>
 
 ## **7\. 性能証明・検証 (Validation & Proof)**
 
@@ -150,16 +169,4 @@ python scripts/verify\_performance.py \--model\_config configs/models/medium.yam
 \# ターゲット設定ファイルを指定して実行（より厳しい基準など）  
 python scripts/verify\_performance.py \\  
     \--model\_config configs/models/medium.yaml \\  
-    \--target\_config configs/validation/targets\_v1.yaml
-
-成功すると、results/verification\_report.md に以下のようなレポートが生成されます：
-
-\#\# ✅ SNN Performance Verification Report
-
-\*\*Overall Status:\*\* PASS
-
-| Metric | SNN Value | Target | Result |  
-| :--- | :--- | :--- | :--- |  
-| Accuracy Check | 0.89 | \>= 95.0% of ANN (0.9300) | OK |  
-| Energy Efficiency Check | 7.59e-04 J | \<= 2.0% of ANN (5.06e-02 J) | OK |  
-...  
+    \--target\_config configs/validation/targets\_v1.yaml  
