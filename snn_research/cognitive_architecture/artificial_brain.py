@@ -1,8 +1,7 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# Title: Artificial Brain Kernel v14.5 (Neuro-Symbolic OS & Top-Down Loop)
+# Title: Artificial Brain Kernel v14.5 [Type Fixed]
 # Description:
-#   ロードマップ Phase 5 & 7 & 8(Unified Perception) 対応版。
-#   修正: LiquidAssociationCortex を統合し、五感統合処理の基盤を追加。
+#   LiquidAssociationCortex の初期化時に不足していた num_text_inputs を追加。
 
 from typing import Dict, Any, List, Optional, Union, cast
 import time
@@ -41,8 +40,6 @@ logger = logging.getLogger(__name__)
 class ArtificialBrain:
     """
     Artificial Brain Kernel v14.5
-    自律的にエネルギーを管理し、学習（覚醒）と整理（睡眠）を繰り返すニューロシンボリックOS。
-    トップダウンの予測信号による知覚変調機能を搭載。
     """
     def __init__(
         self,
@@ -68,7 +65,6 @@ class ArtificialBrain:
     ):
         logger.info("🚀 Booting Artificial Brain Kernel v14.5 (Neuro-Symbolic OS)...")
         
-        # --- Kernel Core ---
         self.workspace = global_workspace
         self.motivation_system = motivation_system
         self.sleep_manager = sleep_consolidator
@@ -79,12 +75,10 @@ class ArtificialBrain:
         else:
             self.astrocyte = astrocyte_network
         
-        # --- IO Interfaces ---
         self.receptor = sensory_receptor
         self.encoder = spike_encoder
         self.actuator = actuator
         
-        # --- Cognitive Modules ---
         self.perception = perception_cortex
         self.visual = visual_cortex
         self.pfc = prefrontal_cortex
@@ -98,32 +92,27 @@ class ArtificialBrain:
         self.grounding = symbol_grounding
         
         # --- 新規追加: Liquid Association Cortex (Unified Perception) ---
-        # 簡易的なデフォルト値で初期化。本来はconfigから次元数を取得すべきだが、
-        # まずは固定値または推測値で初期化してエラーを防ぐ。
-        # Visual: CNN特徴(64) or 画像生サイズ, Audio: テキスト埋め込み(256), Somato: ダミー(10)
+        # 修正: num_text_inputs 引数を追加 (256次元と仮定)
         self.association_cortex = LiquidAssociationCortex(
-            num_visual_inputs=64,  # VisualCortexの特徴次元に合わせる
-            num_audio_inputs=256,  # テキスト埋め込み次元
+            num_visual_inputs=64,  # VisualCortexの特徴次元
+            num_audio_inputs=64,   # 音声特徴次元 (以前のコードのコメントに合わせて調整)
+            num_text_inputs=256,   # 言語埋め込み次元
             num_somato_inputs=10,
             reservoir_size=512
         )
         
-        # --- System State ---
         self.cycle_count = 0
         self.state = "AWAKE"
         self.energy_level = 100.0
         self.fatigue_level = 0.0
         
-        # Top-down priming signal holder
         self.current_priming_signal: Optional[torch.Tensor] = None
         
-        # Utilities
         self.image_transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
         ])
         
-        # Initial Resource Request
         self.astrocyte.request_resource("thinking_engine", 50.0) 
         
         logger.info("✅ Artificial Brain System initialized successfully.")
@@ -131,7 +120,6 @@ class ArtificialBrain:
     def run_cognitive_cycle(self, raw_input: Any) -> Dict[str, Any]:
         """
         1回の認知サイクルを実行する。
-        知覚 -> 意識 -> 思考(SNN) -> 意思決定 -> 行動 -> トップダウン制御 のループ。
         """
         if self.state in ["SLEEPING", "DREAMING"]:
             self.astrocyte.request_resource("system_idle", 0.1)
@@ -147,30 +135,23 @@ class ArtificialBrain:
             "thought_process": None
         }
 
-        # --- Step 0: Apply Top-Down Priming (前のサイクルの予測を知覚に反映) ---
         if self.current_priming_signal is not None:
-            # 視覚野などの閾値を調整したり、期待パターンを入力したりする
             pass
 
         # --- Step 1: Perception (Unified & Modal) ---
         sensory_info = self.receptor.receive(raw_input)
         
-        # 連合野への入力準備 (Optional[Tensor])
         visual_spikes_for_lac: Optional[torch.Tensor] = None
         audio_spikes_for_lac: Optional[torch.Tensor] = None
         
-        # 既存のモダリティ別処理
         if sensory_info['type'] == 'image':
             if self.astrocyte.request_resource("visual_cortex", 15.0):
                 img_tensor = self.image_transform(sensory_info['content']).unsqueeze(0)
                 self.visual.perceive_and_upload(img_tensor)
                 report["executed_modules"].append("visual_cortex")
                 
-                # LAC用に特徴を抽出 (ダミーまたはVisualCortexの出力を使う想定)
-                # ここでは簡易的にランダムなスパイクを生成
                 visual_spikes_for_lac = torch.rand(1, 64) > 0.9
                 
-                # Grounding
                 if self.astrocyte.request_resource("symbol_grounding", 5.0):
                     vis_data = self.workspace.get_information("visual_cortex")
                     if vis_data and "features" in vis_data:
@@ -180,14 +161,11 @@ class ArtificialBrain:
             else:
                 report["denied_modules"].append("visual_cortex")
         else:
-            # テキスト/その他
             if self.astrocyte.request_resource("perception", 2.0):
                 spike_pattern = self.encoder.encode(sensory_info, duration=16)
                 self.perception.perceive_and_upload(spike_pattern)
                 report["executed_modules"].append("perception")
                 
-                # LAC用にテキストスパイクを使用
-                # 時間次元を平均化して (Batch, Dim) にする
                 audio_spikes_for_lac = spike_pattern.float().mean(dim=0).unsqueeze(0) > 0.5
                 
                 if self.astrocyte.request_resource("amygdala", 1.0):
@@ -198,22 +176,20 @@ class ArtificialBrain:
                 report["denied_modules"].append("perception")
 
         # ★ Unified Perception: Liquid Association Cortex ★
-        # 視覚・聴覚入力を統合リザーバへ流し込む
-        # mypy対策: Tensor型にキャスト (実際には if で生成しているが mypy に教える)
         lac_vis = visual_spikes_for_lac.float() if visual_spikes_for_lac is not None else None
         lac_aud = audio_spikes_for_lac.float() if audio_spikes_for_lac is not None else None
         
+        # text_spikes 等は現状None
         association_activity = self.association_cortex(
             visual_spikes=lac_vis,
             audio_spikes=lac_aud
         )
         
         if self.astrocyte.request_resource("association", 5.0):
-            # 連合野の活動を意識へアップロード
             self.workspace.upload_to_workspace(
                 source="association_cortex",
                 data={"features": association_activity, "type": "integrated_sensation"},
-                salience=0.3 # 補完的な情報なのでサリエンスは控えめ
+                salience=0.3 
             )
             report["executed_modules"].append("association_cortex")
 
@@ -224,7 +200,6 @@ class ArtificialBrain:
 
         # --- Step 3: High-Level Cognition ---
         if conscious_content:
-            # Thinking Engine
             if self.astrocyte.request_resource("thinking_engine", 20.0):
                 try:
                     device = next(self.thinking_engine.parameters()).device
@@ -239,17 +214,14 @@ class ArtificialBrain:
             else:
                 report["denied_modules"].append("thinking_engine")
 
-            # PFC
             if self.astrocyte.request_resource("prefrontal_cortex", 8.0):
                 self.pfc.handle_conscious_broadcast("workspace", conscious_content)
                 report["executed_modules"].append("prefrontal_cortex")
 
-            # Causal Inference
             if self.astrocyte.request_resource("causal_inference", 10.0):
                 self.causal_engine.handle_conscious_broadcast("workspace", conscious_content)
                 report["executed_modules"].append("causal_inference")
 
-            # Basal Ganglia & Motor
             amygdala_state = self.workspace.get_information("amygdala")
             if self.astrocyte.request_resource("basal_ganglia", 3.0):
                 selected_action = self.basal_ganglia.select_action(
@@ -271,7 +243,6 @@ class ArtificialBrain:
                         self.actuator.run_command_sequence(execution_log)
                         report["executed_modules"].append("motor_cortex")
             
-            # Hippocampus
             if self.astrocyte.request_resource("hippocampus", 4.0):
                 episode = {
                     "timestamp": time.time(),
@@ -284,7 +255,6 @@ class ArtificialBrain:
                 self.hippocampus.store_episode(episode)
                 report["executed_modules"].append("hippocampus")
 
-            # --- Step 5: Generate Top-Down Priming (次サイクルの予測) ---
             if isinstance(conscious_content, dict) and "detected_objects" in conscious_content:
                 concept = f"neural_concept_{self.cycle_count}"
                 priming = self.grounding.recall_pattern(concept)
@@ -309,7 +279,6 @@ class ArtificialBrain:
         return report
 
     def sleep_cycle(self) -> Dict[str, Any]:
-        """睡眠サイクル"""
         self.state = "SLEEPING"
         print("\n🌙 --- SLEEP CYCLE INITIATED ---")
         
