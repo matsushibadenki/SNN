@@ -1,5 +1,8 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# (修正: logging.basicConfig に stream=sys.stdout を追加)
+# (修正: target_conf を DictConfig にキャストして mypy エラーを解消)
+
+# プロジェクトルートをパスに追加
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
 import logging
@@ -13,6 +16,8 @@ from omegaconf import OmegaConf, DictConfig, ListConfig
 from typing import Any, Dict, cast
 from PIL import Image
 import numpy as np
+from snn_research.validation.validator import PerformanceValidator
+from snn_research.metrics.energy import EnergyMetrics
 
 # --- 修正: ストリームを標準出力に設定 ---
 logging.basicConfig(
@@ -174,6 +179,51 @@ def run_experiment(args: argparse.Namespace) -> None:
                 if not args.force_continue: raise e
         else:
             logger.warning("train module not found.")
+                
+    if args.eval_only or os.path.exists(os.path.join(base_config.training.log_dir, "best_model.pth")):
+        logger.info("🛡️ Running Performance Verification...")
+        
+        # 検証用設定のロード
+        validation_config_path = "configs/validation/targets_v1.yaml"
+        if os.path.exists(validation_config_path):
+            # --- ▼ 修正: cast(DictConfig, ...) を追加して型エラーを解消 ▼ ---
+            target_conf = cast(DictConfig, OmegaConf.load(validation_config_path))
+            # --- ▲ 修正 ▲ ---
+            validator = PerformanceValidator(target_conf)
+            
+            # --- 実測値の取得 (簡易実装) ---
+            metrics_path = os.path.join(base_config.training.log_dir, "metrics.json")
+            snn_metrics = {}
+            if os.path.exists(metrics_path):
+                with open(metrics_path, 'r') as f:
+                    snn_metrics = json.load(f)
+            else:
+                snn_metrics = {
+                    "accuracy": 0.0,
+                    "avg_spike_rate": 0.0,
+                    "estimated_energy_joules": 0.0
+                }
+                logger.warning("Metrics file not found. Validation might fail.")
+
+            # ANNベースライン (固定値またはファイルから)
+            ann_metrics = {
+                "accuracy": 0.93, 
+                "estimated_energy_joules": 5.06e-02
+            }
+            
+            # 検証実行
+            report = validator.validate(snn_metrics, ann_metrics)
+            
+            # レポート保存
+            report_path = os.path.join(base_config.training.log_dir, "verification_report.md")
+            with open(report_path, "w", encoding="utf-8") as f:
+                f.write(validator.generate_markdown_summary())
+                
+            logger.info(f"📝 Verification Report saved to: {report_path}")
+            if report["status"] == "PASS":
+                logger.info("🎉 MODEL VERIFIED: PASS")
+            else:
+                logger.warning("⚠️ MODEL VERIFICATION: FAIL")
 
 def main():
     parser = argparse.ArgumentParser()
