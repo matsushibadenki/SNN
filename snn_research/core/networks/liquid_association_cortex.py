@@ -1,15 +1,14 @@
 # ファイルパス: snn_research/core/networks/liquid_association_cortex.py
-# Title: Liquid Association Cortex (Multi-modal Reservoir with Plasticity) [Updated]
+# Title: Liquid Association Cortex (Multi-modal Reservoir) [Activity Boosted]
 # Description:
-#   Phase 9-10: STDPによる連合学習を可能にするための更新。
-#   リカレント結合に可塑性を持たせ、同時入力されたパターンの結びつき（共感覚）を学習する。
+#   Phase 9-10: デモでの発火不足を解消するための修正版。
+#   - input_scale: 入力電流のスケーリング係数を追加。
+#   - 重み初期化のゲインを強化。
 
 import torch
 import torch.nn as nn
 from typing import Dict, Optional, Tuple, cast, Any
 
-# 学習則の基底クラスをインポート (型チェック用)
-# 実際の学習則は注入される
 from snn_research.learning_rules.base_rule import BioLearningRule
 
 class LiquidAssociationCortex(nn.Module):
@@ -28,22 +27,28 @@ class LiquidAssociationCortex(nn.Module):
         sparsity: float = 0.1,
         tau: float = 2.0,
         threshold: float = 1.0,
-        learning_rule: Optional[BioLearningRule] = None # Added: 学習則
+        input_scale: float = 10.0, # Added: 入力ゲイン (デフォルトを大きく)
+        learning_rule: Optional[BioLearningRule] = None
     ):
         super().__init__()
         
         self.reservoir_size = reservoir_size
+        self.input_scale = input_scale
         
-        # 1. Input Synapses (Fixed Projections)
+        # 1. Input Synapses
         self.visual_proj = nn.Linear(num_visual_inputs, reservoir_size, bias=False)
         self.audio_proj = nn.Linear(num_audio_inputs, reservoir_size, bias=False)
         self.text_proj = nn.Linear(num_text_inputs, reservoir_size, bias=False)
         self.somato_proj = nn.Linear(num_somato_inputs, reservoir_size, bias=False)
         
-        # 2. Recurrent Synapses (Plastic)
-        self.recurrent_weights = nn.Linear(reservoir_size, reservoir_size, bias=False)
+        # 重み初期化 (入力を強力に伝えるためGainを上げる)
+        nn.init.uniform_(self.visual_proj.weight, -0.5, 0.5)
+        nn.init.uniform_(self.audio_proj.weight, -0.5, 0.5)
+        nn.init.uniform_(self.text_proj.weight, -0.5, 0.5)
+        nn.init.uniform_(self.somato_proj.weight, -0.5, 0.5)
         
-        # スパース初期化
+        # 2. Recurrent Synapses
+        self.recurrent_weights = nn.Linear(reservoir_size, reservoir_size, bias=False)
         self._init_sparse_weights(self.recurrent_weights, sparsity)
         
         # 3. Parameters
@@ -54,17 +59,14 @@ class LiquidAssociationCortex(nn.Module):
         # 4. State
         self.mem = None
         self.spike = None
-        
-        # 学習用: 直前のスパイク履歴 (Pre-synaptic activity for Recurrent)
         self.prev_spike: Optional[torch.Tensor] = None
 
     def _init_sparse_weights(self, layer: nn.Linear, sparsity: float) -> None:
-        nn.init.kaiming_uniform_(layer.weight, a=0.1)
+        # リザーバのスペクトル半径を調整するイメージで、少し大きめに初期化
+        nn.init.normal_(layer.weight, mean=0.0, std=0.5)
         with torch.no_grad():
             mask = (torch.rand_like(layer.weight) < sparsity).float()
             layer.weight.data *= mask
-            # STDPの効果を出しやすくするため、初期重みを少し小さめにする調整
-            layer.weight.data *= 0.5
 
     def forward(
         self, 
@@ -73,15 +75,12 @@ class LiquidAssociationCortex(nn.Module):
         text_spikes: Optional[torch.Tensor] = None,
         somato_spikes: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        """
-        順伝播。学習則がある場合は、Pre(t-1) -> Post(t) の関係で重みを更新する準備を行う。
-        """
-        device = self.recurrent_weights.weight.device
         
-        # バッチサイズ判定と入力電流計算
+        device = self.recurrent_weights.weight.device
         current_input = torch.tensor(0.0, device=device)
         batch_size = 0
         
+        # 入力プロジェクションの計算
         if visual_spikes is not None:
             current_input = current_input + self.visual_proj(visual_spikes)
             batch_size = visual_spikes.size(0)
@@ -95,6 +94,9 @@ class LiquidAssociationCortex(nn.Module):
             current_input = current_input + self.somato_proj(somato_spikes)
             batch_size = max(batch_size, somato_spikes.size(0))
             
+        # 入力をスケーリングして発火しやすくする
+        current_input = current_input * self.input_scale
+            
         if batch_size == 0:
             if self.spike is not None: return self.spike
             return torch.zeros(1, self.reservoir_size, device=device)
@@ -106,10 +108,8 @@ class LiquidAssociationCortex(nn.Module):
             mem = torch.zeros(batch_size, self.reservoir_size).to(device)
             spike = torch.zeros(batch_size, self.reservoir_size).to(device)
 
-        # リカレント入力 (Pre: 前回のスパイク)
+        # リカレント入力
         recurrent_input = self.recurrent_weights(spike)
-        
-        # 学習用に前回のスパイクを保持
         self.prev_spike = spike.clone()
         
         # LIF Dynamics
@@ -128,33 +128,24 @@ class LiquidAssociationCortex(nn.Module):
         self.mem = mem
         self.spike = new_spike
         
-        # ★ Online Learning Step ★
-        # 順伝播の直後に学習を行う (On-line STDP)
+        # 学習
         if self.training and self.learning_rule is not None and self.prev_spike is not None:
             self._apply_plasticity(self.prev_spike, new_spike)
             
         return new_spike
 
     def _apply_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor) -> None:
-        """
-        リカレント重みに対して可塑性を適用する。
-        Pre: t-1 のスパイク (Recurrent Source)
-        Post: t のスパイク (Target)
-        """
         if self.learning_rule is None:
             return
             
-        # 学習則により重み変化量 dw を計算
         dw, _ = self.learning_rule.update(
             pre_spikes=pre_spikes,
             post_spikes=post_spikes,
             weights=self.recurrent_weights.weight
         )
         
-        # 重み更新 (自己結合を防ぐマスクなどを適用する場合もあるが、ここではシンプルに)
         with torch.no_grad():
             self.recurrent_weights.weight += dw
-            # 重みの爆発を防ぐためのクリッピング/正規化
             self.recurrent_weights.weight.clamp_(-1.0, 1.0)
 
     def reset_state(self) -> None:
