@@ -1,9 +1,7 @@
 # ファイルパス: snn_research/validation/validator.py
-# (修正: mypyエラー解消)
-# Title: SNN性能検証バリデータ
-# Description: 
-#   モデルの実行結果を目標値(targets)と比較し、Pass/Failを判定する。
-#   修正: report変数の型ヒントを明示し、appendエラーを解消。
+# 日本語タイトル: SNN性能検証バリデータ
+# 目的: モデルのベンチマーク結果(精度、エネルギー等)を目標値と比較し、Pass/Failを判定する。
+# (修正: energy_ratioが0の場合のゼロ除算エラーを解消)
 
 import torch
 import logging
@@ -61,11 +59,18 @@ class PerformanceValidator:
         energy_ratio = snn_energy / ann_energy if ann_energy > 0 else float('inf')
         energy_pass = energy_ratio <= self.targets.energy.max_ratio
         
+        # 修正: energy_ratioが0の場合(スパイクなし等)のゼロ除算を防ぐ
+        if energy_ratio > 1e-12:
+            inverse_ratio_val = 1.0 / energy_ratio
+            inverse_ratio_str = f"{inverse_ratio_val:.1f}"
+        else:
+            inverse_ratio_str = "Inf"
+
         checks.append({
             "name": "Energy Efficiency Check",
             "snn_value": f"{snn_energy:.2e} J",
             "target": f"<= {self.targets.energy.max_ratio:.1%} of ANN ({ann_energy:.2e} J)",
-            "result_ratio": f"{energy_ratio:.4f} (1/{1/energy_ratio:.1f}x)",
+            "result_ratio": f"{energy_ratio:.4f} (1/{inverse_ratio_str}x)",
             "passed": bool(energy_pass)
         })
         if not energy_pass: report["status"] = "FAIL"
