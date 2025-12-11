@@ -1,12 +1,11 @@
 # ファイルパス: snn_research/learning_rules/stdp.py
-# 日本語タイトル: STDPおよびTriplet STDP学習則 (恒常性維持付き)
-# 機能説明: 
-#   標準STDPおよびTriplet STDPの実装。
-#   Triplet STDPには、発火率に応じた恒常性維持 (Homeostasis) 項を追加し、
-#   ネットワークの安定性を向上。
+# Title: STDP Learning Rule [Batch Support Fixed]
+# Description:
+#   バッチ入力 (Batch, Neurons) に対応したSTDPおよびTriplet STDPの実装。
+#   torch.outerの代わりに行列積を使用し、バッチ全体の勾配を合計する。
 
 import torch
-from typing import Dict, Any, Optional, Tuple, cast
+from typing import Dict, Any, Optional, Tuple, cast, Union
 from .base_rule import BioLearningRule
 
 class STDP(BioLearningRule):
@@ -20,7 +19,7 @@ class STDP(BioLearningRule):
         self.pre_trace: Optional[torch.Tensor] = None
         self.post_trace: Optional[torch.Tensor] = None
 
-    def _initialize_traces(self, pre_shape: int, post_shape: int, device: torch.device):
+    def _initialize_traces(self, pre_shape: torch.Size, post_shape: torch.Size, device: torch.device):
         """スパイクトレースを初期化する。"""
         self.pre_trace = torch.zeros(pre_shape, device=device)
         self.post_trace = torch.zeros(post_shape, device=device)
@@ -40,16 +39,36 @@ class STDP(BioLearningRule):
         optional_params: Optional[Dict[str, Any]] = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """STDPに基づいて重み変化量を計算する。"""
-        if self.pre_trace is None or self.post_trace is None or self.pre_trace.shape[0] != pre_spikes.shape[0] or self.post_trace.shape[0] != post_spikes.shape[0]:
-            self._initialize_traces(pre_spikes.shape[0], post_spikes.shape[0], pre_spikes.device)
+        
+        # 1D入力の場合はバッチ次元(1)を追加して統一的に扱う
+        if pre_spikes.dim() == 1:
+            pre_spikes = pre_spikes.unsqueeze(0)
+        if post_spikes.dim() == 1:
+            post_spikes = post_spikes.unsqueeze(0)
 
+        # トレース初期化
+        if (self.pre_trace is None or self.post_trace is None or 
+            self.pre_trace.shape != pre_spikes.shape or self.post_trace.shape != post_spikes.shape):
+            self._initialize_traces(pre_spikes.shape, post_spikes.shape, pre_spikes.device)
+
+        # トレース更新
         self._update_traces(pre_spikes, post_spikes)
 
         assert self.pre_trace is not None and self.post_trace is not None
 
-        dw = torch.zeros_like(weights)
-        dw += self.learning_rate * self.a_plus * torch.outer(post_spikes, self.pre_trace)
-        dw -= self.learning_rate * self.a_minus * torch.outer(pre_spikes, self.post_trace).T
+        # 重み更新量の計算 (Batch dimension is summed over)
+        # Weights: (Post, Pre)
+        # Pre: (Batch, Pre), Post: (Batch, Post)
+        
+        # LTP: Post spikes * Pre trace
+        # (Batch, Post).T @ (Batch, Pre) -> (Post, Batch) @ (Batch, Pre) -> (Post, Pre)
+        ltp = torch.matmul(post_spikes.t(), self.pre_trace)
+        
+        # LTD: Post trace * Pre spikes
+        # (Batch, Post).T @ (Batch, Pre) -> (Post, Pre)
+        ltd = torch.matmul(self.post_trace.t(), pre_spikes)
+
+        dw = self.learning_rate * (self.a_plus * ltp - self.a_minus * ltd)
         
         return dw, None
 
@@ -57,48 +76,38 @@ class STDP(BioLearningRule):
 class TripletSTDP(BioLearningRule):
     """
     Triplet STDP (トリプレットSTDP) 学習則 with Homeostasis.
-    doc/プロジェクト強化案の調査.md (セクション2.1, 引用[18, 22]) に基づく。
-    標準的なペアワイズSTDPに加え、3つのスパイクの相互作用（トリプレット項）を考慮し、
-    さらに発火率に基づいた恒常性維持を行う。
+    Batch対応版。
     """
     pre_trace: Optional[torch.Tensor]
     post_trace: Optional[torch.Tensor]
     pre_trace_triplet: Optional[torch.Tensor]
     post_trace_triplet: Optional[torch.Tensor]
-    
-    # Homeostasis用
     avg_firing_rate: Optional[torch.Tensor]
 
     def __init__(
         self, 
         learning_rate: float, 
-        # ペアワイズ項
         a_plus_pair: float, 
         a_minus_pair: float, 
         tau_trace_pair: float,
-        # トリプレット項
         a_plus_triplet: float,
         a_minus_triplet: float,
         tau_trace_triplet: float,
         dt: float = 1.0,
-        # Homeostasis項
-        target_rate: float = 0.05, # 目標発火率
-        homeostasis_strength: float = 0.1 # 調整強度
+        target_rate: float = 0.05, 
+        homeostasis_strength: float = 0.1
     ):
         self.learning_rate = learning_rate
         self.dt = dt
         
-        # ペアワイズ項のパラメータ
         self.a_plus_pair = a_plus_pair
         self.a_minus_pair = a_minus_pair
         self.tau_trace_pair = tau_trace_pair
         
-        # トリプレット項のパラメータ
-        self.a_plus_triplet = a_plus_triplet   # y (post-pre-post)
-        self.a_minus_triplet = a_minus_triplet # x (pre-post-pre)
+        self.a_plus_triplet = a_plus_triplet   
+        self.a_minus_triplet = a_minus_triplet 
         self.tau_trace_triplet = tau_trace_triplet 
         
-        # Homeostasis
         self.target_rate = target_rate
         self.homeostasis_strength = homeostasis_strength
 
@@ -108,43 +117,40 @@ class TripletSTDP(BioLearningRule):
         self.post_trace_triplet = None
         self.avg_firing_rate = None
 
-    def _initialize_traces(self, pre_shape: int, post_shape: int, device: torch.device):
-        """スパイクトレースと平均発火率を初期化する。"""
+    def _initialize_traces(self, pre_shape: torch.Size, post_shape: torch.Size, device: torch.device):
         self.pre_trace = torch.zeros(pre_shape, device=device)
         self.post_trace = torch.zeros(post_shape, device=device)
         self.pre_trace_triplet = torch.zeros(pre_shape, device=device)
         self.post_trace_triplet = torch.zeros(post_shape, device=device)
-        self.avg_firing_rate = torch.full((post_shape,), self.target_rate, device=device)
+        
+        # Firing rate is averaged over batch? Or keep per neuron? 
+        # Usually homeostasis is per neuron. 
+        # avg_firing_rate shape: (Post,) derived from (Batch, Post).
+        self.avg_firing_rate = torch.full((post_shape[1],), self.target_rate, device=device)
         
     def _update_traces(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor):
-        """スパイクトレースを更新する。"""
-        # (型チェック)
         pre_trace = cast(torch.Tensor, self.pre_trace)
         post_trace = cast(torch.Tensor, self.post_trace)
         pre_trace_triplet = cast(torch.Tensor, self.pre_trace_triplet)
         post_trace_triplet = cast(torch.Tensor, self.post_trace_triplet)
         avg_firing_rate = cast(torch.Tensor, self.avg_firing_rate)
 
-        # ペアワイズ トレースの更新
         pre_trace = pre_trace - (pre_trace / self.tau_trace_pair) * self.dt + pre_spikes
         post_trace = post_trace - (post_trace / self.tau_trace_pair) * self.dt + post_spikes
         
-        # トリプレット トレースの更新
         pre_trace_triplet = pre_trace_triplet - (pre_trace_triplet / self.tau_trace_triplet) * self.dt + pre_spikes
         post_trace_triplet = post_trace_triplet - (post_trace_triplet / self.tau_trace_triplet) * self.dt + post_spikes
         
-        # 平均発火率の更新 (移動平均)
-        # alpha = dt / tau_avg (tau_avg ~ 1000 steps)
+        # Average firing rate update (Batch mean -> Scalar per neuron)
+        batch_mean_spike = post_spikes.mean(dim=0) # (Batch, Post) -> (Post,)
         alpha = 0.001 
-        avg_firing_rate = (1 - alpha) * avg_firing_rate + alpha * post_spikes
+        avg_firing_rate = (1 - alpha) * avg_firing_rate + alpha * batch_mean_spike
         
-        # 属性に再代入
         self.pre_trace = pre_trace
         self.post_trace = post_trace
         self.pre_trace_triplet = pre_trace_triplet
         self.post_trace_triplet = post_trace_triplet
         self.avg_firing_rate = avg_firing_rate
-
 
     def update(
         self,
@@ -153,50 +159,44 @@ class TripletSTDP(BioLearningRule):
         weights: torch.Tensor,
         optional_params: Optional[Dict[str, Any]] = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Triplet STDP + Homeostasis に基づいて重み変化量を計算する。"""
         
-        if (self.pre_trace is None or self.post_trace is None or 
-            self.pre_trace_triplet is None or self.post_trace_triplet is None or
-            self.pre_trace.shape[0] != pre_spikes.shape[0] or 
-            self.post_trace.shape[0] != post_spikes.shape[0]):
-            self._initialize_traces(pre_spikes.shape[0], post_spikes.shape[0], pre_spikes.device)
+        if pre_spikes.dim() == 1: pre_spikes = pre_spikes.unsqueeze(0)
+        if post_spikes.dim() == 1: post_spikes = post_spikes.unsqueeze(0)
+        
+        if (self.pre_trace is None or 
+            self.pre_trace.shape != pre_spikes.shape):
+            self._initialize_traces(pre_spikes.shape, post_spikes.shape, pre_spikes.device)
 
-        # トレースを更新
         self._update_traces(pre_spikes, post_spikes)
 
-        # (型チェック)
         pre_trace = cast(torch.Tensor, self.pre_trace)
         post_trace = cast(torch.Tensor, self.post_trace)
         pre_trace_triplet = cast(torch.Tensor, self.pre_trace_triplet)
         post_trace_triplet = cast(torch.Tensor, self.post_trace_triplet)
         avg_firing_rate = cast(torch.Tensor, self.avg_firing_rate)
 
-        dw = torch.zeros_like(weights)
+        # Batch Matmul for updates
+        # 1. Pairwise
+        # LTP: Post * Pre_trace
+        dw_pair_ltp = torch.matmul(post_spikes.t(), pre_trace)
+        # LTD: Post_trace * Pre
+        dw_pair_ltd = torch.matmul(post_trace.t(), pre_spikes)
         
-        # --- 1. ペアワイズ項 (標準STDP) ---
-        # LTP (Post-then-Pre): post_spikes * pre_trace
-        dw += self.a_plus_pair * torch.outer(post_spikes, pre_trace)
-        # LTD (Pre-then-Post): pre_spikes * post_trace
-        dw -= self.a_minus_pair * torch.outer(pre_spikes, post_trace).T
+        # 2. Triplet
+        # LTP (pre-post-pre): Pre * Post_trace_triplet -> (Pre, Post).T -> (Post, Pre)
+        # (Post_trace_triplet.T @ Pre)
+        dw_triplet_ltd = torch.matmul(post_trace_triplet.t(), pre_spikes)
         
-        # --- 2. トリプレット項 (引用[22]に基づく) ---
-        # LTP (pre-post-pre): pre_spikes * post_trace_triplet
-        dw -= self.a_minus_triplet * torch.outer(pre_spikes, post_trace_triplet).T
-        # LTD (post-pre-post): post_spikes * pre_trace_triplet
-        dw += self.a_plus_triplet * torch.outer(post_spikes, pre_trace_triplet)
+        # LTD (post-pre-post): Post * Pre_trace_triplet
+        dw_triplet_ltp = torch.matmul(post_spikes.t(), pre_trace_triplet)
 
-        # --- 3. 恒常性維持 (Homeostasis) ---
-        # 発火率が目標より高い -> LTDを強化 (dwを減らす)
-        # 発火率が目標より低い -> LTPを強化 (dwを増やす)
-        # rate_factor: > 0 なら過活動(抑制必要), < 0 なら低活動(興奮必要)
+        dw = (self.a_plus_pair * dw_pair_ltp - self.a_minus_pair * dw_pair_ltd)
+        dw += (-self.a_minus_triplet * dw_triplet_ltd + self.a_plus_triplet * dw_triplet_ltp)
+
+        # 3. Homeostasis
         rate_factor = (avg_firing_rate - self.target_rate) * self.homeostasis_strength
-        
-        # 全シナプスに対して調整 (post依存)
-        # dw -= rate_factor.unsqueeze(1) * abs(dw) # 変化量に比例させるか、定数か
-        # シンプルに学習率を変調する形
         homeostasis_mod = 1.0 - rate_factor.unsqueeze(1)
         
-        # 学習率を適用
         dw = self.learning_rate * dw * homeostasis_mod
         
         return dw, None
