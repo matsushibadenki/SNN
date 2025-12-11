@@ -1,10 +1,7 @@
 # ファイルパス: snn_research/io/neuromorphic_dataset.py
-# 日本語タイトル: ニューロモルフィック(DVS)データセットローダー
-# 目的・内容:
-#   Phase 8-5: N-MNIST等のDVSデータセットを統一的に扱うためのローダー。
-#   - データの実体はプロジェクトルートの `data/` ディレクトリに保存・参照する。
-#   - spikingjelly.datasets をラップし、SNNモデルへの入力を標準化。
-#   - MockDVSGenerator により、データセット未ダウンロード環境でも動作保証。
+# Title: ニューロモルフィック(DVS)データセットローダー [Type Fixed]
+# Description:
+#   spikingjellyの型定義がないためのmypyエラーを修正。
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -14,8 +11,8 @@ import os
 
 # SpikingJellyが利用可能かチェック
 try:
-    from spikingjelly.datasets.n_mnist import NMNIST
-    from spikingjelly.datasets import split_to_train_test_set
+    from spikingjelly.datasets.n_mnist import NMNIST # type: ignore[import-untyped]
+    from spikingjelly.datasets import split_to_train_test_set # type: ignore[import-untyped]
     SPIKINGJELLY_AVAILABLE = True
 except ImportError:
     SPIKINGJELLY_AVAILABLE = False
@@ -60,11 +57,6 @@ class NeuromorphicDataFactory:
     ) -> DataLoader:
         """
         DataLoaderを作成する。
-        
-        Args:
-            dataset_name: 'n-mnist' 等
-            root_dir: データの保存先ディレクトリ (デフォルト: ./data)
-            ...
         """
         dataset: Dataset
         
@@ -84,8 +76,6 @@ class NeuromorphicDataFactory:
         else:
             if dataset_name.lower() == 'n-mnist':
                 # N-MNISTの実データ読み込み
-                # ディレクトリが空、または存在しない場合は自動ダウンロード(SpikingJellyの仕様)を試みるが、
-                # ここでは明示的にMockへのフォールバック判定を入れる
                 target_path = os.path.join(root_dir, 'N-MNIST')
                 if not os.path.exists(target_path) and not os.path.exists(root_dir):
                      print(f"⚠️ Data dir {target_path} not found. Using Mock.")
