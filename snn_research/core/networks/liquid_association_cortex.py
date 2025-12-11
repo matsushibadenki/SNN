@@ -1,14 +1,18 @@
 # snn_research/core/networks/liquid_association_cortex.py
-# Title: Liquid Association Cortex (Multi-modal Reservoir)
+# Title: Liquid Association Cortex (Multi-modal Reservoir) - Type Safe
 # Description: 
 #   視覚、聴覚、体性感覚など異なるモダリティのスパイク入力を
-#   単一のリカレントSNN（リザーバ）に統合し、連合記憶と時空間パターンを形成する。
+#   単一のリカレントSNN（リザーバ）に統合する。mypyのエラーを修正した型安全版。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, cast
 
 class LiquidAssociationCortex(nn.Module):
+    # 型ヒントをクラスレベルで明示
+    mem: Optional[torch.Tensor]
+    spike: Optional[torch.Tensor]
+
     def __init__(
         self,
         num_visual_inputs: int,
@@ -20,29 +24,26 @@ class LiquidAssociationCortex(nn.Module):
         super().__init__()
         
         # 1. 感覚ごとの入力ポート (Input Synapses)
-        # ランダムな重みでリザーバ層へ投影
         self.visual_proj = nn.Linear(num_visual_inputs, reservoir_size, bias=False)
         self.audio_proj = nn.Linear(num_audio_inputs, reservoir_size, bias=False)
         self.somato_proj = nn.Linear(num_somato_inputs, reservoir_size, bias=False)
         
         # 2. リザーバ層 (Recurrent Synapses)
-        # 固定重み (LSM) または STDP学習対象
         self.recurrent_weights = nn.Linear(reservoir_size, reservoir_size, bias=False)
         
-        # スパース初期化 (脳のような疎結合を作る)
+        # スパース初期化
         self._init_sparse_weights(self.recurrent_weights, sparsity)
         
-        # 3. ニューロンモデル (LIF)
+        # 3. ニューロンパラメータ
         self.tau = 2.0
         self.threshold = 1.0
         
-        # 状態保持
+        # 状態保持 (初期値はNone)
         self.mem = None
         self.spike = None
 
-    def _init_sparse_weights(self, layer, sparsity):
+    def _init_sparse_weights(self, layer: nn.Linear, sparsity: float) -> None:
         nn.init.kaiming_uniform_(layer.weight, a=0.1)
-        # マスクをかけて結合を間引く
         mask = (torch.rand_like(layer.weight) < sparsity).float()
         layer.weight.data *= mask
 
@@ -54,51 +55,68 @@ class LiquidAssociationCortex(nn.Module):
     ) -> torch.Tensor:
         """
         Args:
-            visual_spikes: (Batch, Inputs) - t時点のスパイク
-            ...
+            visual_spikes: (Batch, Inputs)
         Returns:
-            reservoir_spikes: (Batch, ReservoirSize) - 統合されたスパイク活動
+            reservoir_spikes: (Batch, ReservoirSize)
         """
         batch_size = 0
         device = self.recurrent_weights.weight.device
         
-        # 入力電流の合算 (Current Integration)
-        current_input = 0.0
+        # 入力電流の合算
+        current_input = torch.tensor(0.0, device=device)
         
         if visual_spikes is not None:
-            current_input += self.visual_proj(visual_spikes)
+            current_input = current_input + self.visual_proj(visual_spikes)
             batch_size = visual_spikes.size(0)
             
         if audio_spikes is not None:
-            current_input += self.audio_proj(audio_spikes)
+            current_input = current_input + self.audio_proj(audio_spikes)
             batch_size = audio_spikes.size(0)
             
         if somato_spikes is not None:
-            current_input += self.somato_proj(somato_spikes)
+            current_input = current_input + self.somato_proj(somato_spikes)
             batch_size = somato_spikes.size(0)
             
-        # 状態初期化
-        if self.mem is None or self.mem.size(0) != batch_size:
-            self.mem = torch.zeros(batch_size, self.recurrent_weights.out_features).to(device)
-            self.spike = torch.zeros(batch_size, self.recurrent_weights.out_features).to(device)
+        # 入力が全くない場合のガード
+        if batch_size == 0:
+            # 既存の状態があればそれを返す、なければ空のダミーを返す
+            if self.spike is not None:
+                return self.spike
+            # 初期化前に入力なしで呼ばれた場合
+            return torch.zeros(1, self.recurrent_weights.out_features, device=device)
 
-        # リカレント入力 (過去の自分からの影響)
-        recurrent_input = self.recurrent_weights(self.spike)
+        # 状態初期化またはサイズ不一致時のリセット
+        # ローカル変数に代入して型を確定させる
+        mem = self.mem
+        spike = self.spike
+
+        if mem is None or spike is None or mem.size(0) != batch_size:
+            mem = torch.zeros(batch_size, self.recurrent_weights.out_features).to(device)
+            spike = torch.zeros(batch_size, self.recurrent_weights.out_features).to(device)
+
+        # リカレント入力
+        recurrent_input = self.recurrent_weights(spike)
         
-        # 膜電位更新 (LIF Dynamics)
-        # 入力 = 外部刺激 + 内部反響
+        # 膜電位更新
         total_input = current_input + recurrent_input
         
-        decay = torch.exp(torch.tensor(-1.0 / self.tau))
-        self.mem = self.mem * decay + total_input * (1 - decay)
+        decay = torch.exp(torch.tensor(-1.0 / self.tau, device=device))
+        mem = mem * decay + total_input * (1 - decay)
         
-        # 発火判定
-        new_spike = (self.mem >= self.threshold).float()
-        self.mem = self.mem * (1.0 - new_spike) # リセット
+        # 発火判定 (bool -> float キャストを明示)
+        # mypyが (Tensor >= float) の戻り値を bool と誤認する場合があるため 1.0 を掛ける等で回避
+        is_fire = (mem >= self.threshold)
+        new_spike = is_fire.float()
         
+        # リセット
+        mem = mem * (1.0 - new_spike)
+        
+        # 状態の書き戻し
+        self.mem = mem
         self.spike = new_spike
-        return self.spike
+        
+        return new_spike
 
-    def reset_state(self):
+    def reset_state(self) -> None:
         self.mem = None
         self.spike = None
