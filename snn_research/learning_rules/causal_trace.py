@@ -1,11 +1,8 @@
 # ファイルパス: snn_research/learning_rules/causal_trace.py
-# Title: 進化版 因果追跡クレジット割り当て学習則 (V2 - Stabilized & Robust)
+# Title: Causal Trace Credit Assignment V2 [Batch & Type Fixed]
 # Description:
-# - CausalTraceCreditAssignmentEnhancedV2 の安定性向上版。
-# - NaNチェック (torch.nan_to_num) を導入し、学習崩壊を防ぐ。
-# - クレジット信号と適格性トレースのクリッピングを強化。
-# - mypyエラー修正: register_buffer 削除、avg_reward の型ヒント、_apply_high_level_rules の型修正。
-# - 文末の不要な '}' を削除。
+#   mypyエラー修正: _initialize_traces に shape (Size) を渡すように変更。
+#   RuntimeError修正: torch.outer を torch.matmul に変更し、バッチ処理に対応。
 
 import torch
 from typing import Dict, Any, Optional, Tuple, Union, cast
@@ -44,8 +41,6 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         self.competition_k_ratio = competition_k_ratio
         self.rule_based_lr_factor = rule_based_lr_factor
         
-        # 修正: nn.Moduleではないため register_buffer は使えない。
-        # 属性として初期化する。デバイス移動は update 内で管理する。
         self.avg_reward = torch.tensor(0.0)
         
         print("🧠 V2 Enhanced Causal Trace Credit Assignment rule initialized (Stabilized).")
@@ -55,7 +50,6 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         self.causal_contribution = torch.zeros(weight_shape, device=device)
 
     def _apply_context_modulation(self, backward_credit: torch.Tensor, optional_params: Dict[str, Any]) -> torch.Tensor:
-        """Global Workspace や Memory からの文脈情報でクレジット信号を変調する。"""
         modulated_credit = backward_credit.clone()
 
         workspace_context = optional_params.get("global_workspace_context")
@@ -66,7 +60,6 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         if workspace_context and isinstance(workspace_context, dict) and workspace_context.get("type") == "emotion":
             valence = workspace_context.get("valence", 0.0)
             if valence < -0.5:
-                # ネガティブ感情時は、原因となった行動へのクレジットを強める（または負の報酬なら抑制を強める）
                 modulation_factor += self.context_modulation_strength * abs(valence)
 
         if memory_context and isinstance(memory_context, list) and len(memory_context) > 0:
@@ -76,17 +69,14 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         return modulated_credit * modulation_factor
 
     def _apply_competition(self, dw: torch.Tensor, eligibility_trace: torch.Tensor) -> torch.Tensor:
-        """競合メカニズムを適用し、更新対象のシナプスを選択する。"""
         if self.competition_k_ratio >= 1.0:
             return dw
 
         num_synapses = dw.numel()
         k = max(1, int(num_synapses * self.competition_k_ratio))
 
-        # 適格度が高いシナプスのみを更新対象とする
         abs_eligibility = torch.abs(eligibility_trace)
         
-        # トップkの閾値を取得
         if k < num_synapses:
             top_k_values, _ = torch.topk(abs_eligibility.view(-1), k)
             threshold = top_k_values[-1]
@@ -95,9 +85,7 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         
         return dw
 
-    # 修正: 引数と戻り値の型を torch.Tensor に変更
     def _apply_high_level_rules(self, dynamic_lr: torch.Tensor, optional_params: Dict[str, Any]) -> torch.Tensor:
-        """CausalInferenceEngineからの抽象ルールに基づき学習率を調整する。"""
         rule = optional_params.get("abstract_causal_rule")
         if rule and isinstance(rule, dict):
             if rule.get("increase_lr"):
@@ -111,18 +99,21 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         weights: torch.Tensor,
         optional_params: Optional[Dict[str, Any]] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        V2: 文脈変調、競合、ルール連携を含む更新プロセス。
-        """
+        
         if optional_params is None: optional_params = {}
 
-        # デバイスの同期
+        # 1D入力対応 (Batch次元追加)
+        if pre_spikes.dim() == 1: pre_spikes = pre_spikes.unsqueeze(0)
+        if post_spikes.dim() == 1: post_spikes = post_spikes.unsqueeze(0)
+
         if self.avg_reward.device != weights.device:
             self.avg_reward = self.avg_reward.to(weights.device)
 
         # --- 1. トレース初期化と更新 ---
-        if self.pre_trace is None or self.post_trace is None or self.pre_trace.shape[0] != pre_spikes.shape[0] or self.post_trace.shape[0] != post_spikes.shape[0]:
-            self._initialize_traces(pre_spikes.shape[0], post_spikes.shape[0], pre_spikes.device)
+        # 修正: shape[0] (int) ではなく shape (Size) を渡す
+        if self.pre_trace is None or self.post_trace is None or self.pre_trace.shape != pre_spikes.shape or self.post_trace.shape != post_spikes.shape:
+            self._initialize_traces(pre_spikes.shape, post_spikes.shape, pre_spikes.device)
+        
         self._update_traces(pre_spikes, post_spikes)
 
         if self.eligibility_trace is None or self.eligibility_trace.shape != weights.shape:
@@ -131,30 +122,26 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         if self.causal_contribution is None or self.causal_contribution.shape != weights.shape:
             self._initialize_contribution_trace(weights.shape, weights.device)
 
-        # 型アサーション
         assert self.pre_trace is not None
         assert self.post_trace is not None
         assert self.eligibility_trace is not None
         assert self.causal_contribution is not None
         
-        # --- 安定化: NaN除去とクリップ ---
-        # トレースが爆発するのを防ぐ
         self.eligibility_trace = torch.nan_to_num(self.eligibility_trace, nan=0.0)
         self.eligibility_trace.clamp_(-10.0, 10.0)
 
         # --- 2. 適格度トレース (Eligibility Trace) の更新 ---
-        # Hebbian項 (LTP): Post * Pre_Trace
-        ltp = self.a_plus * torch.outer(post_spikes, self.pre_trace)
-        # Anti-Hebbian項 (LTD): Pre * Post_Trace
-        ltd = self.a_minus * torch.outer(pre_spikes, self.post_trace).T
+        # 修正: torch.outer -> torch.matmul (Batch対応)
+        # LTP: Post.T @ Pre -> (Post, Pre)
+        ltp = self.a_plus * torch.matmul(post_spikes.t(), self.pre_trace)
+        # LTD: Post_Trace.T @ Pre -> (Post, Pre)
+        ltd = self.a_minus * torch.matmul(self.post_trace.t(), pre_spikes)
         
         potential_dw = ltp - ltd
         self.eligibility_trace += potential_dw
 
-        # 適格度の減衰 (長期貢献度に応じて時定数を変調)
         if self.modulate_eligibility_tau:
-            # 貢献度が高いシナプスは記憶（適格度）が長く残る
-            contrib_norm = torch.sigmoid(self.causal_contribution * 5.0) # スケーリング調整
+            contrib_norm = torch.sigmoid(self.causal_contribution * 5.0)
             current_tau_eligibility = self.min_eligibility_tau + (self.max_eligibility_tau - self.min_eligibility_tau) * contrib_norm
             eligibility_decay = (self.eligibility_trace / current_tau_eligibility.clamp(min=1e-6)) * self.dt
         else:
@@ -166,65 +153,41 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         reward = optional_params.get("reward", 0.0)
         causal_credit_signal = optional_params.get("causal_credit", 0.0)
         
-        # 報酬のベースライン補正 (Advantage)
-        # これにより、常に正の報酬だと重みが発散する問題を防ぐ
-        # self.avg_reward は Tensor
         if abs(reward) > 1e-6:
              with torch.no_grad():
                  self.avg_reward = 0.95 * self.avg_reward + 0.05 * reward
-             
-             # 報酬が平均より高い場合に強化、低い場合に抑制
              effective_reward_signal = (reward - self.avg_reward.item()) + causal_credit_signal
         else:
-             effective_reward_signal = causal_credit_signal # クレジットのみ
+             effective_reward_signal = causal_credit_signal
 
         dw = torch.zeros_like(weights)
         
-        # 学習トリガー（報酬またはクレジットがある場合のみ重みを更新）
         if abs(effective_reward_signal) > 1e-6:
-            # --- 4. 動的学習率の計算 ---
-            # 貢献度が高いシナプスは学習率を下げる（安定化）
+            # --- 4. 動的学習率 ---
             contrib_norm = torch.sigmoid(self.causal_contribution)
-            # 貢献度が高いほど学習率を下げる (1.0 -> 0.1)
             stability_factor = 1.1 - contrib_norm 
             
-            # dynamic_lr は Tensor になる
             dynamic_lr = torch.tensor(self.base_learning_rate, device=weights.device) * stability_factor * self.dynamic_lr_factor
-
-            # --- 5. 高レベルルールによる学習率調整 ---
-            # 引数と戻り値を Tensor に統一したため修正
             dynamic_lr = self._apply_high_level_rules(dynamic_lr, optional_params)
 
-            # --- 6. 重み変化量の計算 ---
-            # dw = lr * Reward * Eligibility
+            # --- 6. 重み変化量 ---
             dw = dynamic_lr * effective_reward_signal * self.eligibility_trace
-            
-            # 安全策: NaN除去
             dw = torch.nan_to_num(dw, nan=0.0)
 
-            # --- 7. 競合的割り当て ---
+            # --- 7. 競合 ---
             dw = self._apply_competition(dw, self.eligibility_trace)
 
-            # --- 8. 長期貢献度の更新 ---
+            # --- 8. 貢献度更新 ---
             self.causal_contribution = self.causal_contribution * 0.99 + torch.abs(dw) * 0.01
 
-            # --- 9. 学習後の適格度リセット（オプション）---
-            # 報酬を受け取ったら、その原因となった活動の記録は一度クリアする戦略
-            # 完全にゼロにするのではなく、減衰させる
+            # --- 9. リセット ---
             self.eligibility_trace *= 0.5
 
-        # --- 10. クレジット信号の逆方向伝播 ---
+        # --- 10. クレジット逆伝播 ---
         if self.eligibility_trace is not None:
-            # 次の層（前段）に送るクレジット信号を計算
-            # Post側の活動（適格度）に寄与したPre側ニューロンに対してクレジットを分配
-            # 'ij,ij->j' : 重みと適格度の積をPreニューロンごとに合計
             raw_backward_credit = torch.einsum('ij,ij->j', weights, self.eligibility_trace) 
             raw_backward_credit = torch.nan_to_num(raw_backward_credit, nan=0.0)
-
-            # 文脈変調を適用
             backward_credit = self._apply_context_modulation(raw_backward_credit, optional_params)
-            
-            # 信号の減衰とスケーリング
             backward_credit *= self.credit_time_decay
         else:
             backward_credit = torch.zeros_like(pre_spikes)
@@ -232,5 +195,4 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         return dw, backward_credit
         
     def get_causal_contribution(self) -> Optional[torch.Tensor]:
-        """長期的な因果的貢献度を返す。"""
         return self.causal_contribution
