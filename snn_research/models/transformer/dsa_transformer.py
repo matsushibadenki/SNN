@@ -1,10 +1,7 @@
 # ファイルパス: snn_research/models/transformer/dsa_transformer.py
-# 日本語タイトル: DSA Spiking Transformer モデル
-# 目的・内容:
-#   Phase 8-2で実装した DynamicSparseAttention を用いた Transformer アーキテクチャ。
-#   - DSATransformerBlock: DSA + FeedForward の基本ブロック
-#   - DSASpikingTransformer: エンドツーエンドのSNNモデル
-#   - Spike-Element-Wise (SEW) ResNetのような残差結合を採用し、深層化しても学習を安定化。
+# Title: DSA Spiking Transformer モデル [Type Fixed]
+# Description:
+#   neuron_params の型定義エラー(Optional)を修正。
 
 import torch
 import torch.nn as nn
@@ -18,7 +15,8 @@ class FeedForwardBlock(nn.Module):
     SNN用 Feed-Forward Network (FFN)
     Structure: Linear -> LIF -> Linear -> LIF
     """
-    def __init__(self, d_model: int, expansion_factor: int = 4, dropout: float = 0.1, neuron_params: Dict[str, Any] = None):
+    # 修正: neuron_params: Dict[str, Any] = None -> Optional[Dict[str, Any]] = None
+    def __init__(self, d_model: int, expansion_factor: int = 4, dropout: float = 0.1, neuron_params: Optional[Dict[str, Any]] = None):
         super().__init__()
         if neuron_params is None:
             neuron_params = {}
@@ -48,19 +46,15 @@ class FeedForwardBlock(nn.Module):
 class DSATransformerBlock(nn.Module):
     """
     Dynamic Sparse Attention を含む Transformer Block。
-    構成:
-      1. DSA (Attention)
-      2. Add (Residual) & Norm
-      3. FFN
-      4. Add (Residual) & Norm
     """
+    # 修正: neuron_params の型定義
     def __init__(
         self, 
         d_model: int, 
         num_heads: int, 
         top_k: int, 
         dropout: float = 0.1,
-        neuron_params: Dict[str, Any] = None
+        neuron_params: Optional[Dict[str, Any]] = None
     ):
         super().__init__()
         self.dsa = DynamicSparseAttention(
@@ -80,19 +74,13 @@ class DSATransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # 1. DSA Sub-layer
-        # 入力xはスパイク。DSAもスパイクを出力。
-        # Residual Connection: x (0/1) + attn_out (0/1) -> (0/1/2)
-        # LayerNormによりアナログ値に戻り、次の層の入力として適切にスケーリングされる
         attn_out, _ = self.dsa(x)
         x = self.norm1(x + attn_out) 
         
-        # 2. FFN Sub-layer
-        # Norm後のアナログ値をFFNに入力しても、FFNの最初のLinearがそれを受け取るのでOK
         ffn_out = self.ffn(x)
         x = self.norm2(x + ffn_out)
         
-        return x # Next block receives Analog (Normed) values -> OK for Linear input
+        return x 
     
     def reset_state(self):
         self.dsa.reset_state()
@@ -124,7 +112,6 @@ class DSASpikingTransformer(nn.Module):
         self.dropout = nn.Dropout(dropout)
         
         # Encoder Blocks
-        # 発火しやすくするために閾値を調整
         neuron_params = {'base_threshold': 0.5, 'tau_mem': 5.0}
         
         self.layers = nn.ModuleList([
@@ -151,29 +138,20 @@ class DSASpikingTransformer(nn.Module):
         """
         B, T, _ = x.shape
         
-        # Embedding
         x = self.embedding(x)
         
-        # Add Positional Encoding
-        # シーケンス長に合わせてスライス
         if T <= self.pos_embedding.shape[1]:
             x = x + self.pos_embedding[:, :T, :]
         else:
-            # 入力が想定より長い場合は繰り返し利用（簡易対応）
             pos_emb = self.pos_embedding.repeat(1, (T // self.pos_embedding.shape[1]) + 1, 1)
             x = x + pos_emb[:, :T, :]
             
         x = self.dropout(x)
         
-        # Transformer Blocks
         for layer in self.layers:
             x = layer(x)
             
-        # Final Norm
         x = self.norm_final(x)
-        
-        # Classification (Global Average Pooling over Time for classification)
-        # または、Last Tokenを使用するが、SNNでは平均発火率（または平均活動）を使うのが安定する
         x_mean = x.mean(dim=1) 
         logits = self.classifier(x_mean)
         
