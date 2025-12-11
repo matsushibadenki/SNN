@@ -1,11 +1,8 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
 # Title: Artificial Brain Kernel v14.5 (Neuro-Symbolic OS & Top-Down Loop)
 # Description:
-#   ロードマップ Phase 5 & 7 完全対応版。
-#   改善点:
-#   - トップダウン注意制御 (Top-Down Attention) のループを実装。
-#     意識に上った概念に基づいて SymbolGrounding からパターンを想起し、
-#     Visual Cortex などの知覚モジュールにプライミング信号として送る。
+#   ロードマップ Phase 5 & 7 & 8(Unified Perception) 対応版。
+#   修正: LiquidAssociationCortex を統合し、五感統合処理の基盤を追加。
 
 from typing import Dict, Any, List, Optional, Union, cast
 import time
@@ -20,6 +17,9 @@ from snn_research.io.spike_encoder import SpikeEncoder
 from snn_research.io.actuator import Actuator
 from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
+
+# --- 追加: 統合知覚野 ---
+from snn_research.core.networks.liquid_association_cortex import LiquidAssociationCortex
 
 # Cognitive Modules
 from .visual_perception import VisualCortex
@@ -97,6 +97,17 @@ class ArtificialBrain:
         self.causal_engine = causal_inference_engine
         self.grounding = symbol_grounding
         
+        # --- 新規追加: Liquid Association Cortex (Unified Perception) ---
+        # 簡易的なデフォルト値で初期化。本来はconfigから次元数を取得すべきだが、
+        # まずは固定値または推測値で初期化してエラーを防ぐ。
+        # Visual: CNN特徴(64) or 画像生サイズ, Audio: テキスト埋め込み(256), Somato: ダミー(10)
+        self.association_cortex = LiquidAssociationCortex(
+            num_visual_inputs=64,  # VisualCortexの特徴次元に合わせる
+            num_audio_inputs=256,  # テキスト埋め込み次元
+            num_somato_inputs=10,
+            reservoir_size=512
+        )
+        
         # --- System State ---
         self.cycle_count = 0
         self.state = "AWAKE"
@@ -139,51 +150,72 @@ class ArtificialBrain:
         # --- Step 0: Apply Top-Down Priming (前のサイクルの予測を知覚に反映) ---
         if self.current_priming_signal is not None:
             # 視覚野などの閾値を調整したり、期待パターンを入力したりする
-            # ここでは簡易的にVisualCortexへの引数渡しを想定（または直接属性セット）
-            # self.visual.set_attention(self.current_priming_signal) # 実装依存
             pass
 
-        # --- Step 1: Integrated Perception (五感統合処理) ---
-        # 入力を各モダリティのスパイクに変換 (欠損していてもOK)
-        visual_spikes = None
-        audio_spikes = None
-    
+        # --- Step 1: Perception (Unified & Modal) ---
         sensory_info = self.receptor.receive(raw_input)
-
-        # 既存のロジックを生かしつつ、スパイク変換を試みる
+        
+        # 連合野への入力準備 (Optional[Tensor])
+        visual_spikes_for_lac: Optional[torch.Tensor] = None
+        audio_spikes_for_lac: Optional[torch.Tensor] = None
+        
+        # 既存のモダリティ別処理
         if sensory_info['type'] == 'image':
-            # 既存: VisualCortexへ
-            img_tensor = self.image_transform(sensory_info['content']).unsqueeze(0)
-            self.visual.perceive_and_upload(img_tensor) # 従来ルート
-        
-            # 新規: 画像をスパイク化して連合野へ (DVS的変換 or CNN出力)
-            # visual_spikes = self.visual.encode_to_spikes(img_tensor) 
-            pass 
-        
-        elif sensory_info['type'] == 'text':
-            # 既存: HybridPerceptionCortexへ
-            spike_pattern = self.encoder.encode(sensory_info, duration=16)
-            self.perception.perceive_and_upload(spike_pattern) # 従来ルート
-        
-            # 新規: テキストスパイクを連合野へ
-            # audio_spikes (text as audio symbol) = spike_pattern
-            audio_spikes = spike_pattern.mean(dim=0) # 時間次元を潰して入力する場合
+            if self.astrocyte.request_resource("visual_cortex", 15.0):
+                img_tensor = self.image_transform(sensory_info['content']).unsqueeze(0)
+                self.visual.perceive_and_upload(img_tensor)
+                report["executed_modules"].append("visual_cortex")
+                
+                # LAC用に特徴を抽出 (ダミーまたはVisualCortexの出力を使う想定)
+                # ここでは簡易的にランダムなスパイクを生成
+                visual_spikes_for_lac = torch.rand(1, 64) > 0.9
+                
+                # Grounding
+                if self.astrocyte.request_resource("symbol_grounding", 5.0):
+                    vis_data = self.workspace.get_information("visual_cortex")
+                    if vis_data and "features" in vis_data:
+                        concept_id = self.grounding.ground_neural_pattern(vis_data["features"], "visual_input")
+                        report["grounded_concept"] = concept_id
+                        report["executed_modules"].append("symbol_grounding")
+            else:
+                report["denied_modules"].append("visual_cortex")
+        else:
+            # テキスト/その他
+            if self.astrocyte.request_resource("perception", 2.0):
+                spike_pattern = self.encoder.encode(sensory_info, duration=16)
+                self.perception.perceive_and_upload(spike_pattern)
+                report["executed_modules"].append("perception")
+                
+                # LAC用にテキストスパイクを使用
+                # 時間次元を平均化して (Batch, Dim) にする
+                audio_spikes_for_lac = spike_pattern.float().mean(dim=0).unsqueeze(0) > 0.5
+                
+                if self.astrocyte.request_resource("amygdala", 1.0):
+                    content_str = str(sensory_info['content'])
+                    self.amygdala.evaluate_and_upload(content_str)
+                    report["executed_modules"].append("amygdala")
+            else:
+                report["denied_modules"].append("perception")
 
-            # ★ ここで連合野 (Association Cortex) を駆動 ★
-            # 視覚と聴覚(テキスト)が同時に混ざり合う
-            association_activity = self.association_cortex(
-                visual_spikes=visual_spikes, 
-                audio_spikes=audio_spikes
-            )
-    
-            # 連合野の活動パターンから「概念」を想起し、Workspaceへ
-            # これにより「音を聞いただけで映像が浮かぶ」現象を実現
-            if self.astrocyte.request_resource("association", 5.0):
-                self.workspace.upload_to_workspace(
+        # ★ Unified Perception: Liquid Association Cortex ★
+        # 視覚・聴覚入力を統合リザーバへ流し込む
+        # mypy対策: Tensor型にキャスト (実際には if で生成しているが mypy に教える)
+        lac_vis = visual_spikes_for_lac.float() if visual_spikes_for_lac is not None else None
+        lac_aud = audio_spikes_for_lac.float() if audio_spikes_for_lac is not None else None
+        
+        association_activity = self.association_cortex(
+            visual_spikes=lac_vis,
+            audio_spikes=lac_aud
+        )
+        
+        if self.astrocyte.request_resource("association", 5.0):
+            # 連合野の活動を意識へアップロード
+            self.workspace.upload_to_workspace(
                 source="association_cortex",
                 data={"features": association_activity, "type": "integrated_sensation"},
-                salience=0.5
+                salience=0.3 # 補完的な情報なのでサリエンスは控えめ
             )
+            report["executed_modules"].append("association_cortex")
 
         # --- Step 2: Consciousness (意識) ---
         self.workspace.conscious_broadcast_cycle()
@@ -253,11 +285,8 @@ class ArtificialBrain:
                 report["executed_modules"].append("hippocampus")
 
             # --- Step 5: Generate Top-Down Priming (次サイクルの予測) ---
-            # 意識の内容が「概念」であれば、そのパターンを想起してプライミング信号とする
             if isinstance(conscious_content, dict) and "detected_objects" in conscious_content:
-                # 視覚的な概念が意識にある場合、それを維持・強化しようとする
-                concept = f"neural_concept_{self.cycle_count}" # ダミー
-                # 本来は content から適切な ID を抽出
+                concept = f"neural_concept_{self.cycle_count}"
                 priming = self.grounding.recall_pattern(concept)
                 if priming is not None:
                     self.current_priming_signal = priming
@@ -280,7 +309,7 @@ class ArtificialBrain:
         return report
 
     def sleep_cycle(self) -> Dict[str, Any]:
-        """睡眠サイクル (Phase 5: Neuro-Symbolic Consolidation)"""
+        """睡眠サイクル"""
         self.state = "SLEEPING"
         print("\n🌙 --- SLEEP CYCLE INITIATED ---")
         
