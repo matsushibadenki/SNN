@@ -1,4 +1,3 @@
-# snn_research/io/actuator.py
 # ファイルパス: snn_research/io/actuator.py
 # タイトル: アクチュエータ制御モジュール (ROS2/Simulation Hybrid)
 #
@@ -13,10 +12,10 @@ import time
 
 # ROS2ライブラリのインポート試行 (環境にない場合はMockとして振る舞う)
 try:
-    import rclpy
-    from rclpy.node import Node
-    from geometry_msgs.msg import Twist  # 一般的な移動ロボット用
-    from std_msgs.msg import String
+    import rclpy  # type: ignore
+    from rclpy.node import Node  # type: ignore
+    from geometry_msgs.msg import Twist  # type: ignore # 一般的な移動ロボット用
+    from std_msgs.msg import String  # type: ignore
     ROS2_AVAILABLE = True
 except ImportError:
     ROS2_AVAILABLE = False
