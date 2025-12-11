@@ -1,13 +1,17 @@
 # ファイルパス: scripts/run_benchmark_suite.py
+# 日本語タイトル: ベンチマークスイート実行スクリプト
+# 目的: SNNモデルのベンチマークを実行し、パフォーマンスとエネルギー効率を検証・評価する。
 # (修正: target_conf を DictConfig にキャストして mypy エラーを解消)
+# (修正: import順序を修正し、sys/os未定義エラーを解消)
+
+import os
+import sys
 
 # プロジェクトルートをパスに追加
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
 import logging
-import os
-import sys
 import yaml
 import json
 import torch
