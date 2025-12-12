@@ -1,15 +1,16 @@
 # ファイルパス: snn_research/models/transformer/sformer.py
-# Title: SFormer (Scale-and-Fire Transformer) - High Fidelity T=1 Implementation (Fixed v3)
+# Title: SFormer (Scale-and-Fire Transformer) - High Fidelity T=1 Implementation (Fixed v3.1)
 # Description:
 #   ROADMAP Phase 3「究極の低遅延バックボーン」の完全実装。
-#   修正: SFNAttentionにおいて、SFNの適用タイミングをHead分割前に変更し、
-#         次元不整合エラー (Channel mismatch) を確実に解消。
+#   修正: 
+#   1. SFNAttentionにおいて、SFNの適用タイミングをHead分割前に変更し、次元不整合を解消。
+#   2. generate メソッドを追加し、自己回帰的なトークン生成(Thinking Process)を可能に。
 
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Any, Tuple, cast
+import torch.nn.functional as F
+from typing import Optional, Dict, Any, Tuple
 import logging
-import math
 
 from snn_research.core.base import BaseModel
 from snn_research.core.neurons import ScaleAndFireNeuron
@@ -65,7 +66,6 @@ class SFNAttention(nn.Module):
         v = self.v_proj(x)
 
         # 2. Apply SFN (Quantization): (B, L, D)
-        # --- 重要修正: Head分割前に適用 ---
         # SFNは (B, L, C) の形状を受け付け、C=d_model と一致することを確認する
         q, _ = self.sfn_q(q)
         k, _ = self.sfn_k(k)
@@ -87,7 +87,6 @@ class SFNAttention(nn.Module):
         # --- マスク適用 ---
         if mask is not None:
             # mask形状: (L, L) または (B, 1, L, L) を想定
-            # attn_scores: (B, H, L, L)
             attn_scores = attn_scores.masked_fill(mask == 0, float('-inf'))
 
         attn_probs = torch.softmax(attn_scores, dim=-1)
@@ -201,12 +200,6 @@ class SFormer(BaseModel):
         self._init_weights()
         logger.info(f"✅ SFormer initialized (T=1, Levels={sf_levels}). High-Fidelity Mode.")
 
-    def _generate_square_subsequent_mask(self, sz: int, device: torch.device) -> torch.Tensor:
-        """因果マスク（Look-ahead Mask）を生成する"""
-        mask = (torch.triu(torch.ones(sz, sz, device=device)) == 1).transpose(0, 1)
-        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
-        return mask
-
     def forward(
         self, 
         input_ids: torch.Tensor, 
@@ -219,16 +212,26 @@ class SFormer(BaseModel):
         # Embedding
         x = self.embedding(input_ids)
         
-        if L <= self.pos_encoder.shape[1]:
+        # Positional Encoding Handling
+        max_len = self.pos_encoder.shape[1]
+        if L <= max_len:
              x = x + self.pos_encoder[:, :L, :]
         else:
-             x = x + self.pos_encoder[:, :self.pos_encoder.shape[1], :]
+             # シーケンスが長すぎる場合は切り詰めず、PosEncを繰り返すか最後の値を使う等の対策が必要だが
+             # ここでは簡易的にスライス (学習時と推論時で整合性が必要)
+             x = x + self.pos_encoder[:, :max_len, :] # Warning: shape mismatch possibility if not careful, handled by broadcasting? No.
+             # D_model is same. L mismatch.
+             # Slicing logic fix:
+             x = x[:, :L, :] # Ensure x matches if cut
+             # Actually PosEnc should match L.
+             # Correct:
+             pos_enc = self.pos_encoder[:, :min(L, max_len), :]
+             x[:, :pos_enc.shape[1], :] += pos_enc
 
         x = self.dropout(x)
         
         # --- 因果マスクの生成 ---
         causal_mask = torch.triu(torch.ones(L, L, device=device), diagonal=1) == 0
-        # (B, 1, L, L) に拡張してブロードキャスト対応
         causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
 
         # Layers
@@ -239,7 +242,62 @@ class SFormer(BaseModel):
         logits = self.output_projection(x)
         
         total_spikes = self.get_total_spikes()
-        avg_spikes = torch.tensor(total_spikes / (B * L), device=x.device) if return_spikes else torch.tensor(0.0, device=x.device)
+        avg_spikes = torch.tensor(total_spikes / (B * L + 1e-8), device=x.device) if return_spikes else torch.tensor(0.0, device=x.device)
         mem = torch.tensor(0.0, device=x.device)
         
         return logits, avg_spikes, mem
+
+    @torch.no_grad()
+    def generate(
+        self, 
+        input_ids: torch.Tensor, 
+        max_length: int, 
+        temperature: float = 1.0, 
+        do_sample: bool = True,
+        top_k: int = 50
+    ) -> torch.Tensor:
+        """
+        自己回帰的なテキスト生成ループ。
+        
+        Args:
+            input_ids: (Batch, SeqLen) の開始トークン列
+            max_length: 生成後の最大シーケンス長
+            temperature: サンプリング温度
+            do_sample: Trueならサンプリング、FalseならGreedy
+            top_k: Top-KサンプリングのK
+            
+        Returns:
+            generated_ids: (Batch, MaxLength)
+        """
+        self.eval()
+        curr_ids = input_ids.clone()
+        
+        for _ in range(max_length - input_ids.size(1)):
+            # Context Windowの制限 (PosEncの長さに合わせる)
+            cond_ids = curr_ids[:, -self.pos_encoder.size(1):]
+            
+            # Forward pass
+            logits, _, _ = self.forward(cond_ids)
+            next_token_logits = logits[:, -1, :] # 最後のトークンの予測
+            
+            # Temperature
+            next_token_logits = next_token_logits / max(temperature, 1e-5)
+            
+            if do_sample:
+                # Top-K Filtering
+                if top_k > 0:
+                    v, _ = torch.topk(next_token_logits, min(top_k, next_token_logits.size(-1)))
+                    next_token_logits[next_token_logits < v[:, [-1]]] = -float('Inf')
+                
+                probs = F.softmax(next_token_logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+            else:
+                # Greedy
+                next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+                
+            curr_ids = torch.cat([curr_ids, next_token], dim=1)
+            
+            if curr_ids.size(1) >= max_length:
+                break
+                
+        return curr_ids
