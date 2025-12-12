@@ -1,14 +1,11 @@
 # ファイルパス: snn_research/models/bio/pd14_microcircuit.py
-# Title: Potjans-Diesmann Cortical Microcircuit Model (PD14) - Tuned & Typed
+# Title: Potjans-Diesmann Cortical Microcircuit Model (PD14) - Re-Tuned for Stability
 # Description:
 #   doc/assignment.md 第3章に基づき、大脳皮質1mm^2の微小回路モデルを実装。
-#   4つの層(L2/3, L4, L5, L6) × 2つの細胞種(Excitatory, Inhibitory) の
-#   計8集団で構成され、生物学的な接続確率に基づいて配線される。
-#   各ニューロンには TwoCompartmentLIF (能動的樹状突起) を採用可能。
-#
-#   修正 (v2):
-#   - mypyエラー回避のため cast(Any, mod) を使用。
-#   - 重み初期化ロジックを改善 (1/sqrt(N) スケーリング) し、発火率を適正化。
+#   修正 (v3):
+#   - Scenario Bでの過剰発火(てんかん状態)を防ぐため、NMDAゲインを抑制(0.3 -> 0.15)。
+#   - 抑制性結合(Inhibitory)の重みをさらに強化してE/Iバランスを安定化。
+#   - TwoCompartmentLIFの閾値を調整。
 
 import torch
 import torch.nn as nn
@@ -59,13 +56,15 @@ class PD14Microcircuit(BaseModel):
         for name, count in self.pop_counts.items():
             if neuron_type == "two_compartment":
                 # 多区画モデル: 樹状突起計算を有効化
-                # チューニング: NMDAゲインを控えめに設定して安定化
-                nmda_gain = 0.3 if 'e' in name else 0.05
+                # チューニング v3: NMDAゲインをさらに下げて過剰なバーストを防ぐ
+                nmda_gain = 0.15 if 'e' in name else 0.05
                 self.populations[name] = TwoCompartmentLIF(
                     features=count, 
                     nmda_gain=nmda_gain,
                     tau_soma=20.0,
-                    v_threshold=1.0
+                    v_threshold=1.0,
+                    # NMDA発火の閾値を少し上げる (容易にバーストしないように)
+                    nmda_threshold=1.2 
                 )
             else:
                 # 標準LIF
@@ -88,7 +87,6 @@ class PD14Microcircuit(BaseModel):
                     layer = nn.Linear(src_dim, tgt_dim, bias=False)
                     
                     # チューニング: 重みの初期化をスケーリング (1/sqrt(N))
-                    # これにより、入力数が増えても総入力電流が爆発しないようにする
                     limit = 1.0 / np.sqrt(src_dim)
                     
                     with torch.no_grad():
@@ -97,12 +95,11 @@ class PD14Microcircuit(BaseModel):
                         
                         # 重み初期化
                         if 'i' in src:
-                            # 抑制性: 負の重み (少し強めに設定して活動を抑える)
-                            # E/Iバランスのため抑制を強める (x5程度)
-                            nn.init.uniform_(layer.weight, -limit * 5.0, -limit * 0.5)
+                            # チューニング v3: 抑制性結合をさらに強化 (x8.0) して暴走を止める
+                            nn.init.uniform_(layer.weight, -limit * 8.0, -limit * 2.0)
                         else:
-                            # 興奮性: 正の重み
-                            nn.init.uniform_(layer.weight, limit * 0.1, limit)
+                            # 興奮性: 正の重み (少し控えめに)
+                            nn.init.uniform_(layer.weight, limit * 0.05, limit * 0.8)
                             
                         # 接続がない部分は0にする
                         layer.weight *= mask
@@ -121,7 +118,8 @@ class PD14Microcircuit(BaseModel):
         nn.init.uniform_(self.thalamic_input_L6.weight, in_limit * 0.5, in_limit * 2.0)
         
         self.feedback_input_L23 = nn.Linear(input_dim, self.pop_counts["L23e"])
-        nn.init.uniform_(self.feedback_input_L23.weight, in_limit * 0.5, in_limit * 2.0)
+        # トップダウン入力の重みも少し抑える
+        nn.init.uniform_(self.feedback_input_L23.weight, in_limit * 0.2, in_limit * 1.5)
         
         # 出力 (Readout) -> L5e (主要出力層) から
         self.readout = nn.Linear(self.pop_counts["L5e"], output_dim)
@@ -131,9 +129,8 @@ class PD14Microcircuit(BaseModel):
     def _get_connection_prob(self, src: str, tgt: str) -> float:
         """
         PD14モデルに基づき、2つの集団間の接続確率を返す。
-        (チューニング済み: 過剰な再帰結合を抑制)
         """
-        # 自己結合・同層内 (少し抑える)
+        # 自己結合・同層内
         if src == tgt: return 0.05
         if src[:3] == tgt[:3]: return 0.1 
         
@@ -143,7 +140,7 @@ class PD14Microcircuit(BaseModel):
         if "L5" in src and "L6" in tgt: return 0.1
         if "L6" in src and "L4" in tgt: return 0.05
         
-        # 抑制性結合は広範囲 (L23i, L4i, L5i, L6i からの出力)
+        # 抑制性結合は広範囲
         if 'i' in src: return 0.2
         
         return 0.01
@@ -159,12 +156,10 @@ class PD14Microcircuit(BaseModel):
         
         SJ_F.reset_net(self)
         
-        # --- 修正: mypy対応 (castを使用) ---
-        # ニューロン状態のリセットとStateful設定
+        # mypy対応 (castを使用)
         for mod in self.populations.values():
             if hasattr(mod, 'set_stateful'):
                 cast(Any, mod).set_stateful(True)
-        # --------------------------------
             
         # スパイク活動記録用
         spike_counts = {name: 0.0 for name in self.populations.keys()}
@@ -184,60 +179,46 @@ class PD14Microcircuit(BaseModel):
             
             # 各ポピュレーションの更新
             for name, neuron_layer in self.populations.items():
-                # 1. 内部入力の集計 (他のポピュレーションからの入力)
+                # 1. 内部入力の集計
                 internal_current = torch.zeros(B, self.pop_counts[name], device=device)
                 
                 for src_name, src_spikes in prev_spikes.items():
                     conn_name = f"{src_name}_to_{name}"
                     if conn_name in self.connections:
-                        # Linear層を通して電流を加算
                         internal_current += self.connections[conn_name](src_spikes)
                 
                 # 2. 外部入力の加算
                 external_current_soma = torch.zeros_like(internal_current)
                 external_current_dend = torch.zeros_like(internal_current)
                 
-                # L4, L6 -> Thalamic (Bottom-up) -> Somaへ
                 if name == "L4e":
                     external_current_soma += self.thalamic_input_L4(thalamic_input)
                 if name == "L6e":
                     external_current_soma += self.thalamic_input_L6(thalamic_input)
                     
-                # L23 -> Top-down -> Dendriteへ
                 if topdown_input is not None:
                     if name == "L23e":
                         external_current_dend += self.feedback_input_L23(topdown_input)
                 
                 # 3. ニューロン発火
                 if isinstance(neuron_layer, TwoCompartmentLIF):
-                    # 多区画モデル
-                    # 内部結合とボトムアップはSoma、トップダウンはDendriteへ
                     s_input = internal_current + external_current_soma
                     d_input = external_current_dend
-                    
                     spikes, _ = neuron_layer(input_soma=s_input, input_dend=d_input)
                 else:
-                    # 標準モデル
                     total_input = internal_current + external_current_soma + external_current_dend
                     spikes, _ = neuron_layer(total_input)
                 
                 current_spikes[name] = spikes
-                
-                # 統計
                 spike_counts[name] += spikes.sum().item() / B
 
-            # L5eの活動を出力として読み出し
             readout_accum += self.readout(current_spikes["L5e"])
-            
-            # 状態更新
             prev_spikes = current_spikes
 
-        # --- 修正: mypy対応 (castを使用) ---
-        # 終了処理
+        # mypy対応 (castを使用)
         for mod in self.populations.values():
             if hasattr(mod, 'set_stateful'):
                 cast(Any, mod).set_stateful(False)
-        # --------------------------------
 
         # 平均発火率の計算
         avg_firing_rates = {
