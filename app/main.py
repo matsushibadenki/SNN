@@ -1,15 +1,15 @@
 # ファイルパス: app/main.py
-# タイトル: DIコンテナ・Gradio UI起動スクリプト (Refactored for Robustness)
+# タイトル: DIコンテナ・Gradio UI起動スクリプト (Type Safe Fix)
 # 目的: DIコンテナを利用してGradioによるリアルタイム対話UIを起動する。
-# 修正: グローバル変数の排除、クラスベースの状態管理、エラーハンドリングの強化。
+# 修正: mypyの型チェックエラー（ListConfig誤検知、変数再代入の型不一致、Optional[str]の処理）を修正。
 
 import gradio as gr  # type: ignore[import-untyped]
 import argparse
 import sys
 import logging
 from pathlib import Path
-from typing import Tuple, List, Dict, Optional, Any, Union
-from omegaconf import OmegaConf, Container
+from typing import Tuple, List, Dict, Optional, Any, Union, cast
+from omegaconf import OmegaConf, Container, DictConfig, ListConfig
 from dependency_injector import providers
 import asyncio
 
@@ -83,9 +83,20 @@ class SNNInterfaceApp:
                 return
             try:
                 config_obj = OmegaConf.load(config_path_obj)
-                # 'model'キーがあればその中身、なければ全体を使用
-                model_config_block = config_obj.get('model', config_obj)
-                self._add_model_entry(model_id, model_path, model_config_block)
+                
+                # mypy修正: config_obj が DictConfig であることを確認してからアクセスする
+                model_config_block = None
+                if isinstance(config_obj, DictConfig):
+                    model_config_block = config_obj.get('model', config_obj)
+                elif isinstance(config_obj, dict):
+                    # dictの場合も考慮
+                    model_config_block = config_obj.get('model', config_obj)
+                
+                if model_config_block is not None:
+                    self._add_model_entry(model_id, model_path, model_config_block)
+                else:
+                    logger.warning(f"Could not load config for {model_id}: Invalid config format.")
+
             except Exception as e:
                 logger.error(f"Error adding CLI model '{model_id}': {e}")
 
@@ -155,18 +166,20 @@ class SNNInterfaceApp:
             with engine_provider.override(providers.Factory(SNNInferenceEngine, config=full_config_dict)):
                 
                 if task_type == "text":
-                    service = self.container.chat_service()
-                    if isinstance(service, ChatService):
-                        chat_service = service
+                    # mypy修正: 変数名を分けて型推論の競合を回避
+                    txt_svc = self.container.chat_service()
+                    if isinstance(txt_svc, ChatService):
+                        chat_service = txt_svc
                         status_message = f"✅ Text Model '{model_id}' loaded."
                         return chat_service, None, status_message, gr.update(selected="text_tab"), gr.update(visible=True), gr.update(visible=False)
                     else:
                         raise TypeError("Failed to create ChatService")
 
                 elif task_type == "image":
-                    service = self.container.image_classification_service()
-                    if isinstance(service, ImageClassificationService):
-                        image_service = service
+                    # mypy修正: 変数名を分けて型推論の競合を回避
+                    img_svc = self.container.image_classification_service()
+                    if isinstance(img_svc, ImageClassificationService):
+                        image_service = img_svc
                         status_message = f"✅ Image Model '{model_id}' loaded."
                         return None, image_service, status_message, gr.update(selected="image_tab"), gr.update(visible=False), gr.update(visible=True)
                     else:
@@ -267,7 +280,9 @@ class SNNInterfaceApp:
                 try:
                     # ストリームの結果を最後まで回して取得
                     for hist, st in service.stream_response(text, []):
-                        if hist: full_res = hist[-1][1]
+                        if hist: 
+                            # mypy修正: Optional[str] -> str (Noneの場合は空文字)
+                            full_res = hist[-1][1] or ""
                         stats = st
                 except Exception as e:
                     full_res = f"❌ Error: {str(e)}"
