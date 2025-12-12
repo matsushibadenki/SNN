@@ -1,12 +1,11 @@
 # ファイルパス: snn_research/core/snn_core.py
-# ファイル名: SNNコア・ラッパー (Input Handling Fix)
+# ファイル名: SNNコア・ラッパー (v2.1 - Robustness Fix)
 # 機能説明: 各種アーキテクチャ（CNN, Transformer, PCなど）を統一的にラップするクラス。
-#          ArchitectureRegistryを使用して設定からモデルを構築し、
-#          共通のインターフェース（forward, reset_state）を提供する。
+#          forwardメソッドの引数処理を厳密化し、予期しない挙動を防ぐ。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 import logging
 from spikingjelly.activation_based import functional # type: ignore
 
@@ -46,35 +45,38 @@ class SNNCore(nn.Module):
 
     def forward(self, x: Optional[torch.Tensor] = None, **kwargs: Any) -> Any:
         """
-        順伝播。入力テンソル x が None の場合、kwargs から適切なキーを探す。
-        """
-        # x が指定されていない場合、kwargs から入力テンソルを探す
-        if x is None:
-            # 優先順位の高いキーから順に探す
-            # 注意: pop() すると下流のモデルがその引数を必要とする場合にエラーになる可能性があるため、
-            # ここでは取得するだけにして、kwargs はそのままモデルに渡す設計にする。
-            # ただし、x として渡す場合は kwargs から除外しないと重複エラーになる場合がある。
-            # モデルの実装 (forward) 次第だが、一般的には位置引数 x があればそれを使い、
-            # なければ kwargs を使う形が多い。
+        順伝播ラッパー。
+        
+        Args:
+            x (Optional[torch.Tensor]): メインの入力テンソル（画像やトークンID列など）。
+            **kwargs: モデル固有の追加引数（attention_mask, labelsなど）。
             
+        Returns:
+            Any: モデルの出力。
+        """
+        # x が明示的に渡されていない場合のみ、kwargsから一般的な入力キーを探す
+        if x is None:
+            # 優先順位: input_ids (NLP) > input_images (Vision) > x > input
+            potential_keys = ['input_ids', 'input_images', 'input_sequence', 'x', 'input']
             found_key = None
-            for key in ['input_ids', 'input_images', 'input_sequence', 'x', 'input']:
+            
+            for key in potential_keys:
                 if key in kwargs:
                     x = kwargs[key]
                     found_key = key
                     break
             
-            # キーが見つかった場合、kwargs から削除して x として渡すことで重複を防ぐ
+            # 見つかったキーは kwargs から削除して重複を防ぐ
             if found_key:
                 kwargs.pop(found_key)
 
-        # モデルに渡す
+        # 依然として x が None の場合、kwargs のみでモデルを呼び出す
+        # (モデル側が特定のキーワード引数を必須としている場合に備える)
         if x is None:
-            # x が見つからなかった場合は kwargs のみで呼び出す
             return self.model(**kwargs)
-        else:
-            # x と残りの kwargs で呼び出す
-            return self.model(x, **kwargs)
+        
+        # x と kwargs を渡す
+        return self.model(x, **kwargs)
     
     def reset_state(self) -> None:
         """モデルの内部状態（膜電位、スパイク履歴など）をリセットする。"""
@@ -108,13 +110,14 @@ class SNNCore(nn.Module):
         arch_type = self.config.get('architecture_type')
         
         if not arch_type:
-            logger.error(f"SNNCore Config keys: {list(self.config.keys())}")
+            # エラー時のデバッグ情報を強化
+            logger.error(f"SNNCore Config keys provided: {list(self.config.keys())}")
             if 'model' in self.config:
-                logger.error(f"Did you mean to pass config['model']? Found 'model' key in config.")
+                logger.error("Did you mean to pass config['model']? Found 'model' key nested in config.")
             raise ValueError("SNNCore: 'architecture_type' is missing in the configuration. Cannot build model.")
 
         if self.backend != "spikingjelly":
-             raise ValueError(f"Unsupported backend: {self.backend}. Only 'spikingjelly' is supported.")
+             raise ValueError(f"Unsupported backend: {self.backend}. Only 'spikingjelly' is supported at this time.")
 
         # レジストリに構築を委譲
         try:
