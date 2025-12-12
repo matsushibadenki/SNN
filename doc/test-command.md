@@ -1,7 +1,7 @@
-# **SNN Project 統合機能テストコマンド一覧 (Master Manual v15.3)**
+# **SNN Project 統合機能テストコマンド一覧 (Master Manual v16.1)**
 
 本ドキュメントは、SNNプロジェクトの全機能を網羅的にチェック・実行するための統合コマンドリストです。  
-Phase 9 ("Unified Perception") までの全機能をカバーしています。
+Phase 1 ("Biological Foundation") から Phase 16 ("Stabilization") までの主要機能をカバーしています。
 
 ## **1\. 環境準備・メンテナンス (Setup & Maintenance)**
 
@@ -13,7 +13,7 @@ mypy .
 
 ### **プロジェクト健全性チェック (Health Check)**
 
-全サブシステムの統合診断。
+全サブシステムの統合診断（学習、推論、エージェント、生物学的モデルを含む）。
 
 \# CLI経由（推奨）  
 python snn-cli.py health-check
@@ -26,19 +26,29 @@ python scripts/run\_project\_health\_check.py
 python snn-cli.py clean logs    \# ログ削除  
 python snn-cli.py clean models  \# モデル削除
 
-## **2\. 新機能検証 (Phase 8 & 9: Unified Perception & Reasoning)**
+## **2\. 新機能検証 (Bio-Foundation, Perception & Reasoning)**
 
-**v15.3で追加された重要機能の単体・統合テスト。**
+**v16.1で強化された重要機能の単体・統合テスト。**
 
-### **A. SNN-DSA (Dynamic Sparse Attention)**
+### **A. 生物学的マイクロサーキット (PD14 & Active Dendrites) \[New\]**
+
+Potjans-Diesmannモデルと能動的樹状突起による、生物学的妥当性の高い皮質演算デモ。
+
+python scripts/run\_bio\_microcircuit\_demo.py
+
+* **期待される結果:**  
+  * **Scenario A:** ボトムアップ入力により L4 → L2/3 → L5 へと信号が伝播する。  
+  * **Scenario B:** トップダウン入力（予測）が樹状突起を活性化させ、弱い入力でも L5 が発火する（NMDAスパイク効果）。
+
+### **B. SNN-DSA (Dynamic Sparse Attention)**
 
 動的スパース注意機構を持つTransformerの学習能力を検証。
 
 python scripts/verify\_dsa\_learning.py
 
-* **期待される結果:** Accuracy \> 90% で "PASSED" が表示される。
+* **期待される結果:** Accuracy \> 80% で "PASSED" が表示される。
 
-### **B. GRPO (Group Relative Policy Optimization)**
+### **C. GRPO (Group Relative Policy Optimization)**
 
 論理推論能力（思考の軌跡の自己改善）を検証。
 
@@ -46,7 +56,7 @@ python tests/test\_grpo\_logic.py
 
 * **期待される結果:** 重み更新が確認され、テストがPASSする。
 
-### **C. DVS & Universal Encoder**
+### **D. DVS & Universal Encoder**
 
 ニューロモルフィックデータセットと統一エンコーダの動作検証。
 
@@ -56,7 +66,7 @@ python tests/test\_dvs\_pipeline.py
 \# Universal Spike Encoder (Image/Audio/Text/DVS)  
 python tests/test\_universal\_encoder.py
 
-### **D. Liquid Association Cortex (LAC) & 五感統合**
+### **E. Liquid Association Cortex (LAC) & 五感統合**
 
 リザーバ層によるモダリティ統合と、共感覚的想起デモ。
 
@@ -68,13 +78,15 @@ python scripts/run\_cross\_modal\_demo.py
 
 * **期待される結果:** Association Improvement がプラスになり、音声のみから視覚概念が想起される。
 
-### **E. Interactive Web Demo**
+### **F. Interactive Web Demo**
 
-ブラウザ上で「Hearing Colors」を体験する。
+ブラウザ上で「Hearing Colors」やチャットを体験する。
 
-python app/unified\_perception\_demo.py
+python app/main.py \--model-config configs/models/small.yaml  
+\# または  
+python snn-cli.py ui start
 
-* **操作:** ブラウザで http://localhost:7860 にアクセス。
+* **操作:** ブラウザで http://127.0.0.1:7860 にアクセス。
 
 ## **3\. SNN学習ワークフロー (Training \- Legacy & Standard)**
 
@@ -103,13 +115,13 @@ python scripts/runners/train.py \\
     \--config configs/experiments/smoke\_test\_config.yaml \\  
     \--model\_config configs/models/small.yaml
 
-## **4\. 脳型OS & 認知アーキテクチャ (Phase 7\)**
+## **4\. 脳型OS & 認知アーキテクチャ (Phase 7 & 14\)**
 
 ### **A. 脳型OSシミュレーション**
 
-複数の認知モジュールがリソースを巡って競合する様子のデモ。
+複数の認知モジュールがリソース（エネルギー）を巡って競合する様子のデモ。
 
-python scripts/run\_phase7\_os\_simulation.py
+python scripts/runners/run\_neuromorphic\_os.py
 
 ### **B. イベント駆動 & オンチップ学習**
 
@@ -121,9 +133,9 @@ python scripts/run\_on\_chip\_learning.py
 \# イベント駆動型シミュレーション (推論のみ)  
 python scripts/run\_hardware\_simulation.py \--model\_config configs/models/micro.yaml
 
-### **C. 人工脳統合シミュレーション (Phase 5\)**
+### **C. 人工脳統合シミュレーション (Full Cycle)**
 
-対話、睡眠、進化のフルサイクル。
+対話、睡眠（記憶固定化）、進化のフルサイクル。
 
 python scripts/runners/run\_brain\_v14.py
 
@@ -131,7 +143,7 @@ python scripts/runners/run\_brain\_v14.py
 
 ### **A. Deep Bio-Calibration**
 
-HSEOを用いてSNNパラメータを自動チューニングする。
+HSEOを用いてSNNパラメータ（閾値など）を自動チューニングする。
 
 python scripts/run\_deep\_bio\_calibration.py \\  
     \--model\_config configs/models/micro.yaml \\  
