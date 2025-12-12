@@ -1,206 +1,303 @@
 # ファイルパス: scripts/runners/train.py
-# (修正: mypyエラー修正 - tokenizerのNoneチェックと型ナローイングを追加)
+# タイトル: SNN学習実行スクリプト (Refactored & Type-Safe)
+#
+# 機能説明:
+#   各種SNNモデルの学習（勾配法、蒸留、生物学的学習など）を一元管理するランナー。
+#   DIコンテナ (TrainingContainer) を使用して依存関係を注入する。
+#
+# 修正内容:
+#   - mypyエラー対策: cast() を使用してトレーナーの型を明示し、固有メソッド (_compute_ewc_fisher_matrix 等) へのアクセスを許可。
+#   - TokenizerのNoneチェック: データセット構築前にTokenizerが確実に存在することを保証。
+#   - インポート整理: 循環参照や不要なインポートを排除。
 
 import sys
 import os
-
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
 import argparse
+import logging
+from typing import Optional, Dict, Any, cast, Union, List
+
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, random_split, DistributedSampler, Dataset, Sampler
-from dependency_injector.wiring import inject, Provide
-from typing import Optional, Tuple, List, Dict, Any, Callable, cast, Union, TYPE_CHECKING
+from torch.utils.data import DataLoader, random_split, DistributedSampler, Dataset
 from transformers import PreTrainedTokenizerBase, AutoTokenizer
 from omegaconf import DictConfig, OmegaConf, ListConfig
-from torch.optim import Optimizer
-from torch.optim.lr_scheduler import LRScheduler
 
+# プロジェクトルートの設定
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# アプリケーションコンポーネントのインポート
 from app.containers import TrainingContainer
-from snn_research.data.datasets import get_dataset_class, DistillationDataset, DataFormat, SNNBaseDataset
-from snn_research.training.trainers import BreakthroughTrainer, ParticleFilterTrainer, DistillationTrainer
-from snn_research.training.bio_trainer import BioRLTrainer 
-from snn_research.training.quantization import apply_qat, convert_to_quantized_model, apply_spquant_quantization
-from snn_research.training.pruning import apply_sbc_pruning, apply_spatio_temporal_pruning
-from scripts.data_preparation import prepare_wikitext_data
-from snn_research.core.snn_core import SNNCore
 from app.utils import get_auto_device, collate_fn
-import logging
+from snn_research.data.datasets import get_dataset_class, DistillationDataset, DataFormat, SNNBaseDataset
+from snn_research.training.trainers import (
+    BreakthroughTrainer, 
+    ParticleFilterTrainer,
+    DistillationTrainer,
+    SelfSupervisedTrainer,
+    PhysicsInformedTrainer,
+    ProbabilisticEnsembleTrainer
+)
+# 修正: BioRLTrainer は snn_research.training.bio_trainer からインポート
+from snn_research.training.bio_trainer import BioRLTrainer
+from scripts.data_preparation import prepare_wikitext_data
 
+# ロガー設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
 def train(args: argparse.Namespace, config: DictConfig, tokenizer: Optional[PreTrainedTokenizerBase]) -> None:
-    # --- コンテナをここで新規作成 ---
+    """
+    学習プロセスのメインルーチン。
+    DIコンテナを用いてモデル、オプティマイザ、トレーナーを構築し、学習ループを実行する。
+    """
+    # --- 1. DIコンテナのセットアップ ---
     container = TrainingContainer()
     
     if config:
-        # Configを辞書に変換して適用。戻り値を明示的にキャスト
+        # Configを辞書に変換して適用
         conf_dict = cast(Dict[str, Any], OmegaConf.to_container(config, resolve=True))
-        
         if isinstance(conf_dict, dict):
             container.config.from_dict(conf_dict)
-            
-            # デバッグ: モデル設定が正しく渡っているか確認
+            # ログ出力: アーキテクチャ確認
             model_conf = conf_dict.get('model', {})
-            if isinstance(model_conf, dict):
-                arch = model_conf.get('architecture_type', 'NOT_FOUND')
-            else:
-                arch = 'INVALID_MODEL_CONFIG'
-
+            arch = model_conf.get('architecture_type', 'unknown') if isinstance(model_conf, dict) else 'unknown'
             logger.info(f"🔧 Train Config Loaded. Architecture: {arch}")
-            if arch == 'NOT_FOUND':
-                logger.warning(f"⚠️ Model config looks empty! Keys: {conf_dict.keys()}")
         else:
             logger.error(f"❌ Config is not a dictionary, got {type(conf_dict)}")
             return
-    # -------------------------------
 
+    # --- 2. デバイスと分散学習設定 ---
     is_distributed = args.distributed
     rank = int(os.environ.get("LOCAL_RANK", -1))
     device = f'cuda:{rank}' if is_distributed and torch.cuda.is_available() else get_auto_device()
-    
-    paradigm = config.training.paradigm
-    logger.info(f"🚀 学習パラダイム: {paradigm}")
+    logger.info(f"🚀 Using device: {device} (Distributed: {is_distributed}, Rank: {rank})")
 
+    if is_distributed and not dist.is_initialized():
+        dist.init_process_group(backend="nccl")
+        torch.cuda.set_device(rank)
+
+    # --- 3. 学習パラダイムの決定 ---
+    paradigm = config.training.paradigm
+    logger.info(f"📚 Learning Paradigm: {paradigm}")
+
+    # トレーナー変数の型定義 (Union型)
     trainer: Union[BreakthroughTrainer, BioRLTrainer, ParticleFilterTrainer]
 
+    # --- A. 生物学的学習パラダイム (Bio-RL / Particle Filter) ---
     if paradigm.startswith("bio-"):
+        # Bio系は強化学習や特殊なトレーナーを使用
         if paradigm == "bio-causal-sparse":
             container.config.training.biologically_plausible.adaptive_causal_sparsification.enabled.from_value(True)
             trainer = container.bio_rl_trainer()
             cast(BioRLTrainer, trainer).train(num_episodes=config.training.epochs)
+            
         elif paradigm == "bio-particle-filter":
             trainer = container.particle_filter_trainer()
+            # ダミーデータでのステップ実行例
             dummy_data = torch.rand(1, 10, device=device)
             dummy_targets = torch.rand(1, 2, device=device)
             for epoch in range(config.training.epochs):
                 loss = cast(ParticleFilterTrainer, trainer).train_step(dummy_data, dummy_targets)
                 logger.info(f"Epoch {epoch+1}/{config.training.epochs}: Particle Filter Loss = {loss:.4f}")
+                
         elif paradigm == "bio-probabilistic-hebbian":
-            prob_trainer: BioRLTrainer = container.probabilistic_trainer()
-            prob_trainer.train(num_episodes=config.training.epochs)
+            # Probabilistic Hebbian 専用のトレーナーがあれば取得、なければBioRLTrainer
+            # ここではBioRLTrainerを再利用する構成と仮定
+            prob_trainer = container.probabilistic_trainer() if hasattr(container, 'probabilistic_trainer') else container.bio_rl_trainer()
+            cast(BioRLTrainer, prob_trainer).train(num_episodes=config.training.epochs)
+            
         else:
             raise ValueError(f"Unknown bio paradigm: {paradigm}")
+            
+        logger.info("✅ Bio-inspired training completed.")
+        return
 
+    # --- B. 勾配ベース学習パラダイム (Gradient / Distillation / etc.) ---
     elif paradigm in ["gradient_based", "self_supervised", "physics_informed", "probabilistic_ensemble"]:
+        
+        # 1. データセット準備
         grad_config = config.training.get("gradient_based", {})
         grad_type = grad_config.get("type", "standard")
-        
         is_distillation = (paradigm == "gradient_based" and grad_type == "distillation")
-        logger.info(f"ℹ️ Gradient Training Type: {grad_type} (Is Distillation: {is_distillation})")
-
-        if args.data_path:
-            data_path = args.data_path
-        else:
-            data_path = OmegaConf.select(config, "data.path", default="data/default_data.jsonl")
-            if data_path == "data/wikitext-103_train.jsonl" and not os.path.exists(data_path):
-                 prepare_wikitext_data()
         
-        if not os.path.exists(data_path):
-             if "smoke_test_data.jsonl" in data_path:
-                 logger.info(f"⚠️ Data not found: {data_path}. Creating dummy data.")
-                 os.makedirs(os.path.dirname(data_path), exist_ok=True)
-                 with open(data_path, 'w') as f:
+        # データパスの解決
+        data_path = args.data_path or OmegaConf.select(config, "data.path", default="data/default_data.jsonl")
+        
+        # WikiTextの自動ダウンロード
+        if "wikitext-103" in str(data_path) and not os.path.exists(str(data_path)):
+             logger.info("Downloading WikiText-103 dataset...")
+             prepare_wikitext_data()
+
+        # ダミーデータの自動生成 (スモークテスト用)
+        if not os.path.exists(str(data_path)):
+             if "smoke_test_data.jsonl" in str(data_path):
+                 logger.info(f"⚠️ Creating dummy data at: {data_path}")
+                 os.makedirs(os.path.dirname(str(data_path)), exist_ok=True)
+                 with open(str(data_path), 'w') as f:
                      import json
                      for i in range(10): f.write(json.dumps({"text": f"This is a smoke test sample {i}."}) + "\n")
              else:
                  raise FileNotFoundError(f"Data file not found: {data_path}")
 
+        # Tokenizerの安全確保 (Noneチェック)
+        if tokenizer is None:
+            logger.warning("Tokenizer is None. Loading default 'gpt2' tokenizer.")
+            tokenizer = AutoTokenizer.from_pretrained("gpt2")
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+
+        # Datasetクラスの取得とインスタンス化
         DatasetClass = get_dataset_class(DataFormat(config.data.format))
         max_seq_len = OmegaConf.select(config, "model.time_steps", default=128)
+        
         dataset: SNNBaseDataset
-
-        # --- ▼ 修正: Tokenizerの安全確保 ▼ ---
-        if tokenizer is None:
-            logger.warning("Tokenizer is None. Attempting to load default 'gpt2' tokenizer.")
-            try:
-                tokenizer = AutoTokenizer.from_pretrained("gpt2")
-            except Exception as e:
-                raise ValueError("Tokenizer is required for dataset initialization but could not be loaded.") from e
-        
-        # 型ナローイング: これ以降 tokenizer は None ではないと扱われる
-        assert tokenizer is not None
-        # --- ▲ 修正 ▲ ---
-
         if is_distillation:
-            data_dir = os.path.dirname(data_path) if os.path.isfile(data_path) else data_path
+            # 蒸留用データセットの特別処理
+            data_dir = os.path.dirname(str(data_path))
             distill_jsonl_path = os.path.join(data_dir, "distillation_data.jsonl")
-            if isinstance(DatasetClass, type(DistillationDataset)) or os.path.exists(distill_jsonl_path):
-                 if os.path.exists(distill_jsonl_path):
-                     logger.info(f"Using DistillationDataset from {distill_jsonl_path}")
-                     dataset = DistillationDataset(file_path=distill_jsonl_path, data_dir=data_dir, tokenizer=tokenizer, max_seq_len=max_seq_len)
-                 else:
-                     logger.warning("⚠️ 蒸留モードですが、蒸留用データセットが見つかりません。標準学習モードに切り替えます。")
-                     is_distillation = False 
-                     dataset = DatasetClass(file_path=data_path, tokenizer=tokenizer, max_seq_len=max_seq_len)
+            
+            # DistillationDatasetクラスが利用可能かつデータが存在する場合
+            if os.path.exists(distill_jsonl_path):
+                 logger.info(f"Using DistillationDataset from {distill_jsonl_path}")
+                 dataset = DistillationDataset(
+                     file_path=distill_jsonl_path, 
+                     data_dir=data_dir, 
+                     tokenizer=tokenizer, 
+                     max_seq_len=int(max_seq_len)
+                 )
             else:
-                 logger.warning("⚠️ 蒸留モードですが、適切なデータセットがありません。標準学習モードに切り替えます。")
-                 is_distillation = False
-                 dataset = DatasetClass(file_path=data_path, tokenizer=tokenizer, max_seq_len=max_seq_len)
+                 logger.warning("⚠️ Distillation dataset not found. Falling back to standard dataset.")
+                 is_distillation = False # フラグを戻す
+                 dataset = DatasetClass(file_path=str(data_path), tokenizer=tokenizer, max_seq_len=int(max_seq_len))
         else:
-            dataset = DatasetClass(file_path=data_path, tokenizer=tokenizer, max_seq_len=max_seq_len)
+            dataset = DatasetClass(file_path=str(data_path), tokenizer=tokenizer, max_seq_len=int(max_seq_len))
         
-        logger.info(f"Dataset loaded: {len(dataset)} samples. Final Is Distillation: {is_distillation}")
+        logger.info(f"Dataset loaded: {len(dataset)} samples.")
 
-        split_ratio = OmegaConf.select(config, "data.split_ratio", default=0.1)
+        # データ分割とローダー作成
+        split_ratio = float(OmegaConf.select(config, "data.split_ratio", default=0.1))
         train_size = int((1.0 - split_ratio) * len(dataset))
         val_size = len(dataset) - train_size
         if train_size <= 0: train_size = len(dataset); val_size = 0
         
-        train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-        train_sampler: Optional[DistributedSampler] = DistributedSampler(train_dataset) if is_distributed else None
+        train_dataset_split, val_dataset_split = random_split(dataset, [train_size, val_size])
+        
+        # 修正: train_sampler の型アノテーション追加 [var-annotated]
+        train_sampler: Optional[DistributedSampler] = DistributedSampler(train_dataset_split) if is_distributed else None
         
         collate_fn_instance = collate_fn(tokenizer, is_distillation)
+        batch_size = int(config.training.batch_size)
         
-        train_loader = DataLoader(train_dataset, batch_size=config.training.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, collate_fn=collate_fn_instance)
-        val_loader = DataLoader(val_dataset, batch_size=config.training.batch_size, shuffle=False, collate_fn=collate_fn_instance)
+        train_loader = DataLoader(
+            train_dataset_split, 
+            batch_size=batch_size, 
+            shuffle=(train_sampler is None), 
+            sampler=train_sampler, 
+            collate_fn=collate_fn_instance
+        )
+        val_loader = DataLoader(
+            val_dataset_split, 
+            batch_size=batch_size, 
+            shuffle=False, 
+            collate_fn=collate_fn_instance
+        )
 
+        # 2. モデル構築 (DIコンテナ)
+        # 修正: snn_model の型を nn.Module として定義し、DDPラップに対応させる
         snn_model: nn.Module = container.snn_model(backend=args.backend)
         snn_model.to(device)
-        if is_distributed: snn_model = DDP(snn_model, device_ids=[rank], find_unused_parameters=True)
-
-        astrocyte = container.astrocyte_network(snn_model=snn_model) if args.use_astrocyte else None
-        optimizer = container.optimizer(params=snn_model.parameters())
-        scheduler = container.scheduler(optimizer=optimizer) if config.training.gradient_based.use_scheduler else None
         
+        if is_distributed:
+            snn_model = DDP(snn_model, device_ids=[rank], find_unused_parameters=True)
+
+        # オプティマイザとスケジューラ
+        optimizer = container.optimizer(params=snn_model.parameters())
+        use_scheduler = bool(config.training.gradient_based.use_scheduler)
+        scheduler = container.scheduler(optimizer=optimizer) if use_scheduler else None
+        
+        # 3. トレーナーの選択と初期化
         if paradigm == "gradient_based":
             if is_distillation:
                 logger.info("🎓 Using DistillationTrainer")
-                trainer = container.distillation_trainer(model=snn_model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank)
+                trainer = container.distillation_trainer(
+                    model=snn_model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank
+                )
             else:
                 logger.info("👨‍🏫 Using Standard BreakthroughTrainer")
-                trainer = container.standard_trainer(model=snn_model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank)
+                trainer = container.standard_trainer(
+                    model=snn_model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank
+                )
         elif paradigm == "self_supervised":
-            trainer = container.self_supervised_trainer(model=snn_model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank)
+            trainer = container.self_supervised_trainer(
+                model=snn_model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank
+            )
         elif paradigm == "physics_informed":
-            trainer = container.physics_informed_trainer(model=snn_model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank)
-        else: 
-            trainer = container.probabilistic_ensemble_trainer(model=snn_model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank)
+            trainer = container.physics_informed_trainer(
+                model=snn_model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank
+            )
+        else: # probabilistic_ensemble
+            trainer = container.probabilistic_ensemble_trainer(
+                model=snn_model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank
+            )
 
+        # BreakthroughTrainer型としてキャスト (共通インターフェース利用のため)
         bt_trainer = cast(BreakthroughTrainer, trainer)
-        if args.load_ewc_data: bt_trainer.load_ewc_data(args.load_ewc_data)
 
-        start_epoch = bt_trainer.load_checkpoint(args.resume_path) if args.resume_path else 0
-        for epoch in range(start_epoch, config.training.epochs):
+        # EWCデータのロード (継続学習用)
+        if args.load_ewc_data:
+            bt_trainer.load_ewc_data(args.load_ewc_data)
+
+        # チェックポイントからの再開
+        start_epoch = 0
+        if args.resume_path:
+            start_epoch = bt_trainer.load_checkpoint(args.resume_path)
+            logger.info(f"Resumed from epoch {start_epoch}")
+
+        # 4. 学習ループ
+        total_epochs = int(config.training.epochs)
+        eval_interval = int(config.training.eval_interval)
+        log_interval = int(config.training.log_interval)
+        log_dir = str(config.training.log_dir)
+
+        for epoch in range(start_epoch, total_epochs):
+            # 学習 (1エポック)
             bt_trainer.train_epoch(train_loader, epoch)
-            if rank in [-1, 0] and (epoch % config.training.eval_interval == 0 or epoch == config.training.epochs - 1):
+            
+            # 評価と保存 (メインプロセスのみ)
+            if rank in [-1, 0] and (epoch % eval_interval == 0 or epoch == total_epochs - 1):
                 val_metrics = bt_trainer.evaluate(val_loader, epoch)
-                if epoch % config.training.log_interval == 0:
-                    checkpoint_path = os.path.join(config.training.log_dir, f"checkpoint_epoch_{epoch}.pth")
-                    model_config_dict = cast(Dict[str, Any], OmegaConf.to_container(config.model, resolve=True)) if isinstance(config.model, DictConfig) else config.model
-                    bt_trainer.save_checkpoint(path=checkpoint_path, epoch=epoch, metric_value=val_metrics.get('total', float('inf')), tokenizer_name=config.data.tokenizer_name, config=model_config_dict)
+                
+                if epoch % log_interval == 0:
+                    checkpoint_path = os.path.join(log_dir, f"checkpoint_epoch_{epoch}.pth")
+                    
+                    # モデル設定を辞書として保存
+                    model_config_dict: Dict[str, Any]
+                    if isinstance(config.model, DictConfig):
+                        model_config_dict = cast(Dict[str, Any], OmegaConf.to_container(config.model, resolve=True))
+                    else:
+                        model_config_dict = dict(config.model)
+                        
+                    bt_trainer.save_checkpoint(
+                        path=checkpoint_path, 
+                        epoch=epoch, 
+                        metric_value=val_metrics.get('total', float('inf')), 
+                        tokenizer_name=str(config.data.tokenizer_name), 
+                        config=model_config_dict
+                    )
         
+        # 5. EWC Fisher行列の計算 (タスク完了後)
         if args.task_name and rank in [-1, 0]:
-             ewc_weight = OmegaConf.select(config, "training.gradient_based.loss.ewc_weight", default=0.0)
+             ewc_weight = float(OmegaConf.select(config, "training.gradient_based.loss.ewc_weight", default=0.0))
              if ewc_weight > 0:
                  logger.info(f"🔒 Computing EWC Fisher Matrix for task '{args.task_name}'...")
-                 bt_trainer._compute_ewc_fisher_matrix(train_loader, args.task_name)
+                 # mypyエラー回避のため、メソッドの存在を前提に呼び出し
+                 # (BreakthroughTrainerは _compute_ewc_fisher_matrix を持っている)
+                 bt_trainer._compute_ewc_fisher_matrix(train_loader, args.task_name) # type: ignore[attr-defined]
 
     else:
         raise ValueError(f"Unknown training paradigm: '{paradigm}'.")
@@ -209,20 +306,21 @@ def train(args: argparse.Namespace, config: DictConfig, tokenizer: Optional[PreT
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/templates/base_config.yaml")
-    parser.add_argument("--model_config", type=str)
-    parser.add_argument("--data_path", type=str)
-    parser.add_argument("--task_name", type=str)
-    parser.add_argument("--override_config", type=str, action='append')
-    parser.add_argument("--distributed", action="store_true")
-    parser.add_argument("--resume_path", type=str)
-    parser.add_argument("--load_ewc_data", type=str)
-    parser.add_argument("--use_astrocyte", action="store_true")
-    parser.add_argument("--paradigm", type=str)
-    parser.add_argument("--backend", type=str, default="spikingjelly")
+    parser = argparse.ArgumentParser(description="SNN Training Runner")
+    parser.add_argument("--config", type=str, default="configs/templates/base_config.yaml", help="Base config file")
+    parser.add_argument("--model_config", type=str, help="Model architecture config file")
+    parser.add_argument("--data_path", type=str, help="Path to dataset file")
+    parser.add_argument("--task_name", type=str, help="Task name for EWC")
+    parser.add_argument("--override_config", type=str, action='append', help="Override config (e.g. training.epochs=10)")
+    parser.add_argument("--distributed", action="store_true", help="Enable distributed training (DDP)")
+    parser.add_argument("--resume_path", type=str, help="Path to checkpoint to resume from")
+    parser.add_argument("--load_ewc_data", type=str, help="Path to EWC data file")
+    parser.add_argument("--use_astrocyte", action="store_true", help="Enable Astrocyte Network")
+    parser.add_argument("--paradigm", type=str, help="Override training paradigm")
+    parser.add_argument("--backend", type=str, default="spikingjelly", help="SNN backend")
     args = parser.parse_args()
 
+    # Configのロードとマージ
     try:
         base_path = "configs/templates/base_config.yaml"
         if os.path.exists(base_path):
@@ -240,12 +338,14 @@ def main() -> None:
         if args.model_config:
             if os.path.exists(args.model_config):
                 model_conf_raw = OmegaConf.load(args.model_config)
+                # 'model'キーがない場合はラップする
                 if 'model' in model_conf_raw:
                     model_conf = model_conf_raw
                 else:
                     model_conf = OmegaConf.create({"model": model_conf_raw})
                 base_conf = OmegaConf.merge(base_conf, model_conf)
         
+        # CLI引数によるオーバーライド
         if args.override_config:
             for override in args.override_config:
                 base_conf = OmegaConf.merge(base_conf, OmegaConf.from_dotlist([override]))
@@ -255,31 +355,31 @@ def main() -> None:
         if args.paradigm:
             OmegaConf.update(base_conf, "training.paradigm", args.paradigm)
 
-        model_arch = OmegaConf.select(base_conf, "model.architecture_type")
-        logger.info(f"🔍 Loaded Model Config: architecture_type = {model_arch}")
-
-        final_config_dict = cast(Dict[str, Any], OmegaConf.to_container(base_conf, resolve=True))
-        if not isinstance(final_config_dict, dict):
-             raise TypeError("Final config is not a dictionary.")
-        
+        # 型チェックとキャスト
         if not isinstance(base_conf, DictConfig):
-            if isinstance(base_conf, ListConfig):
-                 raise TypeError("Root config must be a dictionary (DictConfig), not a list (ListConfig).")
-            else:
-                 base_conf = OmegaConf.create(base_conf)
+             if isinstance(base_conf, ListConfig):
+                 raise TypeError("Root config must be a dictionary (DictConfig), not a list.")
+             base_conf = OmegaConf.create(base_conf)
         
         base_conf_typed = cast(DictConfig, base_conf)
+
+        model_arch = OmegaConf.select(base_conf_typed, "model.architecture_type")
+        logger.info(f"🔍 Loaded Config: architecture_type = {model_arch}")
 
     except Exception as e:
         logger.error(f"Error loading/merging config: {e}")
         sys.exit(1)
     
+    # Tokenizerの初期化 (ここで一度ロードを試みる)
+    injected_tokenizer: Optional[PreTrainedTokenizerBase] = None
     try:
-        injected_tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        tokenizer_name = str(OmegaConf.select(base_conf_typed, "data.tokenizer_name", default="gpt2"))
+        injected_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     except Exception:
-        logger.warning("Could not load AutoTokenizer, using simple fallback.")
+        logger.warning("Could not load configured AutoTokenizer. Will fallback to 'gpt2' later if needed.")
         injected_tokenizer = None
 
+    # 学習実行
     train(args, config=base_conf_typed, tokenizer=injected_tokenizer)
 
 if __name__ == "__main__":
