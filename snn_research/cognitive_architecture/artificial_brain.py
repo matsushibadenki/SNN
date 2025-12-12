@@ -1,9 +1,9 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# Title: Artificial Brain Kernel v16.0 (System 2 & Safety Integrated)
+# Title: Artificial Brain Kernel v16.1 (Dimension Fix)
 # Description:
 #   ROADMAP v16 対応の統合人工脳カーネル。
-#   ReasoningEngine (GRPO+Verifier) と EthicalGuardrail を組み込み、
-#   「思考する」「検証する」「安全を守る」機能を認知サイクルに統合。
+#   修正: LiquidAssociationCortexの入力次元不一致(Audio/Text)を修正。
+#   汎用エンコーダ出力(256dim)を受け入れるために、audio入力サイズを拡張。
 
 from typing import Dict, Any, List, Optional, Union, cast
 import time
@@ -116,9 +116,10 @@ class ArtificialBrain:
             self.tokenizer = None
 
         # --- Liquid Association Cortex (Unified Perception) ---
+        # 修正: num_audio_inputs を 256 に拡張 (汎用入力用)
         self.association_cortex = LiquidAssociationCortex(
             num_visual_inputs=64,
-            num_audio_inputs=64,
+            num_audio_inputs=256, 
             num_text_inputs=256,
             num_somato_inputs=10,
             reservoir_size=512
@@ -196,6 +197,7 @@ class ArtificialBrain:
                 spike_pattern = self.encoder.encode(sensory_info, duration=16)
                 self.perception.perceive_and_upload(spike_pattern)
                 report["executed_modules"].append("perception")
+                # ここで汎用入力として256次元が来る可能性があるため、LACのAudio入力(256)にマップする
                 audio_spikes_for_lac = spike_pattern.float().mean(dim=0).unsqueeze(0) > 0.5
                 
                 if self.astrocyte.request_resource("amygdala", 1.0):
@@ -208,6 +210,11 @@ class ArtificialBrain:
         lac_vis = visual_spikes_for_lac.float() if visual_spikes_for_lac is not None else None
         lac_aud = audio_spikes_for_lac.float() if audio_spikes_for_lac is not None else None
         
+        # デバイスの整合性を確保
+        device = next(self.association_cortex.parameters()).device
+        if lac_vis is not None: lac_vis = lac_vis.to(device)
+        if lac_aud is not None: lac_aud = lac_aud.to(device)
+
         association_activity = self.association_cortex(visual_spikes=lac_vis, audio_spikes=lac_aud)
         
         if self.astrocyte.request_resource("association", 5.0):
@@ -429,3 +436,5 @@ class ArtificialBrain:
                 )
         else:
             logger.warning("⚠️ Cannot correct knowledge now: Brain too tired.")
+
+}
