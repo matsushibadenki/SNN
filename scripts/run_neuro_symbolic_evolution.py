@@ -3,6 +3,7 @@
 # Description:
 #   人工脳が「対話による知識獲得」→「睡眠による記憶固定化」→「知識の再構成」
 #   という進化サイクルを自律的に行う様子をシミュレーションする。
+#   修正: STDPの必須パラメータ不足によるTypeErrorを修正。
 
 import sys
 import os
@@ -39,7 +40,13 @@ def main():
         "training": {
             "biologically_plausible": {
                 "neuron": {"type": "lif"},
-                "stdp": {"learning_rate": 0.01}
+                # 修正: STDPの初期化に必要なパラメータを追加
+                "stdp": {
+                    "learning_rate": 0.01,
+                    "a_plus": 1.0,
+                    "a_minus": 1.0,
+                    "tau_trace": 20.0
+                }
             }
         }
     })
