@@ -1,12 +1,9 @@
-\<div align="center"\>
-
 # **SNN Project: The Artificial Brain**
 
 **Next-Generation Neuromorphic AI & Neuro-Symbolic OS**
 
 [🇺🇸 English](https://www.google.com/search?q=%23english) | [🇯🇵 日本語](https://www.google.com/search?q=%23japanese)
 
-\</div\>
 
 
 ## **🚀 Vision: "The Brain as an Operating System"**
