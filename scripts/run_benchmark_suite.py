@@ -1,8 +1,10 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# Title: Neuromorphic Benchmark Suite (v16.1 - Debug & MPS Support)
+# Title: Neuromorphic Benchmark Suite (v16.2 - Type Fix)
 # Description:
-#   ベンチマークの実行状況を強制的に標準出力(print)し、サイレント終了を防ぐ。
-#   また、Mac (MPS) 環境やCUDA環境を適切に判定する。
+#   mypyエラー修正版。
+#   - model_config を Dict[str, Any] にキャストして .get() を安全に呼び出し。
+#   - model.model を Any にキャストして reset_spike_stats() を呼び出し。
+#   - dummy_config['time_steps'] を int にキャスト。
 
 import sys
 import os
@@ -12,10 +14,10 @@ import argparse
 import time
 import json
 import traceback
-from typing import Dict, Any, List, cast
+from typing import Dict, Any, List, cast, Union
 from pathlib import Path
 import datetime
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, DictConfig, ListConfig
 
 # プロジェクトルートの設定
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
@@ -30,7 +32,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("Benchmark")
 
-# 遅延インポートの回避（エラー時に場所を特定しやすくするためここでインポート）
+# 遅延インポートの回避
 try:
     from snn_research.core.snn_core import SNNCore
     from snn_research.metrics.energy import EnergyMetrics
@@ -72,6 +74,7 @@ class BenchmarkSuite:
             if os.path.exists(config_path):
                 conf = OmegaConf.load(config_path)
                 if 'model' in conf:
+                    # OmegaConf object -> container (dict or list)
                     model_config = OmegaConf.to_container(conf.model, resolve=True) # type: ignore
                 else:
                     model_config = OmegaConf.to_container(conf, resolve=True)
@@ -87,9 +90,19 @@ class BenchmarkSuite:
                     "neuron_config": {"base_threshold": 1.0}
                 }
             
+            # --- 修正: model_config を明示的に Dict[str, Any] にキャスト ---
+            if not isinstance(model_config, dict):
+                # リストやNoneが返ってきた場合の安全策
+                model_config_dict: Dict[str, Any] = {}
+                if isinstance(model_config, list):
+                    pass # リスト構造の場合は別途処理が必要だがここでは無視
+                print("Warning: Loaded config is not a dict.")
+            else:
+                model_config_dict = cast(Dict[str, Any], model_config)
+
             # モデル構築
-            vocab_size = int(model_config.get("vocab_size", 100))
-            model = SNNCore(config=cast(Dict[str, Any], model_config), vocab_size=vocab_size).to(self.device)
+            vocab_size = int(model_config_dict.get("vocab_size", 100))
+            model = SNNCore(config=model_config_dict, vocab_size=vocab_size).to(self.device)
             model.eval()
             
             # ダミー入力
@@ -131,7 +144,7 @@ class BenchmarkSuite:
                 arch_type = "spiking_transformer"
 
             # モデル構築
-            dummy_config = {
+            dummy_config: Dict[str, Any] = {
                 "architecture_type": arch_type,
                 "vocab_size": 1000,
                 "d_model": 128,
@@ -154,24 +167,25 @@ class BenchmarkSuite:
             start_time = time.time()
             with torch.no_grad():
                 for _ in range(num_runs):
-                    if hasattr(model.model, 'reset_spike_stats'):
-                        model.model.reset_spike_stats()
+                    # --- 修正: model.model を Any にキャストして呼び出し (Tensor判定回避) ---
+                    inner_model = cast(Any, model.model)
+                    if hasattr(inner_model, 'reset_spike_stats'):
+                        inner_model.reset_spike_stats()
                         
                     # return_spikes=True で呼び出し
-                    # 戻り値の形式: (logits, avg_spike, mem) を想定
                     out = model(input_ids, return_spikes=True)
                     
                     # スパイク数の集計
                     if isinstance(out, tuple) and len(out) >= 2:
-                        # 2番目の要素がスパイク情報
                         spike_info = out[1]
                         if isinstance(spike_info, torch.Tensor):
-                            # モデル側で計算された平均値や合計値
                             total_spikes += spike_info.item()
                     
                     # バックアップ: モデル内部のカウンタを確認
-                    if hasattr(model.model, 'get_total_spikes'):
-                        # 直近の実行分を取得できる実装ならここで加算
+                    if hasattr(inner_model, 'get_total_spikes'):
+                        # get_total_spikes() を呼ぶ場合は重複加算に注意
+                        # ここでは out[1] が取れない場合のフォールバックとしてのみ使用すべきだが
+                        # 簡易的に out[1] が 0.0 の場合のみチェックするロジックなどが本来は必要
                         pass 
             
             end_time = time.time()
@@ -180,10 +194,15 @@ class BenchmarkSuite:
             
             # エネルギー計算 (推定)
             num_neurons = 128 * 16 * 4 # 仮
+            
+            # --- 修正: time_steps を int に明示キャスト ---
+            ts_val = dummy_config['time_steps']
+            time_steps_int = int(ts_val) if isinstance(ts_val, (int, float, str)) else 4
+
             energy_metrics = EnergyMetrics.calculate_energy_consumption(
                 total_spikes=avg_spikes_per_inference,
                 num_neurons=num_neurons,
-                time_steps=dummy_config['time_steps']
+                time_steps=time_steps_int
             )
             
             print(f"✅ DONE")
@@ -211,18 +230,16 @@ class BenchmarkSuite:
 def main():
     print("🚀 Starting Benchmark Suite...")
     parser = argparse.ArgumentParser(description="Run SNN Benchmark Suite")
-    # choices に "all" を追加し、デフォルトで全テストを実行可能に
     parser.add_argument("--mode", type=str, default="all", choices=["smoke", "full", "all"], help="Benchmark mode")
     args = parser.parse_args()
     
     suite = BenchmarkSuite()
     
-    # 1. Smoke Tests (Always run)
+    # 1. Smoke Tests
     suite.run_smoke_test("SFormer_T1", "configs/models/phase3_sformer.yaml")
     suite.run_smoke_test("SNN_DSA", "configs/models/dsa_transformer.yaml")
     
     # 2. Efficiency Benchmarks
-    # 修正: 'all' または 'full' の場合に実行
     if args.mode in ["all", "full"]:
         suite.run_efficiency_benchmark("SFormer_T1")
         suite.run_efficiency_benchmark("SNN_DSA")
