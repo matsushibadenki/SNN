@@ -1,0 +1,25 @@
+# ファイルパス: configs/models/dsa_transformer.yaml
+# Title: SNN-DSA (Dynamic Sparse Attention) Transformer Configuration
+# Description:
+#   ROADMAP Phase 8-2 実装の SNN-DSA モデル用設定ファイル。
+#   スパースな注意機構 (Top-K) を持つ省エネ型Transformer。
+
+model:
+  name: "dsa_transformer_micro"
+  architecture_type: "dsa_transformer"
+  
+  # Model Hyperparameters
+  d_model: 64
+  num_heads: 4
+  num_layers: 2
+  top_k: 4          # 注意機構で活性化するトップK個の要素
+  max_len: 128
+  dropout: 0.1
+  
+  # Benchmark settings
+  vocab_size: 1000 
+  time_steps: 4     # SNNの時間ステップ数
+
+  neuron_config:
+    base_threshold: 0.5
+    tau_mem: 5.0
