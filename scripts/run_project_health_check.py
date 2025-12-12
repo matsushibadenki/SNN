@@ -1,8 +1,9 @@
 # ファイルパス: scripts/run_project_health_check.py
-# Title: SNNプロジェクト 統合健全性チェック (高精度版 v2.3 - Refactored)
+# Title: SNNプロジェクト 統合健全性チェック (最新版 v2.4 - Bio & OS Added)
 # Description: 
-#   各コンポーネントの実行、成果物検証、ログ内容の精査を行う。
-#   v2.3修正: タイムアウト設定、環境変数の適切な継承、一時ファイルのクリーンアップ処理を追加。
+#   プロジェクトの全コンポーネント（学習、推論、エージェント、生物学的モデル、OS）の
+#   動作を網羅的に検証するスクリプト。
+#   v2.4追加: PD14マイクロサーキット、オンチップ学習、脳型OSのテストケース。
 
 import subprocess
 import sys
@@ -119,7 +120,7 @@ def check_training_success(log_dir: str) -> Callable[[str], bool]:
 
 def main():
     logger.info("="*60)
-    logger.info("🩺 SNNプロジェクト 高精度健全性チェック (v2.3)")
+    logger.info("🩺 SNNプロジェクト 高精度健全性チェック (v2.4)")
     logger.info("="*60)
     logger.info(f"📂 作業ディレクトリ: {os.getcwd()}")
 
@@ -307,10 +308,31 @@ except Exception as e:
             validator=check_log_contains("TASK COMPLETED")
         )
 
+        # --- 13. On-Chip Learning (New) ---
+        results["13. オンチップ学習 (STDP)"] = runner.run_command(
+            [py, "scripts/run_on_chip_learning.py"],
+            "13. オンチップ学習 (STDP)",
+            validator=check_log_contains("demo finished")
+        )
+
+        # --- 14. Bio-Microcircuit (PD14) (New) ---
+        results["14. 生物学的マイクロサーキット (PD14)"] = runner.run_command(
+            [py, "scripts/run_bio_microcircuit_demo.py"],
+            "14. 生物学的マイクロサーキット (PD14)",
+            validator=check_log_contains("Demo Completed")
+        )
+
+        # --- 15. Neuromorphic OS (New) ---
+        results["15. 脳型OSシミュレーション (Neuromorphic OS)"] = runner.run_command(
+            [py, "scripts/runners/run_neuromorphic_os.py"],
+            "15. 脳型OSシミュレーション (Neuromorphic OS)",
+            validator=check_log_contains("Demo Completed")
+        )
+
     finally:
         # 結果集計
         logger.info("="*60)
-        logger.info("🩺 統合健全性チェック完了 (高精度版 v2.3)")
+        logger.info("🩺 統合健全性チェック完了 (高精度版 v2.4)")
         logger.info("="*60)
         
         passed_count = sum(1 for v in results.values() if v)
