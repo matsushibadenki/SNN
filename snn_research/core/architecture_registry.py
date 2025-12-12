@@ -1,9 +1,7 @@
 # ファイルパス: snn_research/core/architecture_registry.py
-# Title: モデルアーキテクチャレジストリ
+# Title: モデルアーキテクチャレジストリ (Fixed)
 # Description:
-#   各種SNNモデルの構築ロジックを一元管理するレジストリ。
-#   SNNCoreから呼び出され、設定(config)に基づいて適切なモデルインスタンスを生成する。
-#   遅延インポートにより、循環参照や不要なモジュールの読み込みを防止する。
+#   dsa_transformer の登録を追加し、ベンチマークスイートからの呼び出しに対応。
 
 import torch.nn as nn
 from typing import Dict, Any, Callable, List, Optional, cast
@@ -21,8 +19,6 @@ class ArchitectureRegistry:
     def register(cls, name: str):
         """
         ビルダー関数を登録するデコレータ。
-        @ArchitectureRegistry.register("model_type_name")
-        def build_model(...): ...
         """
         def decorator(builder_func: Callable[[Dict[str, Any], int], nn.Module]):
             if name in cls._registry:
@@ -206,7 +202,7 @@ def build_sformer(config: Dict[str, Any], vocab_size: int) -> nn.Module:
         num_layers=config.get('num_layers', 6),
         dim_feedforward=config.get('dim_feedforward', 1024),
         dropout=config.get('dropout', 0.1),
-        neuron_config=config.get('neuron', {})
+        neuron_config=config.get('neuron_config', config.get('neuron', {}))
     )
 
 @ArchitectureRegistry.register("semm")
@@ -273,4 +269,20 @@ def build_spiking_ssm(config: Dict[str, Any], vocab_size: int) -> nn.Module:
         time_steps=config.get('time_steps', 16),
         d_conv=config.get('d_conv', 4),
         neuron_config=config.get('neuron', {})
+    )
+
+@ArchitectureRegistry.register("dsa_transformer")
+def build_dsa_transformer(config: Dict[str, Any], vocab_size: int) -> nn.Module:
+    from snn_research.models.transformer.dsa_transformer import DSASpikingTransformer
+    
+    return DSASpikingTransformer(
+        vocab_size=vocab_size,
+        output_dim=vocab_size,
+        d_model=config.get('d_model', 64),
+        num_heads=config.get('num_heads', 4),
+        num_layers=config.get('num_layers', 2),
+        top_k=config.get('top_k', 4),
+        max_len=config.get('max_len', 128),
+        dropout=config.get('dropout', 0.1),
+        neuron_params=config.get('neuron_config', {})
     )
