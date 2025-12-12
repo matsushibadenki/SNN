@@ -211,17 +211,19 @@ class BenchmarkSuite:
 def main():
     print("🚀 Starting Benchmark Suite...")
     parser = argparse.ArgumentParser(description="Run SNN Benchmark Suite")
-    parser.add_argument("--mode", type=str, default="all", choices=["smoke", "full"], help="Benchmark mode")
+    # choices に "all" を追加し、デフォルトで全テストを実行可能に
+    parser.add_argument("--mode", type=str, default="all", choices=["smoke", "full", "all"], help="Benchmark mode")
     args = parser.parse_args()
     
     suite = BenchmarkSuite()
     
-    # 1. Smoke Tests
+    # 1. Smoke Tests (Always run)
     suite.run_smoke_test("SFormer_T1", "configs/models/phase3_sformer.yaml")
     suite.run_smoke_test("SNN_DSA", "configs/models/dsa_transformer.yaml")
     
     # 2. Efficiency Benchmarks
-    if args.mode == "full":
+    # 修正: 'all' または 'full' の場合に実行
+    if args.mode in ["all", "full"]:
         suite.run_efficiency_benchmark("SFormer_T1")
         suite.run_efficiency_benchmark("SNN_DSA")
         
