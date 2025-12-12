@@ -1,7 +1,8 @@
 # ファイルパス: snn_research/models/transformer/dsa_transformer.py
-# Title: DSA Spiking Transformer モデル [Type Fixed]
+# Title: DSA Spiking Transformer モデル [Input Fix]
 # Description:
-#   neuron_params の型定義エラー(Optional)を修正。
+#   - nn.Linear から nn.Embedding に変更し、入力ID (LongTensor) に対応。
+#   - neuron_params を __init__ で受け取り、ハードコーディングを排除。
 
 import torch
 import torch.nn as nn
@@ -15,7 +16,6 @@ class FeedForwardBlock(nn.Module):
     SNN用 Feed-Forward Network (FFN)
     Structure: Linear -> LIF -> Linear -> LIF
     """
-    # 修正: neuron_params: Dict[str, Any] = None -> Optional[Dict[str, Any]] = None
     def __init__(self, d_model: int, expansion_factor: int = 4, dropout: float = 0.1, neuron_params: Optional[Dict[str, Any]] = None):
         super().__init__()
         if neuron_params is None:
@@ -47,7 +47,6 @@ class DSATransformerBlock(nn.Module):
     """
     Dynamic Sparse Attention を含む Transformer Block。
     """
-    # 修正: neuron_params の型定義
     def __init__(
         self, 
         d_model: int, 
@@ -92,27 +91,28 @@ class DSASpikingTransformer(nn.Module):
     """
     def __init__(
         self,
-        input_dim: int,
+        vocab_size: int,
         output_dim: int,
         d_model: int = 64,
         num_heads: int = 4,
         num_layers: int = 2,
         top_k: int = 4,
         max_len: int = 128,
-        dropout: float = 0.1
+        dropout: float = 0.1,
+        neuron_params: Optional[Dict[str, Any]] = None
     ):
         super().__init__()
         self.d_model = d_model
         
-        # Input Embedding
-        self.embedding = nn.Linear(input_dim, d_model)
+        if neuron_params is None:
+            neuron_params = {'base_threshold': 0.5, 'tau_mem': 5.0} # Default
+        
+        # Input Embedding (Indices -> Dense)
+        self.embedding = nn.Embedding(vocab_size, d_model)
         
         # Positional Encoding (Learnable)
         self.pos_embedding = nn.Parameter(torch.randn(1, max_len, d_model) * 0.02)
         self.dropout = nn.Dropout(dropout)
-        
-        # Encoder Blocks
-        neuron_params = {'base_threshold': 0.5, 'tau_mem': 5.0}
         
         self.layers = nn.ModuleList([
             DSATransformerBlock(
@@ -132,13 +132,13 @@ class DSASpikingTransformer(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: (Batch, Time, InputDim) - Analog or Spike input
+            x: (Batch, Time) - Indices
         Returns:
             logits: (Batch, OutputDim) - Last time step logits or Mean over time
         """
-        B, T, _ = x.shape
+        B, T = x.shape
         
-        x = self.embedding(x)
+        x = self.embedding(x) # (B, T, D)
         
         if T <= self.pos_embedding.shape[1]:
             x = x + self.pos_embedding[:, :T, :]
