@@ -9,42 +9,42 @@ graph TD
   classDef sensory fill:#f1f8e9,stroke:#7cb342,stroke-width:2px
 
   %% Core coordinating structures
-  Thalamus[Thalamus<br/>(Sensory Relay & Attention Switching)]:::core
-  Brainstem[Brainstem<br/>(Autonomic Control / Arousal)]:::core
-  Cerebellum[Cerebellum<br/>(Motor Coordination / Prediction)]:::core
+  Thalamus["Thalamus Sensory Relay & Attention Switching"]:::core
+  Brainstem["Brainstem Autonomic Control / Arousal"]:::core
+  Cerebellum["Cerebellum Motor Coordination / Prediction"]:::core
 
   %% Global Workspace & Executive
-  PFC[Prefrontal Cortex<br/>(Planning / Reasoning / Executive)]:::exec
-  GW["Global Neuronal Workspace"<br/>(Conscious Broadcasting)]:::exec
-  ACC[Anterior Cingulate Cortex<br/>(Conflict Monitoring / Error Detection)]:::exec
+  PFC["Prefrontal Cortex Planning / Reasoning / Executive"]:::exec
+  GW["Global Neuronal Workspace Conscious Broadcasting"]:::exec
+  ACC["Anterior Cingulate Cortex Conflict Monitoring / Error Detection"]:::exec
 
   %% Sensory areas
-  V1[Primary Visual Cortex (V1)]:::sensory
-  V2[V2/V4 (Shape/Color)]:::sensory
-  A1[Primary Auditory Cortex (A1)]:::sensory
-  S1[Somatosensory Cortex]:::sensory
-  Olf[Olfactory Cortex]:::sensory
-  Insula[Insular Cortex<br/>(Interoception / Body State)]:::sensory
+  V1["Primary Visual Cortex V1"]:::sensory
+  V2["V2/V4 Shape/Color"]:::sensory
+  A1["Primary Auditory Cortex A1"]:::sensory
+  S1["Somatosensory Cortex"]:::sensory
+  Olf["Olfactory Cortex"]:::sensory
+  Insula["Insular Cortex Interoception / Body State"]:::sensory
 
   %% Memory circuits
-  Hippocampus[Hippocampus<br/>(Episodic Memory / Indexing)]:::memory
-  EC[Entorhinal Cortex<br/>(Memory Encoding Gateway)]:::memory
-  Cortex[Cerebral Cortex<br/>(Semantic / Long-Term Memory)]:::memory
+  Hippocampus["Hippocampus Episodic Memory / Indexing"]:::memory
+  EC["Entorhinal Cortex Memory Encoding Gateway"]:::memory
+  Cortex["Cerebral Cortex Semantic / Long-Term Memory"]:::memory
 
   %% Emotion & Valence
-  Amygdala[Amygdala<br/>(Valence / Fear / Social Signals)]:::emotion
-  Striatum[Striatum (Basal Ganglia input)<br/>(Reward / Action Selection)]:::emotion
-  Hypo[Hypothalamus<br/>(Homeostasis / Drive)]:::emotion
+  Amygdala["Amygdala Valence / Fear / Social Signals"]:::emotion
+  Striatum["Striatum Basal Ganglia input Reward / Action Selection"]:::emotion
+  Hypo["Hypothalamus Homeostasis / Drive"]:::emotion
 
   %% Basal ganglia loops
-  GPi[Globus Pallidus internus]:::core
-  STN[Subthalamic Nucleus]:::core
-  BG[Basal Ganglia Loop<br/>(Action Gating)]:::core
+  GPi["Globus Pallidus internus"]:::core
+  STN["Subthalamic Nucleus"]:::core
+  BG["Basal Ganglia Loop Action Gating"]:::core
 
   %% Motor pathways
-  PMC[Premotor Cortex]:::exec
-  M1[Primary Motor Cortex]:::exec
-  Spinal[Spinal Cord]:::core
+  PMC["Premotor Cortex"]:::exec
+  M1["Primary Motor Cortex"]:::exec
+  Spinal["Spinal Cord"]:::core
 
   %% Connectivity
   %% Sensory input routing
@@ -100,4 +100,4 @@ graph TD
   %% Final routing
   Spinal --> Brainstem
   Brainstem --> Cortex
-```
+  ```
