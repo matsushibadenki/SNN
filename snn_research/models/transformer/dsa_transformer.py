@@ -1,20 +1,20 @@
 # ファイルパス: snn_research/models/transformer/dsa_transformer.py
-# Title: DSA Spiking Transformer モデル [Input Fix]
+# Title: DSA Spiking Transformer モデル [Forward Args Fixed]
 # Description:
-#   - nn.Linear から nn.Embedding に変更し、入力ID (LongTensor) に対応。
-#   - neuron_params を __init__ で受け取り、ハードコーディングを排除。
+#   - forward メソッドに return_spikes 引数を追加し、ベンチマークスイートとの互換性を確保。
+#   - get_total_spikes メソッドを追加してスパイク数を集計可能に。
 
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple, Union
 
 from snn_research.core.layers.dsa import DynamicSparseAttention
 from snn_research.core.neurons import AdaptiveLIFNeuron
+from snn_research.core.base import BaseModel # BaseModelを継承して共通機能を利用
 
 class FeedForwardBlock(nn.Module):
     """
     SNN用 Feed-Forward Network (FFN)
-    Structure: Linear -> LIF -> Linear -> LIF
     """
     def __init__(self, d_model: int, expansion_factor: int = 4, dropout: float = 0.1, neuron_params: Optional[Dict[str, Any]] = None):
         super().__init__()
@@ -30,13 +30,12 @@ class FeedForwardBlock(nn.Module):
         self.neuron2 = AdaptiveLIFNeuron(features=d_model, **neuron_params)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (Batch, Time, Dim) Spikes
         out = self.fc1(x)
-        out, _ = self.neuron1(out) # Spikes
+        out, _ = self.neuron1(out) 
         out = self.dropout(out)
         
         out = self.fc2(out)
-        out, _ = self.neuron2(out) # Spikes
+        out, _ = self.neuron2(out)
         return out
     
     def reset_state(self):
@@ -44,9 +43,6 @@ class FeedForwardBlock(nn.Module):
         self.neuron2.reset()
 
 class DSATransformerBlock(nn.Module):
-    """
-    Dynamic Sparse Attention を含む Transformer Block。
-    """
     def __init__(
         self, 
         d_model: int, 
@@ -85,7 +81,7 @@ class DSATransformerBlock(nn.Module):
         self.dsa.reset_state()
         self.ffn.reset_state()
 
-class DSASpikingTransformer(nn.Module):
+class DSASpikingTransformer(BaseModel): # BaseModelを継承
     """
     Phase 8-2: SNN-DSA搭載 スパイキングTransformerモデル。
     """
@@ -105,12 +101,9 @@ class DSASpikingTransformer(nn.Module):
         self.d_model = d_model
         
         if neuron_params is None:
-            neuron_params = {'base_threshold': 0.5, 'tau_mem': 5.0} # Default
+            neuron_params = {'base_threshold': 0.5, 'tau_mem': 5.0}
         
-        # Input Embedding (Indices -> Dense)
         self.embedding = nn.Embedding(vocab_size, d_model)
-        
-        # Positional Encoding (Learnable)
         self.pos_embedding = nn.Parameter(torch.randn(1, max_len, d_model) * 0.02)
         self.dropout = nn.Dropout(dropout)
         
@@ -125,20 +118,25 @@ class DSASpikingTransformer(nn.Module):
             for _ in range(num_layers)
         ])
         
-        # Output Head
         self.norm_final = nn.LayerNorm(d_model)
         self.classifier = nn.Linear(d_model, output_dim)
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self._init_weights() # BaseModelのメソッド
+
+    def forward(
+        self, 
+        x: torch.Tensor, 
+        return_spikes: bool = False, 
+        **kwargs: Any
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         Args:
-            x: (Batch, Time) - Indices
-        Returns:
-            logits: (Batch, OutputDim) - Last time step logits or Mean over time
+            x: (Batch, Time) Input indices
+            return_spikes: If True, returns (logits, avg_spike_rate, mem) tuple.
         """
         B, T = x.shape
         
-        x = self.embedding(x) # (B, T, D)
+        x = self.embedding(x)
         
         if T <= self.pos_embedding.shape[1]:
             x = x + self.pos_embedding[:, :T, :]
@@ -155,8 +153,28 @@ class DSASpikingTransformer(nn.Module):
         x_mean = x.mean(dim=1) 
         logits = self.classifier(x_mean)
         
+        if return_spikes:
+            total_spikes = self.get_total_spikes()
+            # 簡易的に平均発火率を計算 (Batch * Time * Neurons * Layers などで割るべきだが、ここではスカラーとして返す)
+            # ベンチマークスイート側で適切な正規化が行われることを期待するか、または正規化した値を返す
+            # ここではモデル全体のスパイク数を返す
+            avg_spikes = torch.tensor(total_spikes / (B * T + 1e-8), device=x.device)
+            mem = torch.tensor(0.0, device=x.device) # 膜電位監視は未実装のためダミー
+            return logits, avg_spikes, mem
+        
         return logits
 
     def reset_state(self):
         for layer in self.layers:
             layer.reset_state()
+            
+    def get_total_spikes(self) -> float:
+        """モデル全体の総スパイク数を集計する"""
+        total = 0.0
+        for module in self.modules():
+            if hasattr(module, 'total_spikes') and isinstance(module.total_spikes, torch.Tensor):
+                total += module.total_spikes.item()
+            elif hasattr(module, 'spikes') and isinstance(module.spikes, torch.Tensor):
+                # 直近ステップのスパイク数しか持っていない場合
+                total += module.spikes.sum().item()
+        return total
