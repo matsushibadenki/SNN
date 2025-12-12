@@ -10,68 +10,68 @@ graph TD
   classDef infra fill:#fff8e1,stroke:#6d4c41,stroke-width:2px
 
   %% Entry / UI
-  CLI([snn-cli.py]):::entry
-  RunScripts[[scripts/runners]]:::entry
-  GradioApp([app/main.py]):::entry
+  CLI(["snn-cli.py"]):::entry
+  RunScripts[["scripts/runners"]]:::entry
+  GradioApp(["app/main.py"]):::entry
 
   %% App layer
-  DI_Container[DependencyInjector<br/>containers.py]:::app
-  ChatSvc[ChatService]:::app
-  ImgSvc[ImageClassificationService]:::app
-  WebCrawl[WebCrawler]:::app
-  LangChain[SNNLangChainAdapter]:::app
-  InferenceEngine[Deployment Adapter<br/>SNNInferenceEngine]:::app
+  DI_Container["DependencyInjector containers.py"]:::app
+  ChatSvc["ChatService"]:::app
+  ImgSvc["ImageClassificationService"]:::app
+  WebCrawl["WebCrawler"]:::app
+  LangChain["SNNLangChainAdapter"]:::app
+  InferenceEngine["Deployment Adapter SNNInferenceEngine"]:::app
 
   %% Life & Body
-  LifeForm[DigitalLifeForm<br/>(Body Interface)]:::brain
-  IO_Dev[SensoryReceptor / Actuator]:::hw
+  LifeForm["DigitalLifeForm Body Interface"]:::brain
+  IO_Dev["SensoryReceptor / Actuator"]:::hw
 
-  %% Brain kernel (coordination & homeostasis)
-  BrainKernel[ArtificialBrainKernel]:::brain
-  GW[GlobalWorkspace<br/>(Consciousness/Attention)]:::brain
-  Astrocyte[AstrocyteNetwork<br/>(Homeostasis)]:::brain
-  Scheduler[NeuromorphicScheduler<br/>(Resource Manager)]:::brain
+  %% Brain kernel
+  BrainKernel["ArtificialBrainKernel"]:::brain
+  GW["GlobalWorkspace Consciousness/Attention"]:::brain
+  Astrocyte["AstrocyteNetwork Homeostasis"]:::brain
+  Scheduler["NeuromorphicScheduler Resource Manager"]:::brain
 
   %% Memory & Symbol
-  Hippo[Hippocampus<br/>(Short-Term Memory / Indexing)]:::brain
-  Cortex[Cortex<br/>(Long-Term Memory)]:::brain
-  RAG[RAG System<br/>(External KB Adapter)]:::brain
-  GraphRAG[GraphRAG<br/>(Symbolic Interface)]:::brain
+  Hippo["Hippocampus Short-Term Memory / Indexing"]:::brain
+  Cortex["Cortex Long-Term Memory"]:::brain
+  RAG["RAG System External KB Adapter"]:::brain
+  GraphRAG["GraphRAG Symbolic Interface"]:::brain
 
   %% Perception & Valence
-  Visual[Visual Cortex<br/>DVS & Image]:::brain
-  PercCortex[HybridPerception Cortex<br/>(Audio/Text/DVS)]:::brain
-  Amyg[Amygdala<br/>(Valence / Safety / Empathy)]:::brain
+  Visual["Visual Cortex DVS & Image"]:::brain
+  PercCortex["HybridPerception Cortex Audio/Text/DVS"]:::brain
+  Amyg["Amygdala Valence / Safety / Empathy"]:::brain
 
   %% Decision, Planning, Actuation
-  Planner[Hierarchical Planner]:::brain
-  Basal[Basal Ganglia<br/>(Decision Policy)]:::brain
-  Motor[Motor Cortex / Actuator Planner]:::brain
-  Agents[AutonomousAgent<br/>(SelfEvolvingAgent)]:::brain
+  Planner["Hierarchical Planner"]:::brain
+  Basal["Basal Ganglia Decision Policy"]:::brain
+  Motor["Motor Cortex / Actuator Planner"]:::brain
+  Agents["AutonomousAgent SelfEvolvingAgent"]:::brain
 
   %% Core SNN Models
-  SNNCore[SNNCore<br/>Unified Compute]:::core
-  ArchReg[ArchitectureRegistry]:::core
-  ExpertMgr[Expert Manager<br/>(Energy-aware Router)]:::core
-  SFormer[SFormer (T=1)]:::core
-  SEMM[SEMM MoE<br/>(Spiking Experts)]:::core
-  SpikeTrans[SpikingTransformer]:::core
-  BitNet[BitSpikingRWKV]:::core
-  Neurons[Neuron Library<br/>(LIF/SFN/EL-LIF)]:::core
-  Layers[Layer Primitives<br/>(SDSA/PC/FEEL)]:::core
-  Rules[Learning Rules<br/>(STDP/CausalTrace)]:::core
+  SNNCore["SNNCore Unified Compute"]:::core
+  ArchReg["ArchitectureRegistry"]:::core
+  ExpertMgr["Expert Manager Energy-aware Router"]:::core
+  SFormer["SFormer T=1"]:::core
+  SEMM["SEMM MoE Spiking Experts"]:::core
+  SpikeTrans["SpikingTransformer"]:::core
+  BitNet["BitSpikingRWKV"]:::core
+  Neurons["Neuron Library LIF/SFN/EL-LIF"]:::core
+  Layers["Layer Primitives SDSA/PC/FEEL"]:::core
+  Rules["Learning Rules STDP/CausalTrace"]:::core
 
   %% Training & Distillation
-  Trainers[Trainers<br/>Distill & BioRL]:::train
-  Distill[Distillation Pipeline]:::train
-  Calibrator[DeepBioCalibrator]:::train
-  HSEO[HSEO Optimization]:::train
-  ModelRegistry[ModelRegistry]:::train
+  Trainers["Trainers Distill & BioRL"]:::train
+  Distill["Distillation Pipeline"]:::train
+  Calibrator["DeepBioCalibrator"]:::train
+  HSEO["HSEO Optimization"]:::train
+  ModelRegistry["ModelRegistry"]:::train
 
   %% Hardware infra
-  Compiler[NeuromorphicCompiler<br/>Codegen]:::hw
-  Simulator[EventDrivenSimulator]:::hw
-  TritonK[Triton/CUDA Kernels]:::hw
+  Compiler["NeuromorphicCompiler Codegen"]:::hw
+  Simulator["EventDrivenSimulator"]:::hw
+  TritonK["Triton/CUDA Kernels"]:::hw
 
   %% Entry -> App
   CLI --> DI_Container
@@ -100,7 +100,7 @@ graph TD
   BrainKernel --> Hippo
   BrainKernel --> Cortex
 
-  %% Perception -> Core compute (controlled ingress)
+  %% Perception -> Core compute
   Visual --> SNNCore
   PercCortex --> SNNCore
   Hippo --> SNNCore
@@ -135,25 +135,25 @@ graph TD
   Basal --> Motor
   Motor --> IO_Dev
 
-  %% RAG / Cortex interactions (primary direction: Cortex -> RAG)
+  %% RAG / Cortex interactions
   Cortex --> RAG
   RAG --> Cortex
   RAG --> Planner
 
-  %% Amygdala connections for safety/valence
+  %% Amygdala connections
   Amyg --> Planner
   Amyg --> Basal
   Amyg --> Motor
   Amyg --> GW
   Amyg --> Scheduler
 
-  %% Agents (autonomy) get high-level from GW and use Planner
+  %% Agents autonomy
   Agents --> Planner
   Agents --> WebCrawl
   Agents --> ModelRegistry
   Agents --> GW
 
-  %% Inference / Deployment path
+  %% Inference / Deployment
   InferenceEngine --> SNNCore
   Compiler --> SNNCore
   Simulator --> SNNCore
@@ -164,14 +164,4 @@ graph TD
   Astrocyte --> Scheduler
   Scheduler --> ExpertMgr
   Scheduler --> Distill
-
-  %% Notes
-  class CLI,RunScripts,GradioApp entry
-  class DI_Container,ChatSvc,ImgSvc,LangChain,InferenceEngine app
-  class LifeForm,BrainKernel,GW,Astrocyte,Scheduler,Hippo,Cortex,RAG,GraphRAG,Visual,PercCortex,Amyg,Planner,Basal,Motor,Agents brain
-  class SNNCore,ArchReg,ExpertMgr,SFormer,SEMM,SpikeTrans,BitNet,Neurons,Layers,Rules core
-  class Trainers,Distill,Calibrator,HSEO,ModelRegistry train
-  class Compiler,Simulator,TritonK,IO_Dev hw
-
-  %% End
-```
+  ```
