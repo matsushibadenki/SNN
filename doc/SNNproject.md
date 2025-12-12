@@ -1,142 +1,177 @@
 ```mermaid
 graph TD
-    %% Style definitions
-    classDef entry fill:#f9f,stroke:#333,stroke-width:2px
-    classDef app fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
-    classDef brain fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    classDef core fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    classDef train fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    classDef hw fill:#eceff1,stroke:#455a64,stroke-width:2px
+  %% Styles
+  classDef entry fill:#f9f,stroke:#333,stroke-width:2px
+  classDef app fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
+  classDef brain fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+  classDef core fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+  classDef train fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+  classDef hw fill:#eceff1,stroke:#455a64,stroke-width:2px
+  classDef infra fill:#fff8e1,stroke:#6d4c41,stroke-width:2px
 
-    %% Entry Points & Scripts
-    CLI([snn-cli.py]):::entry
-    RunScripts[[scripts/runners]]:::entry
-    GradioApp([app/main.py]):::entry
+  %% Entry / UI
+  CLI([snn-cli.py]):::entry
+  RunScripts[[scripts/runners]]:::entry
+  GradioApp([app/main.py]):::entry
 
-    %% Application Layer
-    DI_Container[containers.py<br/>Dependency Injector]:::app
-    ChatSvc[ChatService]:::app
-    ImgSvc[ImageClassificationService]:::app
-    WebCrawl[WebCrawler]:::app
-    LangChain[SNNLangChainAdapter]:::app
-    InferenceEngine[deployment.py<br/>SNNInferenceEngine]:::app
+  %% App layer
+  DI_Container[DependencyInjector<br/>containers.py]:::app
+  ChatSvc[ChatService]:::app
+  ImgSvc[ImageClassificationService]:::app
+  WebCrawl[WebCrawler]:::app
+  LangChain[SNNLangChainAdapter]:::app
+  InferenceEngine[Deployment Adapter<br/>SNNInferenceEngine]:::app
 
-    %% Cognitive Architecture
-    LifeForm[DigitalLifeForm]:::brain
-    BrainKernel[ArtificialBrain]:::brain
-    GW[GlobalWorkspace<br/>Consciousness]:::brain
-    Astrocyte[AstrocyteNetwork<br/>Resource Manager]:::brain
-    Scheduler[NeuromorphicScheduler]:::brain
-    Hippo[Hippocampus<br/>Short-Term Memory]:::brain
-    Cortex[Cortex<br/>Long-Term Memory]:::brain
-    RAG[RAGSystem<br/>GraphRAG]:::brain
-    Planner[HierarchicalPlanner]:::brain
-    CausalEng[CausalInferenceEngine]:::brain
-    Visual[VisualCortex]:::brain
-    PercCortex[HybridPerceptionCortex]:::brain
-    Amyg[Amygdala<br/>Emotion]:::brain
-    Motor[MotorCortex]:::brain
-    Basal[BasalGanglia<br/>Decision Making]:::brain
-    Agents[AutonomousAgent<br/>SelfEvolvingAgent]:::brain
+  %% Life & Body
+  LifeForm[DigitalLifeForm<br/>(Body Interface)]:::brain
+  IO_Dev[SensoryReceptor / Actuator]:::hw
 
-    %% Training & Optimization
-    Trainers[Trainers<br/>Breakthrough Distillation BioRL]:::train
-    Losses[Loss Functions<br/>Combined CausalTrace]:::train
-    Converter[AnnToSnnConverter]:::train
-    Calibrator[DeepBioCalibrator]:::train
-    HSEO[HSEO Optimization]:::train
-    ModelRegistry[ModelRegistry]:::train
+  %% Brain kernel (coordination & homeostasis)
+  BrainKernel[ArtificialBrainKernel]:::brain
+  GW[GlobalWorkspace<br/>(Consciousness/Attention)]:::brain
+  Astrocyte[AstrocyteNetwork<br/>(Homeostasis)]:::brain
+  Scheduler[NeuromorphicScheduler<br/>(Resource Manager)]:::brain
 
-    %% SNN Core & Models
-    SNNCore[SNNCore<br/>Unified Wrapper]:::core
-    ArchReg[ArchitectureRegistry]:::core
-    SFormer[SFormer T=1]:::core
-    BioPC[BioPCNetwork]:::core
-    SpikeTrans[SpikingTransformer]:::core
-    SpikeCNN[SpikingCNN]:::core
-    SEMM[SEMM MoE]:::core
-    BitNet[BitSpikingRWKV]:::core
-    Neurons[Neurons<br/>LIF SFN EL-LIF]:::core
-    Layers[Layers<br/>SDSA PC-Layer FEEL]:::core
-    Rules[Learning Rules<br/>STDP CausalTrace]:::core
+  %% Memory & Symbol
+  Hippo[Hippocampus<br/>(Short-Term Memory / Indexing)]:::brain
+  Cortex[Cortex<br/>(Long-Term Memory)]:::brain
+  RAG[RAG System<br/>(External KB Adapter)]:::brain
+  GraphRAG[GraphRAG<br/>(Symbolic Interface)]:::brain
 
-    %% Hardware & I/O
-    Compiler[NeuromorphicCompiler]:::hw
-    Simulator[EventDrivenSimulator]:::hw
-    IO_Dev[SensoryReceptor / Actuator]:::hw
+  %% Perception & Valence
+  Visual[Visual Cortex<br/>DVS & Image]:::brain
+  PercCortex[HybridPerception Cortex<br/>(Audio/Text/DVS)]:::brain
+  Amyg[Amygdala<br/>(Valence / Safety / Empathy)]:::brain
 
-    %% Dependencies - Entry to App
-    CLI --> DI_Container
-    RunScripts --> DI_Container
-    GradioApp --> DI_Container
+  %% Decision, Planning, Actuation
+  Planner[Hierarchical Planner]:::brain
+  Basal[Basal Ganglia<br/>(Decision Policy)]:::brain
+  Motor[Motor Cortex / Actuator Planner]:::brain
+  Agents[AutonomousAgent<br/>(SelfEvolvingAgent)]:::brain
 
-    %% App to Services
-    DI_Container --> LifeForm
-    DI_Container --> BrainKernel
-    DI_Container --> Agents
-    DI_Container --> ChatSvc
-    DI_Container --> ImgSvc
-    DI_Container --> WebCrawl
-    DI_Container --> LangChain
+  %% Core SNN Models
+  SNNCore[SNNCore<br/>Unified Compute]:::core
+  ArchReg[ArchitectureRegistry]:::core
+  ExpertMgr[Expert Manager<br/>(Energy-aware Router)]:::core
+  SFormer[SFormer (T=1)]:::core
+  SEMM[SEMM MoE<br/>(Spiking Experts)]:::core
+  SpikeTrans[SpikingTransformer]:::core
+  BitNet[BitSpikingRWKV]:::core
+  Neurons[Neuron Library<br/>(LIF/SFN/EL-LIF)]:::core
+  Layers[Layer Primitives<br/>(SDSA/PC/FEEL)]:::core
+  Rules[Learning Rules<br/>(STDP/CausalTrace)]:::core
 
-    ChatSvc --> InferenceEngine
-    ImgSvc --> InferenceEngine
-    LangChain --> InferenceEngine
+  %% Training & Distillation
+  Trainers[Trainers<br/>Distill & BioRL]:::train
+  Distill[Distillation Pipeline]:::train
+  Calibrator[DeepBioCalibrator]:::train
+  HSEO[HSEO Optimization]:::train
+  ModelRegistry[ModelRegistry]:::train
 
-    %% Cognitive Internal
-    LifeForm --> BrainKernel
-    LifeForm --> Agents
-    BrainKernel --> GW
-    BrainKernel --> Astrocyte
-    BrainKernel --> Scheduler
-    BrainKernel --> Hippo
-    BrainKernel --> Cortex
-    BrainKernel --> RAG
-    BrainKernel --> Visual
-    BrainKernel --> PercCortex
-    BrainKernel --> Amyg
-    BrainKernel --> Motor
-    BrainKernel --> Basal
+  %% Hardware infra
+  Compiler[NeuromorphicCompiler<br/>Codegen]:::hw
+  Simulator[EventDrivenSimulator]:::hw
+  TritonK[Triton/CUDA Kernels]:::hw
 
-    Agents --> Planner
-    Agents --> WebCrawl
-    Planner --> ModelRegistry
-    Planner --> CausalEng
+  %% Entry -> App
+  CLI --> DI_Container
+  RunScripts --> DI_Container
+  GradioApp --> DI_Container
 
-    %% Cognitive to Core
-    InferenceEngine --> SNNCore
-    BrainKernel --> SNNCore
-    Visual --> SNNCore
-    PercCortex --> SNNCore
+  %% App -> Life & Brain
+  DI_Container --> LifeForm
+  DI_Container --> BrainKernel
+  DI_Container --> Agents
+  DI_Container --> ChatSvc
+  DI_Container --> ImgSvc
+  DI_Container --> WebCrawl
+  DI_Container --> LangChain
+  DI_Container --> InferenceEngine
 
-    %% Training to Core
-    Trainers --> SNNCore
-    Converter --> SNNCore
-    Calibrator --> SNNCore
-    Calibrator --> HSEO
+  %% LifeForm -> IO
+  LifeForm --> IO_Dev
+  IO_Dev --> Visual
+  IO_Dev --> PercCortex
 
-    %% Core Internal
-    SNNCore --> ArchReg
-    ArchReg --> SFormer
-    ArchReg --> BioPC
-    ArchReg --> SpikeTrans
-    ArchReg --> SpikeCNN
-    ArchReg --> SEMM
-    ArchReg --> BitNet
-    SFormer --> Neurons
-    BioPC --> Neurons
-    SpikeTrans --> Neurons
-    Neurons --> Layers
-    Layers --> Rules
+  %% Brain core coordination
+  BrainKernel --> GW
+  BrainKernel --> Astrocyte
+  BrainKernel --> Scheduler
+  BrainKernel --> Hippo
+  BrainKernel --> Cortex
 
-    %% Hardware
-    Compiler --> SNNCore
-    Simulator --> SNNCore
-    BrainKernel --> IO_Dev
+  %% Perception -> Core compute (controlled ingress)
+  Visual --> SNNCore
+  PercCortex --> SNNCore
+  Hippo --> SNNCore
+  Planner --> SNNCore
+  RAG --> SNNCore
 
-    %% Data Flow
-    RAG --> Cortex
-    Cortex --> RAG
-    RAG --> Planner
-    Planner --> RAG
-    ```
+  %% SNN Core internal wiring
+  SNNCore --> ArchReg
+  ArchReg --> ExpertMgr
+  ExpertMgr --> SEMM
+  ExpertMgr --> SFormer
+  ArchReg --> SpikeTrans
+  ArchReg --> BitNet
+  SFormer --> Neurons
+  SEMM --> Neurons
+  SpikeTrans --> Neurons
+  Neurons --> Layers
+  Layers --> Rules
+
+  %% Training & Distillation -> Core
+  Trainers --> Distill
+  Distill --> SFormer
+  Distill --> SEMM
+  Calibrator --> SNNCore
+  HSEO --> Calibrator
+  ModelRegistry --> Distill
+
+  %% Planner/Decision loops
+  GW --> Planner
+  Planner --> Basal
+  Planner --> GraphRAG
+  Basal --> Motor
+  Motor --> IO_Dev
+
+  %% RAG / Cortex interactions (primary direction: Cortex -> RAG)
+  Cortex --> RAG
+  RAG --> Cortex
+  RAG --> Planner
+
+  %% Amygdala connections for safety/valence
+  Amyg --> Planner
+  Amyg --> Basal
+  Amyg --> Motor
+  Amyg --> GW
+  Amyg --> Scheduler
+
+  %% Agents (autonomy) get high-level from GW and use Planner
+  Agents --> Planner
+  Agents --> WebCrawl
+  Agents --> ModelRegistry
+  Agents --> GW
+
+  %% Inference / Deployment path
+  InferenceEngine --> SNNCore
+  Compiler --> SNNCore
+  Simulator --> SNNCore
+  TritonK --> SNNCore
+
+  %% Monitoring & Safety
+  BrainKernel --> ModelRegistry
+  Astrocyte --> Scheduler
+  Scheduler --> ExpertMgr
+  Scheduler --> Distill
+
+  %% Notes
+  class CLI,RunScripts,GradioApp entry
+  class DI_Container,ChatSvc,ImgSvc,LangChain,InferenceEngine app
+  class LifeForm,BrainKernel,GW,Astrocyte,Scheduler,Hippo,Cortex,RAG,GraphRAG,Visual,PercCortex,Amyg,Planner,Basal,Motor,Agents brain
+  class SNNCore,ArchReg,ExpertMgr,SFormer,SEMM,SpikeTrans,BitNet,Neurons,Layers,Rules core
+  class Trainers,Distill,Calibrator,HSEO,ModelRegistry train
+  class Compiler,Simulator,TritonK,IO_Dev hw
+
+  %% End
+```
