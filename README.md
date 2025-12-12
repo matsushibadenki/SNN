@@ -8,7 +8,6 @@
 
 \</div\>
 
-\<a id="english"\>\</a\>
 
 ## **🚀 Vision: "The Brain as an Operating System"**
 
