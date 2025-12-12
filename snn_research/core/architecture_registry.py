@@ -286,3 +286,17 @@ def build_dsa_transformer(config: Dict[str, Any], vocab_size: int) -> nn.Module:
         dropout=config.get('dropout', 0.1),
         neuron_params=config.get('neuron_config', {})
     )
+    
+@ArchitectureRegistry.register("spiking_world_model")
+def build_spiking_world_model(config: Dict[str, Any], vocab_size: int) -> nn.Module:
+    from snn_research.models.experimental.world_model_snn import SpikingWorldModel
+    
+    return SpikingWorldModel(
+        vocab_size=vocab_size,
+        action_dim=config.get('action_dim', 4), # デフォルトアクション数
+        d_model=config.get('d_model', 256),
+        d_state=config.get('d_state', 128),
+        num_layers=config.get('num_layers', 4),
+        time_steps=config.get('time_steps', 16),
+        neuron_config=config.get('neuron', {})
+    )
