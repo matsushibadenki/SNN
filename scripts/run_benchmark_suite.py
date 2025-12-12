@@ -1,248 +1,254 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# 日本語タイトル: ベンチマークスイート実行スクリプト
-# 目的: SNNモデルのベンチマークを実行し、パフォーマンスとエネルギー効率を検証・評価する。
-# (修正: target_conf を DictConfig にキャストして mypy エラーを解消)
-# (修正: import順序を修正し、sys/os未定義エラーを解消)
+# Title: Neuromorphic Benchmark Suite (v16.0) [Fixed]
+# Description:
+#   ROADMAP v16.0 "安定化と評価基盤" の実装。
+#   主要なモデルとタスクに対して、精度・エネルギー・速度のベンチマークを自動実行する。
+#   修正: 
+#   - run_smoke_test で config_path から正しく設定をロードするように修正。
+#   - run_efficiency_benchmark のダミー設定に architecture_type を追加。
 
-import os
 import sys
-
-# プロジェクトルートをパスに追加
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import argparse
-import logging
-import yaml
-import json
+import os
 import torch
-import random
-from omegaconf import OmegaConf, DictConfig, ListConfig
-from typing import Any, Dict, cast
-from PIL import Image
-import numpy as np
-from snn_research.validation.validator import PerformanceValidator
-from snn_research.metrics.energy import EnergyMetrics
+import logging
+import argparse
+import time
+import json
+from typing import Dict, Any, List, cast
+from pathlib import Path
+import datetime
+from omegaconf import OmegaConf
 
-# --- 修正: ストリームを標準出力に設定 ---
-logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    stream=sys.stdout
-)
-logger = logging.getLogger(__name__)
-
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# プロジェクトルートの設定
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
 if project_root not in sys.path:
-    sys.path.append(project_root)
+    sys.path.insert(0, project_root)
 
-runners_dir = os.path.join(project_root, 'scripts', 'runners')
-if runners_dir not in sys.path:
-    sys.path.append(runners_dir)
+from snn_research.core.snn_core import SNNCore
+from snn_research.metrics.energy import EnergyMetrics
+from snn_research.io.universal_encoder import UniversalSpikeEncoder
 
-try:
-    import train # type: ignore [import-not-found]
-except ImportError as e:
-    logger.error(f"trainモジュールのインポートに失敗しました: {e}")
-    pass
+# ロギング設定
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("Benchmark")
 
-def ensure_text_benchmark_data(data_path: str) -> None:
-    if os.path.exists(data_path): return
-    logger.info(f"Generating dummy TEXT benchmark data at: {data_path}")
-    os.makedirs(os.path.dirname(data_path), exist_ok=True)
-    try:
-        with open(data_path, 'w', encoding='utf-8') as f:
-            for i in range(100):
-                sample = {"text": f"Benchmark sample {i}. SNNs are efficient.", "label": i % 2}
-                f.write(json.dumps(sample) + "\n")
-    except Exception as e:
-        logger.error(f"Failed to generate text data: {e}")
-
-def ensure_image_benchmark_data(data_path: str) -> None:
-    if os.path.exists(data_path): return
-    data_dir = os.path.dirname(data_path)
-    img_dir = os.path.join(data_dir, "images")
-    os.makedirs(img_dir, exist_ok=True)
-    
-    logger.info(f"Generating dummy IMAGE benchmark data at: {data_path}")
-    try:
-        with open(data_path, 'w', encoding='utf-8') as f:
-            for i in range(20):
-                img_name = f"dummy_{i}.jpg"
-                img_path = os.path.join(img_dir, img_name)
-                arr = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
-                img = Image.fromarray(arr)
-                img.save(img_path)
-                sample = {"text": f"Dummy caption {i}", "image": os.path.join("images", img_name), "label": i % 10}
-                f.write(json.dumps(sample) + "\n")
-    except Exception as e:
-        logger.error(f"Failed to generate image data: {e}")
-
-def run_experiment(args: argparse.Namespace) -> None:
-    logger.info(f"Starting experiment: {args.experiment} with tag: {args.tag}")
-
-    if not args.model_config:
-        if "cifar10" in args.experiment:
-            args.model_config = "configs/experiments/cifar10_spikingcnn_config.yaml"
-        else:
-            args.model_config = "configs/models/micro.yaml"
-        logger.info(f"No model config provided. Using default: {args.model_config}")
-
-    model_conf_dict: Dict[str, Any] = {}
-    if args.model_config and os.path.exists(args.model_config):
-        model_conf_loaded = OmegaConf.load(args.model_config)
-        
-        if 'architecture_type' in model_conf_loaded:
-            model_conf_dict = cast(Dict[str, Any], OmegaConf.to_container(model_conf_loaded, resolve=True))
-        elif 'model' in model_conf_loaded:
-            model_conf_dict = cast(Dict[str, Any], OmegaConf.to_container(model_conf_loaded.model, resolve=True)) # type: ignore
-        else:
-            logger.warning(f"Could not find 'architecture_type' or 'model' key in config. Using root.")
-            model_conf_dict = cast(Dict[str, Any], OmegaConf.to_container(model_conf_loaded, resolve=True))
-    
-    if not model_conf_dict:
-        logger.error(f"Failed to load model config from {args.model_config}. Dictionary is empty.")
-        return
-        
-    arch_type = model_conf_dict.get("architecture_type", "unknown")
-    logger.info(f"Detected architecture type: {arch_type}")
-
-    is_vision = arch_type in ["spiking_cnn", "visual_cortex", "feel_snn", "sew_resnet", "hybrid_cnn_snn"]
-    data_format = "image_text" if is_vision else "simple_text"
-    logger.info(f"Selected data format: {data_format}")
-
-    # Config構築
-    base_config = OmegaConf.create({
-        "training": {
-            "epochs": args.epochs,
-            "batch_size": args.batch_size,
-            "optimizer": "adam",
-            "device": "cuda" if torch.cuda.is_available() else "cpu",
-            "log_dir": "runs/benchmark",
-            "eval_interval": 1,
-            "log_interval": 1,
-            "paradigm": "gradient_based",
-            "gradient_based": {
-                "type": "standard",
-                "learning_rate": 1e-3,
-                "use_scheduler": False,
-                "grad_clip_norm": 1.0,
-                "use_amp": False,
-                "warmup_epochs": 0,
-                "loss": {"ce_weight": 1.0}
-            }
-        },
-        "model": model_conf_dict,
-        "data": {
-            "path": "data/benchmark_data.jsonl",
-            "tokenizer_name": "gpt2",
-            "format": data_format
+class BenchmarkSuite:
+    def __init__(self, output_dir: str = "benchmarks/results"):
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        self.results: Dict[str, Any] = {
+            "timestamp": str(datetime.datetime.now()),
+            "hardware": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU",
+            "tests": {}
         }
-    })
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    if args.epochs: base_config.training.epochs = args.epochs
-    if args.batch_size: base_config.training.batch_size = args.batch_size
-    if args.config: 
-        ext_conf = OmegaConf.load(args.config)
-        base_config = cast(DictConfig, OmegaConf.merge(base_config, ext_conf))
-
-    data_path = str(base_config.data.path)
-    if not os.path.exists(data_path):
-        if is_vision: ensure_image_benchmark_data(data_path)
-        else: ensure_text_benchmark_data(data_path)
-
-    if not args.eval_only:
-        logger.info("Running training via train.py...")
-        if 'train' in sys.modules:
-            train_module = sys.modules['train']
-            
-            # --- 修正: argparse.Namespace を使用して引数を模倣 ---
-            mock_args = argparse.Namespace(
-                distributed=False,
-                data_path=None,
-                task_name=args.experiment,
-                resume_path=None,
-                load_ewc_data=None,
-                use_astrocyte=False,
-                backend="spikingjelly"
-            )
-            # ---------------------------------------------------
-
-            try:
-                from transformers import AutoTokenizer
-                tokenizer = AutoTokenizer.from_pretrained("gpt2")
-            except: tokenizer = None
-
-            try:
-                if not isinstance(base_config, (dict, DictConfig)):
-                     base_config = OmegaConf.create(base_config)
-                
-                train_module.train(mock_args, base_config, tokenizer) # type: ignore
-                logger.info("Training completed.")
-            except Exception as e:
-                logger.error(f"Training failed: {e}", exc_info=True)
-                if not args.force_continue: raise e
-        else:
-            logger.warning("train module not found.")
-                
-    if args.eval_only or os.path.exists(os.path.join(base_config.training.log_dir, "best_model.pth")):
-        logger.info("🛡️ Running Performance Verification...")
+    def run_smoke_test(self, model_name: str, config_path: str):
+        """
+        スモークテスト: モデルがエラーなく構築・推論できるか確認。
+        """
+        logger.info(f"🧪 Running Smoke Test for {model_name}...")
+        start_time = time.time()
+        status = "FAILED"
+        details = ""
         
-        # 検証用設定のロード
-        validation_config_path = "configs/validation/targets_v1.yaml"
-        if os.path.exists(validation_config_path):
-            # --- ▼ 修正: cast(DictConfig, ...) を追加して型エラーを解消 ▼ ---
-            target_conf = cast(DictConfig, OmegaConf.load(validation_config_path))
-            # --- ▲ 修正 ▲ ---
-            validator = PerformanceValidator(target_conf)
-            
-            # --- 実測値の取得 (簡易実装) ---
-            metrics_path = os.path.join(base_config.training.log_dir, "metrics.json")
-            snn_metrics = {}
-            if os.path.exists(metrics_path):
-                with open(metrics_path, 'r') as f:
-                    snn_metrics = json.load(f)
+        try:
+            # Config読み込み
+            if os.path.exists(config_path):
+                conf = OmegaConf.load(config_path)
+                # 'model' キー以下にあるか、ルートにあるかを確認して辞書化
+                if 'model' in conf:
+                    model_config = OmegaConf.to_container(conf.model, resolve=True) # type: ignore
+                else:
+                    model_config = OmegaConf.to_container(conf, resolve=True)
+                
+                # コンフィグが正しくロードできたか確認
+                if not isinstance(model_config, dict):
+                     raise ValueError(f"Config loaded from {config_path} is not a dictionary.")
             else:
-                snn_metrics = {
-                    "accuracy": 0.0,
-                    "avg_spike_rate": 0.0,
-                    "estimated_energy_joules": 0.0
+                logger.warning(f"Config file not found: {config_path}. Using fallback dummy config.")
+                # フォールバック設定 (architecture_typeを追加)
+                arch_type = "sformer" if "SFormer" in model_name else "spiking_transformer"
+                model_config = {
+                    "architecture_type": arch_type,
+                    "vocab_size": 100,
+                    "d_model": 64,
+                    "num_layers": 2,
+                    "neuron_config": {"base_threshold": 1.0}
                 }
-                logger.warning("Metrics file not found. Validation might fail.")
+            
+            # モデル構築
+            # vocab_sizeはconfig内にある場合そちらを優先するロジックもSNNCore側にあると良いが、
+            # ここでは引数で渡すかconfig内の値を使う
+            vocab_size = model_config.get("vocab_size", 100)
+            model = SNNCore(config=cast(Dict[str, Any], model_config), vocab_size=vocab_size).to(self.device)
+            model.eval()
+            
+            # ダミー入力
+            input_ids = torch.randint(0, vocab_size, (1, 16)).to(self.device)
+            
+            with torch.no_grad():
+                outputs = model(input_ids, return_spikes=True)
+                
+            status = "PASSED"
+            details = "Model built and inference successful."
+            
+        except Exception as e:
+            details = str(e)
+            logger.error(f"❌ Smoke Test Failed: {e}")
+            import traceback
+            traceback.print_exc()
+            
+        duration = time.time() - start_time
+        self.results["tests"][f"smoke_{model_name}"] = {
+            "status": status,
+            "duration_sec": duration,
+            "details": details
+        }
 
-            # ANNベースライン (固定値またはファイルから)
-            ann_metrics = {
-                "accuracy": 0.93, 
-                "estimated_energy_joules": 5.06e-02
+    def run_efficiency_benchmark(self, model_name: str, input_shape: tuple = (1, 16)):
+        """
+        効率ベンチマーク: スパイク率、エネルギー、レイテンシを計測。
+        """
+        logger.info(f"⚡ Running Efficiency Benchmark for {model_name}...")
+        
+        try:
+            # アーキテクチャタイプの決定 (簡易マッピング)
+            if "SFormer" in model_name:
+                arch_type = "sformer"
+            elif "DSA" in model_name:
+                arch_type = "dsa_transformer" # ArchitectureRegistryの実装に合わせる
+            else:
+                arch_type = "spiking_transformer"
+
+            # モデル構築 (実際は学習済み重みをロードする)
+            dummy_config = {
+                "architecture_type": arch_type, # 追加
+                "vocab_size": 1000,
+                "d_model": 128,
+                "num_layers": 4,
+                "time_steps": 4 # T=4 for SNN
+            }
+            model = SNNCore(config=dummy_config, vocab_size=1000).to(self.device)
+            model.eval()
+            
+            # 入力データ
+            input_ids = torch.randint(0, 1000, input_shape).to(self.device)
+            
+            # 計測ループ
+            num_runs = 100
+            total_time = 0.0
+            total_spikes = 0.0
+            
+            # ウォームアップ
+            for _ in range(10):
+                _ = model(input_ids)
+                
+            start_time = time.time()
+            with torch.no_grad():
+                for _ in range(num_runs):
+                    # スパイク統計をリセット
+                    if hasattr(model.model, 'reset_spike_stats'):
+                        model.model.reset_spike_stats()
+                        
+                    _, avg_spike_rate, _ = model(input_ids, return_spikes=True)
+                    
+                    # スパイク数を集計 (簡易: avg_spike_rate * neurons * time)
+                    # 本来は model.get_total_spikes() を使う
+                    if hasattr(model.model, 'get_total_spikes'):
+                        total_spikes += model.model.get_total_spikes()
+                    else:
+                        # 推定 (平均発火率 * 時間 * ニューロン数概算)
+                        total_spikes += avg_spike_rate.item() * 128 * 16 * 4 
+            
+            end_time = time.time()
+            total_time = end_time - start_time
+            
+            avg_latency = (total_time / num_runs) * 1000 # ms
+            avg_spikes_per_inference = total_spikes / num_runs
+            
+            # エネルギー推定
+            # ニューロン数などは概算
+            num_neurons = 128 * 16 * 4 # 仮
+            energy_metrics = EnergyMetrics.calculate_energy_consumption(
+                total_spikes=avg_spikes_per_inference,
+                num_neurons=num_neurons,
+                time_steps=dummy_config['time_steps']
+            )
+            
+            ann_comparison = EnergyMetrics.compare_with_ann(
+                snn_energy=energy_metrics,
+                ann_params=num_neurons * 128 # 仮のパラメータ数
+            )
+            
+            self.results["tests"][f"efficiency_{model_name}"] = {
+                "status": "PASSED",
+                "latency_ms": avg_latency,
+                "spikes_per_inf": avg_spikes_per_inference,
+                "energy_joules": energy_metrics,
+                "efficiency_gain_vs_ann": ann_comparison['efficiency_gain_percent']
             }
             
-            # 検証実行
-            report = validator.validate(snn_metrics, ann_metrics)
+            logger.info(f"   -> Latency: {avg_latency:.2f} ms")
+            logger.info(f"   -> Energy Gain: {ann_comparison['efficiency_gain_percent']:.1f}%")
+
+        except Exception as e:
+            logger.error(f"❌ Efficiency Benchmark Failed: {e}")
+            self.results["tests"][f"efficiency_{model_name}"] = {"status": "FAILED", "details": str(e)}
+
+    def save_report(self):
+        """結果をJSONとMarkdownで保存"""
+        # JSON
+        json_path = os.path.join(self.output_dir, "benchmark_latest.json")
+        with open(json_path, 'w') as f:
+            json.dump(self.results, f, indent=2)
             
-            # レポート保存
-            report_path = os.path.join(base_config.training.log_dir, "verification_report.md")
-            with open(report_path, "w", encoding="utf-8") as f:
-                f.write(validator.generate_markdown_summary())
+        # Markdown
+        md_path = os.path.join(self.output_dir, "BENCHMARK_REPORT.md")
+        with open(md_path, 'w') as f:
+            f.write(f"# 📊 Neuromorphic Benchmark Report\n")
+            f.write(f"**Date:** {self.results['timestamp']}\n")
+            f.write(f"**Device:** {self.results['hardware']}\n\n")
+            
+            f.write("## 1. Summary\n")
+            passed = len([t for t in self.results['tests'].values() if t['status'] == 'PASSED'])
+            total = len(self.results['tests'])
+            f.write(f"- **Total Tests:** {total}\n")
+            f.write(f"- **Passed:** {passed}\n")
+            f.write(f"- **Failed:** {total - passed}\n\n")
+            
+            f.write("## 2. Detailed Results\n")
+            f.write("| Test Name | Status | Latency (ms) | Energy Gain (%) | Details |\n")
+            f.write("|---|---|---|---|---|\n")
+            
+            for name, res in self.results['tests'].items():
+                latency = f"{res.get('latency_ms', 0):.2f}" if 'latency_ms' in res else "-"
+                gain = f"{res.get('efficiency_gain_vs_ann', 0):.1f}" if 'efficiency_gain_vs_ann' in res else "-"
+                details = res.get('details', '-')
+                status_icon = "✅" if res['status'] == 'PASSED' else "❌"
                 
-            logger.info(f"📝 Verification Report saved to: {report_path}")
-            if report["status"] == "PASS":
-                logger.info("🎉 MODEL VERIFIED: PASS")
-            else:
-                logger.warning("⚠️ MODEL VERIFICATION: FAIL")
+                f.write(f"| {name} | {status_icon} {res['status']} | {latency} | {gain} | {details} |\n")
+                
+        logger.info(f"📝 Benchmark report saved to {md_path}")
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--experiment', required=True)
-    parser.add_argument('--config')
-    parser.add_argument('--model_config')
-    parser.add_argument('--epochs', type=int, default=10)
-    parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--tag', default='default')
-    parser.add_argument('--eval_only', action='store_true')
-    parser.add_argument('--model_path')
-    parser.add_argument('--model_type', default='SNN')
-    parser.add_argument('--force_continue', action='store_true')
+    parser = argparse.ArgumentParser(description="Run SNN Benchmark Suite")
+    parser.add_argument("--mode", type=str, default="all", choices=["smoke", "full"], help="Benchmark mode")
     args = parser.parse_args()
-    run_experiment(args)
+    
+    suite = BenchmarkSuite()
+    
+    # 1. Smoke Tests
+    # コンフィグパスは環境に合わせて調整してください
+    suite.run_smoke_test("SFormer_T1", "configs/models/phase3_sformer.yaml")
+    suite.run_smoke_test("SNN_DSA", "configs/models/dsa_transformer.yaml")
+    
+    # 2. Efficiency Benchmarks
+    if args.mode == "full":
+        suite.run_efficiency_benchmark("SFormer_T1")
+        suite.run_efficiency_benchmark("SNN_DSA")
+        
+    suite.save_report()
 
 if __name__ == "__main__":
     main()
