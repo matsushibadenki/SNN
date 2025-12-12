@@ -1,8 +1,8 @@
 # ファイルパス: snn_research/training/trainers/breakthrough.py
-# 日本語タイトル: Breakthrough Trainer (Type-Safe Refactored)
+# 日本語タイトル: Breakthrough Trainer (Type-Safe Refactored v2)
 # ファイルの目的・内容:
 #   SNN学習の基底トレーナー。
-#   mypyエラー (Incompatible types, Name undefined, Attribute undefined) を解消。
+#   mypyエラー (Incompatible types, Name undefined, Attribute undefined, var-annotated) を解消。
 #   可読性向上のため、精度計算ロジックを別メソッドに分離。
 
 import torch
@@ -16,7 +16,7 @@ import os
 import collections
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
-import pathlib  # Path用
+import pathlib
 from spikingjelly.activation_based import functional # type: ignore
 
 from snn_research.training.losses import CombinedLoss, SelfSupervisedLoss
@@ -85,10 +85,8 @@ class BreakthroughTrainer:
 
     def _reinitialize_optimizer(self) -> None:
         """オプティマイザを再初期化する（ニューロン置換時などに使用）"""
-        # param_groups[0]から現在の学習率を取得
         current_lr = self.optimizer.param_groups[0]['lr']
         optim_class = type(self.optimizer)
-        # 新しいパラメータでオプティマイザを作り直す
         self.optimizer = cast(Any, optim_class)(self.model.parameters(), lr=current_lr)
 
     def _compute_ewc_fisher_matrix(self, dataloader: DataLoader, task_name: str) -> None:
@@ -96,7 +94,6 @@ class BreakthroughTrainer:
         self.model.eval()
         fisher_matrix: Dict[str, torch.Tensor] = {}
         
-        # 勾配を持つパラメータのみ初期化
         for name, param in self.model.named_parameters():
             if param.requires_grad:
                 fisher_matrix[name] = torch.zeros_like(param.data)
@@ -108,7 +105,6 @@ class BreakthroughTrainer:
             self.model.zero_grad()
             input_ids, target_ids = self._prepare_batch(batch)
             
-            # Forward
             outputs = self.model(input_ids)
             logits = outputs[0] if isinstance(outputs, tuple) else outputs
             
@@ -154,15 +150,11 @@ class BreakthroughTrainer:
         return input_ids.to(self.device), target_ids.to(self.device)
 
     def _calculate_accuracy(self, logits: torch.Tensor, target_ids: torch.Tensor) -> torch.Tensor:
-        """
-        精度を計算するヘルパーメソッド。
-        mypyエラー回避のため、Tensor型を明示的に返す。
-        """
+        """精度を計算するヘルパーメソッド"""
         with torch.no_grad():
             preds = torch.argmax(logits, dim=-1)
             ignore_idx = -100
             
-            # Criterionからignore_indexを取得を試みる
             if hasattr(self.criterion, 'ce_loss_fn') and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
                 ignore_idx = self.criterion.ce_loss_fn.ignore_index # type: ignore
             
@@ -170,7 +162,6 @@ class BreakthroughTrainer:
             num_valid = mask.sum()
             
             if num_valid > 0:
-                # float() にキャストしてから計算し、Tensorとして返す
                 acc_val = (preds[mask] == target_ids[mask]).float().sum() / num_valid
                 return acc_val
             else:
@@ -189,16 +180,34 @@ class BreakthroughTrainer:
         input_ids, target_ids = self._prepare_batch(batch)
         
         # 可視化フック
-        hooks = []
+        # 修正: 型アノテーションを追加 [var-annotated]
+        hooks: List[Any] = []
+        
         if not is_train and self.enable_visualization and self.rank in [-1, 0] and hasattr(self, 'recorder'):
             self.recorder.clear()
-            # 最初のAdaptiveLIFNeuronにフックを登録（詳細省略）
-            # ... (フック登録ロジックは元のまま維持可能)
+            
+            def record_hook(module: nn.Module, input: Any, output: Tuple[torch.Tensor, torch.Tensor]) -> None:
+                spike, mem = output
+                threshold = getattr(module, 'base_threshold', None)
+                if isinstance(threshold, torch.Tensor):
+                    threshold = threshold.unsqueeze(0).expand_as(mem)
+                elif threshold is not None:
+                    threshold = torch.full_like(mem, float(threshold))
+                
+                self.recorder.record(
+                    membrane=mem[0:1].detach(),
+                    threshold=threshold[0:1].detach() if threshold is not None else None,
+                    spikes=spike[0:1].detach()
+                )
+
+            for module in self.model.modules():
+                if isinstance(module, AdaptiveLIFNeuron):
+                    hooks.append(module.register_forward_hook(record_hook))
+                    break
 
         try:
             start_time = time.time()
             
-            # Forward & Loss
             return_full_hiddens_flag = isinstance(self.criterion, SelfSupervisedLoss)
             
             with torch.amp.autocast(device_type=self.device if self.device != 'mps' else 'cpu', enabled=self.use_amp):
@@ -210,7 +219,6 @@ class BreakthroughTrainer:
                         return_full_hiddens=return_full_hiddens_flag
                     )
                     
-                    # 出力の分解
                     logits: Optional[torch.Tensor] = None
                     spikes = torch.tensor(0.0)
                     mem = torch.tensor(0.0)
@@ -231,7 +239,6 @@ class BreakthroughTrainer:
                         logits_for_acc = logits
                         loss_dict = self.criterion(logits, target_ids, spikes, mem, self.model, aux_logits=aux_logits)
 
-            # Backward
             if is_train:
                 self.optimizer.zero_grad()
                 if self.use_amp:
@@ -245,42 +252,56 @@ class BreakthroughTrainer:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                     self.optimizer.step()
                 
-                # Neuron Selector & Meta-Cognition
                 if self.neuron_selector:
                      self.neuron_selector.step(loss_dict['total'].item())
+                if self.meta_cognitive_snn:
+                     acc = 0.0 
+                     self.meta_cognitive_snn.update_metadata(loss_dict['total'].item(), time.time()-start_time, acc)
 
-            # Accuracy Calculation (Refactored)
-            # 型を Dict[str, Any] として宣言
             final_loss_dict: Dict[str, Any] = {k: v for k, v in loss_dict.items()}
             
             if 'accuracy' not in final_loss_dict:
                 if logits_for_acc is not None:
-                    # ここでリファクタリングしたメソッドを使用
                     acc_tensor = self._calculate_accuracy(logits_for_acc, target_ids)
                     final_loss_dict['accuracy'] = acc_tensor
                 else:
                     final_loss_dict['accuracy'] = torch.tensor(0.0, device=self.device)
 
-            # Convert all tensors to float for logging if needed, or keep as tensor
-            # 呼び出し元で .item() するか、ここで変換するか。
-            # 統一するため、ここでは Tensor のまま返すか、値にするか。
-            # 元のコードに合わせて値を返す形にする
             return {k: v.item() if torch.is_tensor(v) else v for k, v in final_loss_dict.items()}
 
         finally:
             for h in hooks: h.remove()
 
-    def evaluate(self, dataloader: DataLoader, epoch: int) -> Dict[str, float]:
-        """評価ループ"""
+    def train_epoch(self, dataloader: DataLoader, epoch: int) -> Dict[str, float]:
         total_metrics: Dict[str, float] = collections.defaultdict(float)
         num_batches = len(dataloader)
         if num_batches == 0: return {}
         
-        progress_bar = tqdm(dataloader, desc=f"Evaluating Epoch {epoch}", disable=(self.rank not in [-1, 0]))
+        pbar = tqdm(dataloader, desc=f"Training Epoch {epoch}", disable=(self.rank not in [-1, 0]))
+        
+        for batch in pbar:
+            metrics = self._run_step(batch, is_train=True)
+            for k, v in metrics.items(): total_metrics[k] += v
+            pbar.set_postfix({k: v / (pbar.n + 1) for k, v in total_metrics.items()})
+            
+        if self.scheduler: self.scheduler.step()
+        
+        avg_metrics = {k: v / num_batches for k, v in total_metrics.items()}
+        if self.rank in [-1, 0] and hasattr(self, 'writer'):
+            for k, v in avg_metrics.items(): self.writer.add_scalar(f'Train/{k}', v, epoch)
+            
+        return avg_metrics
+
+    def evaluate(self, dataloader: DataLoader, epoch: int) -> Dict[str, float]:
+        total_metrics: Dict[str, float] = collections.defaultdict(float)
+        num_batches = len(dataloader)
+        if num_batches == 0: return {}
+        
+        pbar = tqdm(dataloader, desc=f"Evaluating Epoch {epoch}", disable=(self.rank not in [-1, 0]))
         self.model.eval()
         
         with torch.no_grad():
-            for i, batch in enumerate(progress_bar):
+            for i, batch in enumerate(pbar):
                 metrics = self._run_step(batch, is_train=False)
                 for key, value in metrics.items(): 
                     total_metrics[key] += value
@@ -292,10 +313,8 @@ class BreakthroughTrainer:
             for key, value in avg_metrics.items(): 
                 self.writer.add_scalar(f'Validation/{key}', value, epoch)
             
-            # --- 修正: Path の使用方法 ---
             if self.enable_visualization and hasattr(self, 'recorder') and self.recorder.history['membrane']:
                 try:
-                    # pathlib.Path を使用
                     save_path = pathlib.Path(self.writer.log_dir) / f"neuron_dynamics_epoch_{epoch}.png"
                     plot_neuron_dynamics(self.recorder.history, save_path=save_path)
                 except Exception as e:
@@ -303,28 +322,41 @@ class BreakthroughTrainer:
 
         return avg_metrics
 
-    # (その他のメソッド: train_epoch, save_checkpoint, load_checkpoint は変更なし)
-    def train_epoch(self, dataloader: DataLoader, epoch: int) -> Dict[str, float]:
-        # ... (元のコードと同じ実装) ...
-        total_metrics: Dict[str, float] = collections.defaultdict(float)
-        num_batches = len(dataloader)
-        if num_batches == 0: return {}
-        progress_bar = tqdm(dataloader, desc=f"Training Epoch {epoch}", disable=(self.rank not in [-1, 0]))
-        self.model.train()
-        for batch in progress_bar:
-            metrics = self._run_step(batch, is_train=True)
-            for key, value in metrics.items(): total_metrics[key] += value
-            progress_bar.set_postfix({k: v / (progress_bar.n + 1) for k, v in total_metrics.items()})
-        if self.scheduler: self.scheduler.step()
-        avg_metrics = {key: value / num_batches for key, value in total_metrics.items()}
-        if self.rank in [-1, 0] and hasattr(self, 'writer'):
-            for key, value in avg_metrics.items(): self.writer.add_scalar(f'Train/{key}', value, epoch)
-        return avg_metrics
-
     def save_checkpoint(self, path: str, epoch: int, metric_value: float, **kwargs: Any) -> None:
-        # ... (元のコードと同じ実装) ...
-        pass
-        
+        if self.rank in [-1, 0]:
+            model_to_save_container = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
+            actual_model = cast(nn.Module, model_to_save_container.model if hasattr(model_to_save_container, 'model') else model_to_save_container)
+            buffers_to_exclude = {name for name, buf in actual_model.named_buffers() if buf is not None and any(keyword in name for keyword in ['mem', 'spikes', 'adaptive_threshold', 'v', 'u', 'v_s', 'v_d'])}
+            model_state = {k: v for k, v in actual_model.state_dict().items() if k not in buffers_to_exclude}
+            
+            state: Dict[str, Any] = {
+                'epoch': epoch, 'model_state_dict': model_state, 
+                'optimizer_state_dict': self.optimizer.state_dict(), 'best_metric': self.best_metric
+            }
+            if self.use_amp: state['scaler_state_dict'] = self.scaler.state_dict()
+            if self.scheduler: state['scheduler_state_dict'] = self.scheduler.state_dict()
+            state.update(kwargs)
+            
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            torch.save(state, path)
+            
+            if metric_value < self.best_metric:
+                self.best_metric = metric_value
+                best_path = os.path.join(os.path.dirname(path), 'best_model.pth')
+                temp_state_for_best = {'model_state_dict': model_state, **kwargs}
+                torch.save(temp_state_for_best, best_path)
+
     def load_checkpoint(self, path: str) -> int:
-        # ... (元のコードと同じ実装) ...
-        return 0
+        if not os.path.exists(path): return 0
+        checkpoint = torch.load(path, map_location=self.device)
+        model_to_load_container = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
+        actual_model = cast(nn.Module, model_to_load_container.model if hasattr(model_to_load_container, 'model') else model_to_load_container)
+        
+        state_dict = checkpoint.get('model_state_dict', checkpoint)
+        actual_model.load_state_dict(state_dict, strict=False)
+        
+        if 'optimizer_state_dict' in checkpoint: self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if self.scheduler and 'scheduler_state_dict' in checkpoint: self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        if self.use_amp and 'scaler_state_dict' in checkpoint: self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
+        self.best_metric = checkpoint.get('best_metric', float('inf'))
+        return int(checkpoint.get('epoch', -1)) + 1
