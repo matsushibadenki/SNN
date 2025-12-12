@@ -1,9 +1,9 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# Title: Artificial Brain Kernel v16.1 (Dimension Fix)
+# Title: Artificial Brain Kernel v16.1 (Syntax Fix)
 # Description:
 #   ROADMAP v16 対応の統合人工脳カーネル。
-#   修正: LiquidAssociationCortexの入力次元不一致(Audio/Text)を修正。
-#   汎用エンコーダ出力(256dim)を受け入れるために、audio入力サイズを拡張。
+#   修正: 末尾の不要な閉じ括弧を削除し、SyntaxErrorを解消。
+#         LiquidAssociationCortexの入力次元対応 (num_audio_inputs=256) を維持。
 
 from typing import Dict, Any, List, Optional, Union, cast
 import time
@@ -116,7 +116,7 @@ class ArtificialBrain:
             self.tokenizer = None
 
         # --- Liquid Association Cortex (Unified Perception) ---
-        # 修正: num_audio_inputs を 256 に拡張 (汎用入力用)
+        # 汎用入力(256dim)に対応するため num_audio_inputs を拡張
         self.association_cortex = LiquidAssociationCortex(
             num_visual_inputs=64,
             num_audio_inputs=256, 
@@ -197,7 +197,7 @@ class ArtificialBrain:
                 spike_pattern = self.encoder.encode(sensory_info, duration=16)
                 self.perception.perceive_and_upload(spike_pattern)
                 report["executed_modules"].append("perception")
-                # ここで汎用入力として256次元が来る可能性があるため、LACのAudio入力(256)にマップする
+                # LACのAudio入力(256)にマップ
                 audio_spikes_for_lac = spike_pattern.float().mean(dim=0).unsqueeze(0) > 0.5
                 
                 if self.astrocyte.request_resource("amygdala", 1.0):
@@ -436,5 +436,3 @@ class ArtificialBrain:
                 )
         else:
             logger.warning("⚠️ Cannot correct knowledge now: Brain too tired.")
-
-}
