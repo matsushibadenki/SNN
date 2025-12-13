@@ -3,7 +3,7 @@
 # 機能説明: 
 #   Spike-Timing Dependent Plasticity (STDP) を用いた学習を行うトレーナー。
 #   生物学的妥当性の高い、局所的な学習則を適用する。
-#   修正: AbstractNetworkがcallableでないため、型チェックと分岐を追加。
+#   修正: mypyエラー (int変数へのfloat加算) を修正するため、total_spikesをfloatで初期化。
 
 from typing import Dict, Any, Optional
 import torch
@@ -29,7 +29,8 @@ class STDPTrainer(AbstractTrainer):
     def train_epoch(self, data_loader: DataLoader) -> Dict[str, float]:
         logger.info(f"Starting STDP training epoch {self.current_epoch}...")
         
-        total_spikes = 0
+        # 修正: float型の加算に対応するため、明示的にfloatとして初期化
+        total_spikes: float = 0.0
         batch_count = 0
         
         # STDPは通常オンライン学習またはバッチ学習
@@ -61,7 +62,7 @@ class STDPTrainer(AbstractTrainer):
                 logger.warning(f"Unknown model type in STDPTrainer: {type(self.model)}")
 
             # メトリクス収集 (スパイク数など)
-            total_spikes += metrics.get('spike_count', 0)
+            total_spikes += metrics.get('spike_count', 0.0)
             batch_count += 1
         
         self.current_epoch += 1
