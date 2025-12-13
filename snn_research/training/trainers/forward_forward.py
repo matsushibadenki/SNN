@@ -68,9 +68,13 @@ class ForwardForwardTrainer(AbstractTrainer):
             return [self.model.layers_map[name] for name in self.model.layer_order]
         elif isinstance(self.model, nn.Sequential):
             return list(self.model)
-        else:
-            # フォールバック: 直下の子モジュールをリスト化
+        elif isinstance(self.model, nn.Module):
+             # 修正: 明示的に nn.Module であることを確認してから children() を呼ぶ
+             # これにより AbstractNetwork などの Union 型チェックエラーを回避
             return list(self.model.children())
+        else:
+            # nn.Module でない場合は層を取得できないため空リストを返す
+            return []
 
     def _generate_negative_data(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """
