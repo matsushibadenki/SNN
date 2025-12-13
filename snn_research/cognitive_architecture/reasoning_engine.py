@@ -14,7 +14,9 @@ import io
 import contextlib
 import multiprocessing
 import traceback
+import sys
 
+# プロジェクト内依存関係
 from snn_research.models.transformer.sformer import SFormer
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 
@@ -29,27 +31,43 @@ class CodeSandbox:
     """
     def __init__(self, timeout: float = 2.0):
         self.timeout = timeout
+        # 危険な操作を行うモジュールのインポートを禁止
         self.forbidden_modules = [
-            "os", "sys", "subprocess", "shutil", "netrc", "requests", "urllib"
+            "os", "sys", "subprocess", "shutil", "netrc", "requests", "urllib", "socket", "pathlib"
         ]
 
     def _execute_script(self, code: str, result_queue: multiprocessing.Queue):
         """別プロセスで実行される関数"""
-        # 安全性チェック (簡易)
+        # 1. 安全性チェック (簡易静的解析)
         for mod in self.forbidden_modules:
-            if f"import {mod}" in code or f"from {mod}" in code:
+            if re.search(fr"\b(import|from)\s+{mod}\b", code):
                 result_queue.put(("Error", f"Security Violation: Import of '{mod}' is forbidden."))
                 return
+        
+        if "open(" in code or "exec(" in code or "eval(" in code:
+             result_queue.put(("Error", "Security Violation: Usage of 'open', 'exec', or 'eval' is forbidden."))
+             return
 
-        # 標準出力をキャプチャ
+        # 2. 実行環境の構築
         f = io.StringIO()
+        
+        # 実行結果を格納する変数
+        local_scope: Dict[str, Any] = {}
+        
         try:
             with contextlib.redirect_stdout(f):
-                # 実行コンテキストの制限
-                safe_locals = {"__name__": "__main__", "__builtins__": __builtins__}
-                exec(code, safe_locals, safe_locals)
-            result_queue.put(("Success", f.getvalue().strip()))
+                # 実行 (__builtins__ を制限して安全性を高めることも可能だが、ここでは利便性のため標準を使用)
+                # ただしファイル操作等はforbidden_modulesチェックで弾く
+                exec(code, {"__name__": "__main__", "__builtins__": __builtins__}, local_scope)
+            
+            output = f.getvalue().strip()
+            
+            # 出力がない場合、最後の式の結果を取得しようとする努力（REPL的な挙動）はここではしない。
+            # Print出力を正とする。
+            result_queue.put(("Success", output))
+            
         except Exception:
+            # エラー発生時はトレースバックを返す
             result_queue.put(("Error", traceback.format_exc()))
 
     def run(self, code: str) -> Tuple[bool, str]:
@@ -72,7 +90,8 @@ class CodeSandbox:
             status, output = queue.get()
             return (status == "Success"), output
         else:
-            return False, "Unknown Execution Error"
+            # キューが空のまま終了した場合（クラッシュなど）
+            return False, "Unknown Execution Error (Process crashed or returned nothing)"
 
 
 class VerifierNetwork(nn.Module):
@@ -100,7 +119,7 @@ class VerifierNetwork(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # (Batch, SeqLen, d_model) -> (Batch, 1)
-        # 平均プーリングで文章全体の特徴を集約
+        # 平均プーリングで文章全体の特徴を集約（将来的にはAttention Pooling推奨）
         pooled = torch.mean(hidden_states, dim=1)
         compressed = self.compressor(pooled)
         score = self.value_head(compressed)
@@ -136,27 +155,31 @@ class ReasoningEngine:
             
         self.num_thinking_paths = num_thinking_paths
         self.max_thinking_steps = max_thinking_steps
+        
+        # コードサンドボックスの初期化
         self.sandbox = CodeSandbox(timeout=2.0)
         
-        logger.info(f"🧠 ReasoningEngine v2 initialized (Paths: {num_thinking_paths}, CodeVerify: {enable_code_verification})")
+        logger.info(f"🧠 ReasoningEngine v2 initialized (Paths: {num_thinking_paths}, CodeVerify: {enable_code_verification}, Device: {device})")
 
     def _extract_code_blocks(self, text: str) -> List[str]:
         """Markdown形式のコードブロックを抽出する"""
-        pattern = r"```python(.*?)```"
+        # ```python ... ``` または ``` ... ``` を抽出
+        pattern = r"```(?:python)?(.*?)```"
         matches = re.findall(pattern, text, re.DOTALL)
-        return [m.strip() for m in matches]
+        return [m.strip() for m in matches if m.strip()]
 
     def think_and_solve(
         self, 
         input_ids: torch.Tensor, 
         task_type: str = "general",
-        temperature: float = 0.7
+        temperature: float = 0.7,
+        tokenizer: Any = None  # コード検証のためにトークナイザを受け取れるように拡張
     ) -> Dict[str, Any]:
         """
         Thinking Loop: 
         1. 複数の思考パスを生成 (CoT)
-        2. コードブロックがあれば実行して検証 (Program-Aided Verification)
-        3. Verifierモデルによる評価
+        2. Neural Verifierで初期評価
+        3. (Optional) コードブロックがあれば実行して検証 (Program-Aided Verification)
         4. 最良の思考パスを選択 (Best-of-N)
         """
         B = input_ids.shape[0]
@@ -199,43 +222,63 @@ class ReasoningEngine:
             ) # (N, TotalLen)
 
             # 2.2 Neural Verifier による評価 (初期スコア)
-            # Embedding層を通して隠れ状態を近似
+            # Embedding層を通して隠れ状態を近似 (SFormerの出力層直前などが理想だが簡易実装)
             hidden_approx = self.model.embedding(generated_ids) 
             neural_scores = self.verifier(hidden_approx).view(-1).tolist()
             
-            # 2.3 Program-Aided Verification (コード実行検証)
-            # トークンIDをデコードできないとコード実行できないため、ここではデコード済みテキストが必要
-            # ※本来はTokenizerがここに注入されているべきだが、SNNアーキテクチャの分離原則により
-            # 文字列デコードは呼び出し元で行われることが多い。
-            # しかし、Verificationには内容が必要なため、暫定的に「呼び出し元でデコードして再評価」あるいは
-            # 「ここで簡易デコード」が必要。ここでは設計上、ArtificialBrain側でTokenizerを持っているので、
-            # Neural Scoreのみで候補を返し、Code Executionはオプションとするか、
-            # もしTokenizerがあれば実行する設計にする。
-            
-            # 今回は、ArtificialBrainとの結合度を下げるため、
-            # 純粋なIDベースの推論ではコード実行はスキップし、
-            # Neural Verifierのスコアのみを返す。
-            # ただし、ロードマップ要件を満たすため、もし外部からTokenizerが渡されていれば実行する拡張性を残す。
-
+            # 候補リストの初期化
             for i in range(self.num_thinking_paths):
-                # 基本スコア
-                score = neural_scores[i]
-                
                 candidates.append({
                     "output_ids": generated_ids[i],
-                    "score": score,
+                    "score": neural_scores[i],
                     "path_id": i,
-                    "code_feedback": None
+                    "code_feedback": None,
+                    "strategy": "neural_only"
                 })
 
-        # 3. Selection (Best-of-N)
+        # 3. Program-Aided Verification (コード実行検証)
+        # トークナイザが提供され、かつコード検証が有効な場合
+        if tokenizer is not None and self.enable_code_verification:
+            logger.debug("🔎 Running Program-Aided Verification...")
+            
+            input_len = input_ids.shape[1]
+            
+            for candidate in candidates:
+                # 生成部分のみをデコード
+                gen_ids = candidate["output_ids"][input_len:]
+                generated_text = tokenizer.decode(gen_ids, skip_special_tokens=True)
+                
+                code_blocks = self._extract_code_blocks(generated_text)
+                
+                if code_blocks:
+                    # 最後のコードブロックを実行対象とみなす（解答コードと仮定）
+                    code_to_run = code_blocks[-1]
+                    success, output = self.sandbox.run(code_to_run)
+                    
+                    candidate["code_feedback"] = f"Result: {'Success' if success else 'Fail'}\nOutput: {output[:100]}..."
+                    
+                    # スコアの再調整 (Re-ranking Logic)
+                    if success:
+                        # 実行成功かつ出力がある場合、信頼度をブースト
+                        # ただし出力がエラーメッセージっぽくないことも要確認だがここでは簡易的に
+                        if "Error" not in output and "Exception" not in output:
+                            candidate["score"] = min(1.0, candidate["score"] + 0.25)
+                            candidate["strategy"] = "code_verified_success"
+                        else:
+                             candidate["score"] = max(0.0, candidate["score"] - 0.1)
+                    else:
+                        # 実行時エラーは減点
+                        candidate["score"] = max(0.0, candidate["score"] - 0.25)
+                        candidate["strategy"] = "code_verified_failed"
+
+        # 4. Selection (Best-of-N)
         # スコアが最も高いものを選択
         best_candidate = max(candidates, key=lambda x: x["score"])
         
-        # 思考トレースの構築
+        # 思考トレースの構築 (デバッグ・可視化用)
         trace = []
         for c in candidates:
-            trace_info = f"Path {c['path_id']}: Score={c['score']:.3f}"
+            trace_info = f"Path {c['path_id']}: Score={c['score']:.3f} [{c['strategy']}]"
             if c['code_feedback']:
                 trace_info += f" | Code: {c['code_feedback']}"
             trace.append(trace_info)
@@ -244,69 +287,8 @@ class ReasoningEngine:
             "final_output": best_candidate["output_ids"].unsqueeze(0),
             "thought_trace": trace,
             "verifier_score": best_candidate["score"],
-            "strategy": "system2_verified_neural"
+            "strategy": best_candidate["strategy"]
         }
-
-    def solve_with_code_verification(
-        self,
-        input_text: str,
-        tokenizer: Any,
-        input_ids: torch.Tensor
-    ) -> Dict[str, Any]:
-        """
-        [拡張機能] テキストとTokenizerを受け取り、コード実行検証を含めた完全な推論を行う。
-        ArtificialBrain から呼ばれることを想定。
-        """
-        # 1. まず標準的な推論を行う
-        result = self.think_and_solve(input_ids)
-        
-        if not self.enable_code_verification:
-            return result
-        
-        # 2. コード実行による再評価 (Re-ranking)
-        # ここで初めてテキストにデコードして内容を検査する
-        best_score = -1.0
-        best_idx = 0
-        
-        # 上位候補だけ詳しく見る (計算コスト削減)
-        # think_and_solve は内部候補を返さない設計だが、
-        # 実際の実装では candidates を保持しておくか、再生成が必要。
-        # ここでは単純化のため、think_and_solve のロジックを再利用せず、
-        # このメソッド内で独自にループを回すのが最適だが、
-        # 重複を避けるため、think_and_solve を拡張して candidates を返せるように変更するのも手。
-        # 今回は、think_and_solveの結果(Best 1)に対して事後検証を行うアプローチをとる。
-        
-        # 生成されたIDをテキストにデコード
-        generated_ids = result["final_output"][0]
-        # 入力部分を除去して生成部分のみ抽出
-        gen_len = generated_ids.shape[0] - input_ids.shape[1]
-        if gen_len > 0:
-            gen_ids = generated_ids[-gen_len:]
-            generated_text = tokenizer.decode(gen_ids, skip_special_tokens=True)
-            
-            code_blocks = self._extract_code_blocks(generated_text)
-            if code_blocks:
-                logger.info(f"💻 Code block detected. Executing verification... ({len(code_blocks)} blocks)")
-                
-                # 最後のコードブロックを実行してみる（解答コードと仮定）
-                code_to_run = code_blocks[-1]
-                success, output = self.sandbox.run(code_to_run)
-                
-                # コード実行結果を思考トレースに追加
-                feedback = f"\n[Code Execution Result]: {'Success' if success else 'Failed'}\nOutput: {output[:200]}"
-                result["thought_trace"].append(feedback)
-                
-                # 検証スコアの調整
-                if success:
-                    # 実行成功したら信頼度アップ
-                    result["verifier_score"] = min(1.0, result["verifier_score"] + 0.2)
-                    result["strategy"] = "system2_verified_code_success"
-                else:
-                    # エラーなら信頼度ダウン
-                    result["verifier_score"] = max(0.0, result["verifier_score"] - 0.3)
-                    result["strategy"] = "system2_verified_code_failed"
-                    
-        return result
 
     def _system1_inference(self, input_ids: torch.Tensor) -> Dict[str, Any]:
         """System 1: 即時推論 (Greedy) - 低エネルギーモード"""
@@ -326,5 +308,7 @@ class ReasoningEngine:
                 
         return {
             "final_output": output,
-            "strategy": "system1_fast"
+            "strategy": "system1_fast",
+            "thought_trace": ["System 1: Direct Intuition"],
+            "verifier_score": 0.0 # System 1は検証なし
         }
