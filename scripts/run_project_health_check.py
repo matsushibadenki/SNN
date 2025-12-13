@@ -1,9 +1,9 @@
 # ファイルパス: scripts/run_project_health_check.py
-# Title: SNNプロジェクト 統合健全性チェック (最新版 v2.4 - Bio & OS Added)
+# Title: SNNプロジェクト 統合健全性チェック (最新版 v2.5 - Green AI & FF/HDC Added)
 # Description: 
 #   プロジェクトの全コンポーネント（学習、推論、エージェント、生物学的モデル、OS）の
 #   動作を網羅的に検証するスクリプト。
-#   v2.4追加: PD14マイクロサーキット、オンチップ学習、脳型OSのテストケース。
+#   v2.5追加: Forward-Forward学習、Hyperdimensional Computing (HDC) のテストケース。
 
 import subprocess
 import sys
@@ -120,7 +120,7 @@ def check_training_success(log_dir: str) -> Callable[[str], bool]:
 
 def main():
     logger.info("="*60)
-    logger.info("🩺 SNNプロジェクト 高精度健全性チェック (v2.4)")
+    logger.info("🩺 SNNプロジェクト 高精度健全性チェック (v2.5)")
     logger.info("="*60)
     logger.info(f"📂 作業ディレクトリ: {os.getcwd()}")
 
@@ -308,31 +308,104 @@ except Exception as e:
             validator=check_log_contains("TASK COMPLETED")
         )
 
-        # --- 13. On-Chip Learning (New) ---
+        # --- 13. On-Chip Learning ---
         results["13. オンチップ学習 (STDP)"] = runner.run_command(
             [py, "scripts/run_on_chip_learning.py"],
             "13. オンチップ学習 (STDP)",
             validator=check_log_contains("demo finished")
         )
 
-        # --- 14. Bio-Microcircuit (PD14) (New) ---
+        # --- 14. Bio-Microcircuit (PD14) ---
         results["14. 生物学的マイクロサーキット (PD14)"] = runner.run_command(
             [py, "scripts/run_bio_microcircuit_demo.py"],
             "14. 生物学的マイクロサーキット (PD14)",
             validator=check_log_contains("Demo Completed")
         )
 
-        # --- 15. Neuromorphic OS (New) ---
+        # --- 15. Neuromorphic OS ---
         results["15. 脳型OSシミュレーション (Neuromorphic OS)"] = runner.run_command(
             [py, "scripts/runners/run_neuromorphic_os.py"],
             "15. 脳型OSシミュレーション (Neuromorphic OS)",
             validator=check_log_contains("Demo Completed")
         )
 
+        # --- 16. Forward-Forward Learning (New) ---
+        # インラインスクリプトでFFトレーナーの動作確認を行う
+        ff_check_code = """
+import torch
+import torch.nn as nn
+from snn_research.training.trainers.forward_forward import ForwardForwardTrainer
+import sys
+
+try:
+    # 簡易モデルの定義 (Sequential)
+    model = nn.Sequential(
+        nn.Linear(10, 8),
+        nn.ReLU(),
+        nn.Linear(8, 4)
+    )
+    
+    # ダミーデータ生成
+    inputs = torch.randn(4, 10)
+    targets = torch.randint(0, 2, (4,))
+    # DataLoader形式のリスト
+    loader = [(inputs, targets)]
+    
+    # トレーナー初期化と学習実行
+    trainer = ForwardForwardTrainer(model, learning_rate=0.01)
+    metrics = trainer.train_epoch(loader)
+    
+    print(f"FF Training Finished. Metrics: {metrics}")
+    
+    if 'loss' not in metrics:
+        raise ValueError("Metrics do not contain loss")
+        
+except Exception as e:
+    print(f"FF Error: {e}", file=sys.stderr)
+    sys.exit(1)
+"""
+        results["16. Forward-Forward (FF) 学習"] = runner.run_command(
+            [py, "-c", ff_check_code],
+            "16. Forward-Forward (FF) 学習",
+            validator=check_log_contains("FF Training Finished")
+        )
+
+        # --- 17. Hyperdimensional Computing (HDC) (New) ---
+        hdc_check_code = """
+from snn_research.cognitive_architecture.hdc_engine import HDCEngine, HDCReasoningAgent
+import sys
+
+try:
+    # テスト用に低次元で初期化
+    engine = HDCEngine(dim=2048) 
+    agent = HDCReasoningAgent(engine)
+    
+    # シンボル接地と推論テスト: Japan + Capital -> Tokyo
+    agent.learn_concept("Japan", "Capital", "Tokyo")
+    result = agent.query("Japan", "Capital")
+    
+    print(f"HDC Query Result: {result}")
+    
+    # 推論結果の検証
+    if not result or result[0][0] != "Tokyo":
+        raise Exception(f"Inference failed. Expected Tokyo, got {result}")
+        
+    print("HDC Test Passed")
+
+except Exception as e:
+    print(f"HDC Error: {e}", file=sys.stderr)
+    sys.exit(1)
+"""
+        results["17. Hyperdimensional Computing (HDC)"] = runner.run_command(
+            [py, "-c", hdc_check_code],
+            "17. Hyperdimensional Computing (HDC)",
+            validator=check_log_contains("HDC Test Passed")
+        )
+
     finally:
         # 結果集計
         logger.info("="*60)
-        logger.info("🩺 統合健全性チェック完了 (高精度版 v2.4)")
+        logger.info("🩺 統合健全性チェック完了 (高精度版 v2.5)")
         logger.info("="*60)
         
         passed_count = sum(1 for v in results.values() if v)
@@ -343,8 +416,7 @@ except Exception as e:
             status = "✅ PASS" if success else "❌ FAIL"
             logger.info(f"  {status} : {name}")
             
-        # Optional: Cleanup
-        # 自動テストなどでゴミを残したくない場合は以下を有効化
+        # Cleanup
         # for p in temp_paths:
         #     try:
         #         if os.path.isfile(p): os.remove(p)
