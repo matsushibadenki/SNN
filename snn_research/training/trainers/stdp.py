@@ -3,14 +3,14 @@
 # 機能説明: 
 #   Spike-Timing Dependent Plasticity (STDP) を用いた学習を行うトレーナー。
 #   生物学的妥当性の高い、局所的な学習則を適用する。
-#   修正: base_trainerのインポートパスを修正 (mypyエラー対応)
+#   修正: AbstractNetworkがcallableでないため、型チェックと分岐を追加。
 
 from typing import Dict, Any, Optional
 import torch
+import torch.nn as nn
 import logging
-
-# 修正: 相対パスではなく、絶対パスまたは一つ上の階層からインポート
 from snn_research.training.base_trainer import AbstractTrainer, DataLoader
+from snn_research.core.network import AbstractNetwork
 
 logger = logging.getLogger(__name__)
 
@@ -44,15 +44,21 @@ class STDPTrainer(AbstractTrainer):
             if inputs is None: continue
 
             # Forward pass (STDP更新はモデル内部のforwardまたはその後のhookで行われることが多い)
-            # ここでは明示的に学習ステップを呼ぶ形式を想定
+            metrics: Dict[str, float] = {}
             
-            if hasattr(self.model, 'run_learning_step'):
-                # AbstractSNNNetwork 準拠
+            if isinstance(self.model, AbstractNetwork):
+                # AbstractNetworkは__call__を持たないためforwardを呼ぶ
+                _ = self.model.forward(inputs)
+                metrics = {}
+            elif hasattr(self.model, 'run_learning_step'):
+                # AbstractSNNNetwork 準拠 (run_learning_stepを持つ場合)
                 metrics = self.model.run_learning_step(inputs, targets) # type: ignore
-            else:
+            elif isinstance(self.model, nn.Module):
                 # 汎用的なフォールバック: 推論のみ走らせて、内部状態を更新させる
                 _ = self.model(inputs)
                 metrics = {}
+            else:
+                logger.warning(f"Unknown model type in STDPTrainer: {type(self.model)}")
 
             # メトリクス収集 (スパイク数など)
             total_spikes += metrics.get('spike_count', 0)
