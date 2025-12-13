@@ -1,9 +1,11 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# Title: Artificial Brain Kernel v16.1 (Syntax Fix)
+# Title: Artificial Brain Kernel v16.2 (Enhanced Logic Integration)
 # Description:
 #   ROADMAP v16 対応の統合人工脳カーネル。
-#   修正: 末尾の不要な閉じ括弧を削除し、SyntaxErrorを解消。
-#         LiquidAssociationCortexの入力次元対応 (num_audio_inputs=256) を維持。
+#   修正: 
+#     - 海馬(Hippocampus)の想起プロセスを知覚ループに統合。
+#     - 前頭前野(PFC)の目標を推論エンジン(ReasoningEngine)に明示的に伝達。
+#     - 推論結果に基づき、動的に行動候補(Candidates)を生成するロジックを強化。
 
 from typing import Dict, Any, List, Optional, Union, cast
 import time
@@ -46,8 +48,9 @@ logger = logging.getLogger(__name__)
 
 class ArtificialBrain:
     """
-    Artificial Brain Kernel v16.0
+    Artificial Brain Kernel v16.2
     System 1 (直感) と System 2 (熟慮) を統合し、倫理的なガードレールで保護された人工脳。
+    モジュール間の連携（記憶想起、目標指向推論、行動選択）を強化。
     """
     def __init__(
         self,
@@ -74,7 +77,7 @@ class ArtificialBrain:
         ethical_guardrail: Optional[EthicalGuardrail] = None,
         tokenizer_name: str = "gpt2"
     ):
-        logger.info("🚀 Booting Artificial Brain Kernel v16.0 (Ethical AGI Prototype)...")
+        logger.info("🚀 Booting Artificial Brain Kernel v16.2 (Ethical AGI Prototype)...")
         
         self.workspace = global_workspace
         self.motivation_system = motivation_system
@@ -145,7 +148,7 @@ class ArtificialBrain:
     def run_cognitive_cycle(self, raw_input: Any) -> Dict[str, Any]:
         """
         1回の認知サイクルを実行する。
-        Observation -> Safety Check -> Perception -> Awareness -> Reasoning -> Action
+        Observation -> Safety Check -> Perception -> Memory Recall -> Awareness -> Reasoning -> Action
         """
         # 0. 状態チェック
         if self.state in ["SLEEPING", "DREAMING"]:
@@ -177,13 +180,13 @@ class ArtificialBrain:
         visual_spikes_for_lac: Optional[torch.Tensor] = None
         audio_spikes_for_lac: Optional[torch.Tensor] = None
         
-        # ... (既存の知覚プロセス) ...
         if sensory_info['type'] == 'image':
             if self.astrocyte.request_resource("visual_cortex", 15.0):
                 img_tensor = self.image_transform(sensory_info['content']).unsqueeze(0)
                 self.visual.perceive_and_upload(img_tensor)
                 report["executed_modules"].append("visual_cortex")
-                visual_spikes_for_lac = torch.rand(1, 64) > 0.9 # Dummy
+                # LAC用のダミー/簡易特徴量
+                visual_spikes_for_lac = torch.rand(1, 64) > 0.9 
                 
                 if self.astrocyte.request_resource("symbol_grounding", 5.0):
                     vis_data = self.workspace.get_information("visual_cortex")
@@ -206,15 +209,15 @@ class ArtificialBrain:
             else:
                 report["denied_modules"].append("perception")
 
-        # Liquid Association Cortex
+        # Liquid Association Cortex Integration
         lac_vis = visual_spikes_for_lac.float() if visual_spikes_for_lac is not None else None
         lac_aud = audio_spikes_for_lac.float() if audio_spikes_for_lac is not None else None
         
-        # デバイスの整合性を確保
         device = next(self.association_cortex.parameters()).device
         if lac_vis is not None: lac_vis = lac_vis.to(device)
         if lac_aud is not None: lac_aud = lac_aud.to(device)
 
+        # 統合特徴量の生成
         association_activity = self.association_cortex(visual_spikes=lac_vis, audio_spikes=lac_aud)
         
         if self.astrocyte.request_resource("association", 5.0):
@@ -225,36 +228,51 @@ class ArtificialBrain:
             )
             report["executed_modules"].append("association_cortex")
 
+        # --- Step 1.5: Memory Recall (Hippocampus) ---
+        # 統合された特徴量を用いて、関連する記憶を意識の座に上げる
+        if self.astrocyte.request_resource("hippocampus", 3.0):
+            self.hippocampus.evaluate_relevance_and_upload(association_activity)
+            # ※ Hippocampus内部で関連性が高ければワークスペースへアップロードされる
+
         # --- Step 2: Consciousness (意識の放送) ---
+        # ここで知覚、情動、記憶が競合し、勝者が放送される
         self.workspace.conscious_broadcast_cycle()
         conscious_content = self.workspace.conscious_broadcast_content
-        report["consciousness"] = str(conscious_content)[:50] if conscious_content else None
+        report["consciousness"] = str(conscious_content)[:100] if conscious_content else None
 
         # --- Step 3: High-Level Cognition (Thinking & Verifier) ---
         thought_output = None
         
         if conscious_content:
-            # PFC & Causal Engine Update
+            # 3.1 PFC Update & Goal Setting
             if self.astrocyte.request_resource("prefrontal_cortex", 8.0):
                 self.pfc.handle_conscious_broadcast("workspace", conscious_content)
                 report["executed_modules"].append("prefrontal_cortex")
 
-            # --- Reasoning Engine (System 2 Loop) ---
+            # PFCから現在の実行コンテキスト（目標など）を取得
+            executive_context = self.pfc.get_executive_context()
+            current_goal = executive_context.get("goal", "Undefined")
+
+            # 3.2 Reasoning Engine (System 2 Loop)
             # テキストベースの思考が可能な場合
             if (self.reasoning and self.tokenizer and 
                 (isinstance(conscious_content, str) or isinstance(sensory_info.get('content'), str))):
                 
+                # 思考対象のテキスト
                 target_text = str(conscious_content) if isinstance(conscious_content, str) else str(sensory_info.get('content'))
                 
+                # コンテキストを含めたプロンプトの構成（簡易的実装）
+                # 実際にはReasoningEngine側でコンテキストを受け取る設計が望ましいが、ここでは入力に付与
+                contextualized_input = f"Goal: {current_goal}\nContext: {target_text}"
+                
                 try:
-                    # デバイス特定
                     device = next(cast(torch.nn.Module, self.thinking_engine).parameters()).device
-                    input_ids = self.tokenizer.encode(target_text, return_tensors='pt').to(device)
+                    input_ids = self.tokenizer.encode(contextualized_input, return_tensors='pt').to(device)
                     
                     # 思考実行 (Think & Solve)
                     think_result = self.reasoning.think_and_solve(
                         input_ids, 
-                        task_type="general", # 将来的には分類器で決定
+                        task_type="general", 
                         temperature=0.7
                     )
                     
@@ -264,11 +282,9 @@ class ArtificialBrain:
                         if not is_thought_safe:
                             logger.warning(f"🛑 Unsafe thought detected: {audit_msg}")
                             report["alerts"].append(f"Thought blocked: {audit_msg}")
-                            # 思考結果を破棄または修正
                             think_result["final_output"] = None 
                             thought_output = "[Thought Blocked by Safety Protocol]"
                         else:
-                            # デコード
                             thought_output = self.tokenizer.decode(think_result['final_output'][0], skip_special_tokens=True)
                             report["thought_strategy"] = think_result['strategy']
                     else:
@@ -282,10 +298,9 @@ class ArtificialBrain:
                 except Exception as e:
                     logger.error(f"Reasoning error: {e}")
             
-            # Fallback to System 1 (Thinking Engine direct call) if Reasoning Engine failed or not available
+            # Fallback to System 1 (Thinking Engine direct call)
             elif self.astrocyte.request_resource("thinking_engine", 20.0):
                 try:
-                    # Dummy or simple forward
                     device = next(self.thinking_engine.parameters()).device
                     dummy_ids = torch.randint(0, 1000, (1, 16)).to(device)
                     _ = self.thinking_engine(dummy_ids)
@@ -297,14 +312,24 @@ class ArtificialBrain:
 
             # --- Action Selection ---
             amygdala_state = self.workspace.get_information("amygdala")
+            
             if self.astrocyte.request_resource("basal_ganglia", 3.0):
-                # 行動候補の生成（本来はPlanner等から来るがここでは簡易）
-                candidates = [
-                    {'action': 'reply_text', 'value': 0.8, 'params': {'text': thought_output}}, 
-                    {'action': 'store_memory', 'value': 0.6},
-                    {'action': 'ignore', 'value': 0.1}
-                ]
+                # 行動候補の生成
+                candidates = []
                 
+                # 思考結果がある場合、それを発話や行動として提案
+                if thought_output and "[System 1" not in thought_output and "[Thought Blocked" not in thought_output:
+                    candidates.append({
+                        'action': 'reply_text', 
+                        'value': 0.9, 
+                        'params': {'text': thought_output}
+                    })
+                
+                # デフォルトの行動候補
+                candidates.append({'action': 'store_memory', 'value': 0.5})
+                candidates.append({'action': 'observe_more', 'value': 0.2})
+                
+                # 大脳基底核による選択
                 selected_action = self.basal_ganglia.select_action(candidates, emotion_context=amygdala_state)
                 report["executed_modules"].append("basal_ganglia")
                 
@@ -326,9 +351,8 @@ class ArtificialBrain:
                             if not is_safe_out:
                                 action_allowed = False
                                 report["alerts"].append(f"Output text blocked: {out_reason}")
-                                # 拒否メッセージに差し替え
                                 selected_action['params']['text'] = self.guardrail.generate_gentle_refusal(out_reason)
-                                action_allowed = True # 差し替えたので許可
+                                action_allowed = True # 差し替えて許可
 
                     if action_allowed:
                         action_name = selected_action.get('action')
@@ -341,27 +365,20 @@ class ArtificialBrain:
                             self.actuator.run_command_sequence(execution_log)
                             report["executed_modules"].append("motor_cortex")
             
-            # Memory Storage
+            # Memory Storage (Experience Replay Buffer)
             if self.astrocyte.request_resource("hippocampus", 4.0):
                 episode = {
                     "timestamp": time.time(),
                     "input": str(raw_input),
+                    "features": association_activity.detach().cpu() if 'association_activity' in locals() else None, # 特徴量を保存して検索可能に
                     "consciousness": conscious_content,
                     "thought": thought_output,
                     "action": selected_action if 'selected_action' in locals() else None,
-                    "emotion": amygdala_state
+                    "emotion": amygdala_state,
+                    "goal_context": current_goal
                 }
                 self.hippocampus.store_episode(episode)
                 report["executed_modules"].append("hippocampus")
-
-            # Priming
-            if isinstance(conscious_content, dict) and "detected_objects" in conscious_content:
-                concept = f"neural_concept_{self.cycle_count}"
-                priming = self.grounding.recall_pattern(concept)
-                if priming is not None:
-                    self.current_priming_signal = priming
-            else:
-                self.current_priming_signal = None
 
         # --- Step 4: System Check (Homeostasis) ---
         self.astrocyte.step() 
