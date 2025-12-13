@@ -8,7 +8,7 @@
 
 import torch
 import logging
-from typing import Dict, Optional, List, Union
+from typing import Dict, Optional, List, Union, Tuple # 修正: Tupleを追加
 
 logger = logging.getLogger(__name__)
 
