@@ -1,9 +1,9 @@
 # ファイルパス: scripts/run_project_health_check.py
-# Title: SNNプロジェクト 統合健全性チェック (最新版 v2.5 - Green AI & FF/HDC Added)
+# Title: SNNプロジェクト 統合健全性チェック (最新版 v2.6 - Full Green AI Suite)
 # Description: 
 #   プロジェクトの全コンポーネント（学習、推論、エージェント、生物学的モデル、OS）の
 #   動作を網羅的に検証するスクリプト。
-#   v2.5追加: Forward-Forward学習、Hyperdimensional Computing (HDC) のテストケース。
+#   v2.6追加: Tsetlin Machine, Oscillatory Neural Network (ONN) のテストケース。
 
 import subprocess
 import sys
@@ -120,7 +120,7 @@ def check_training_success(log_dir: str) -> Callable[[str], bool]:
 
 def main():
     logger.info("="*60)
-    logger.info("🩺 SNNプロジェクト 高精度健全性チェック (v2.5)")
+    logger.info("🩺 SNNプロジェクト 高精度健全性チェック (v2.6 - Green AI Suite)")
     logger.info("="*60)
     logger.info(f"📂 作業ディレクトリ: {os.getcwd()}")
 
@@ -329,8 +329,7 @@ except Exception as e:
             validator=check_log_contains("Demo Completed")
         )
 
-        # --- 16. Forward-Forward Learning (New) ---
-        # インラインスクリプトでFFトレーナーの動作確認を行う
+        # --- 16. Forward-Forward Learning (BP-Free) ---
         ff_check_code = """
 import torch
 import torch.nn as nn
@@ -338,20 +337,18 @@ from snn_research.training.trainers.forward_forward import ForwardForwardTrainer
 import sys
 
 try:
-    # 簡易モデルの定義 (Sequential)
+    # 簡易モデルの定義
     model = nn.Sequential(
         nn.Linear(10, 8),
         nn.ReLU(),
         nn.Linear(8, 4)
     )
-    
-    # ダミーデータ生成
+    # ダミーデータ
     inputs = torch.randn(4, 10)
     targets = torch.randint(0, 2, (4,))
-    # DataLoader形式のリスト
     loader = [(inputs, targets)]
     
-    # トレーナー初期化と学習実行
+    # トレーナー実行
     trainer = ForwardForwardTrainer(model, learning_rate=0.01)
     metrics = trainer.train_epoch(loader)
     
@@ -370,23 +367,20 @@ except Exception as e:
             validator=check_log_contains("FF Training Finished")
         )
 
-        # --- 17. Hyperdimensional Computing (HDC) (New) ---
+        # --- 17. Hyperdimensional Computing (HDC) (GPU-Free) ---
         hdc_check_code = """
 from snn_research.cognitive_architecture.hdc_engine import HDCEngine, HDCReasoningAgent
 import sys
 
 try:
-    # テスト用に低次元で初期化
     engine = HDCEngine(dim=2048) 
     agent = HDCReasoningAgent(engine)
     
-    # シンボル接地と推論テスト: Japan + Capital -> Tokyo
     agent.learn_concept("Japan", "Capital", "Tokyo")
     result = agent.query("Japan", "Capital")
     
     print(f"HDC Query Result: {result}")
     
-    # 推論結果の検証
     if not result or result[0][0] != "Tokyo":
         raise Exception(f"Inference failed. Expected Tokyo, got {result}")
         
@@ -402,10 +396,80 @@ except Exception as e:
             validator=check_log_contains("HDC Test Passed")
         )
 
+        # --- 18. Tsetlin Machine (Logic Learning) ---
+        tm_check_code = """
+from snn_research.cognitive_architecture.tsetlin_machine import TsetlinMachine
+import numpy as np
+import sys
+
+try:
+    # XOR Problem Setup
+    X = np.array([[0,0], [0,1], [1,0], [1,1]], dtype=np.int32)
+    y = np.array([0, 1, 1, 0], dtype=np.int32)
+    
+    # Initialize TM
+    tm = TsetlinMachine(number_of_clauses=10, number_of_features=2, states=100, s=3.9, threshold=15)
+    
+    # Train (Few steps for smoke test)
+    for _ in range(5):
+        for i in range(4):
+            tm.fit(X[i], y[i])
+            
+    # Predict
+    pred = tm.predict(X[0])
+    print(f"TM Prediction: {pred}")
+    print("Tsetlin Machine Test Passed")
+
+except Exception as e:
+    print(f"TM Error: {e}", file=sys.stderr)
+    sys.exit(1)
+"""
+        results["18. Tsetlin Machine (Logic Learning)"] = runner.run_command(
+            [py, "-c", tm_check_code],
+            "18. Tsetlin Machine (Logic Learning)",
+            validator=check_log_contains("Tsetlin Machine Test Passed")
+        )
+
+        # --- 19. Oscillatory Neural Network (ONN / Sync) ---
+        onn_check_code = """
+from snn_research.core.networks.oscillatory_network import HopfieldONN
+import torch
+import sys
+
+try:
+    # Hopfield ONN Setup
+    onn = HopfieldONN(num_neurons=4)
+    # Define a pattern to memorize: [+1, -1, +1, -1]
+    pattern = torch.tensor([[1.0, -1.0, 1.0, -1.0]])
+    onn.train(pattern)
+    
+    # Retrieve from noisy input
+    noisy = torch.tensor([[0.5, -0.8, 0.2, -0.9]]) # Noisy version
+    recovered = onn.retrieve(noisy, steps=50)
+    
+    print(f"Original: {pattern}")
+    print(f"Recovered: {recovered}")
+    
+    # Check if sign matches
+    if not torch.allclose(torch.sign(pattern), torch.sign(recovered), atol=0.1):
+        raise Exception("Failed to retrieve pattern")
+        
+    print("ONN Test Passed")
+
+except Exception as e:
+    print(f"ONN Error: {e}", file=sys.stderr)
+    sys.exit(1)
+"""
+        results["19. Oscillatory Neural Network (ONN)"] = runner.run_command(
+            [py, "-c", onn_check_code],
+            "19. Oscillatory Neural Network (ONN)",
+            validator=check_log_contains("ONN Test Passed")
+        )
+
     finally:
         # 結果集計
         logger.info("="*60)
-        logger.info("🩺 統合健全性チェック完了 (高精度版 v2.5)")
+        logger.info("🩺 統合健全性チェック完了 (高精度版 v2.6)")
         logger.info("="*60)
         
         passed_count = sum(1 for v in results.values() if v)
