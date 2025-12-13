@@ -1,14 +1,8 @@
 # ファイルパス: snn_research/cognitive_architecture/perception_cortex.py
-# (新規作成)
-#
-# Title: Perception Cortex (知覚野) モジュール
-#
+# Title: Perception Cortex (Base Module)
 # Description:
-# - 人工脳アーキテクチャの「知覚層」を担うコンポーネント。
-# - 符号化層から受け取った生のスパイクパターンを処理し、
-#   より抽象的な「特徴表現」に変換する。
-# - この実装では、将来的に複雑なSNN+CNNハイブリッドモデルに置き換えることを見据え、
-#   スパイクの時間的・空間的なプーリングを行うことで特徴抽出を簡易的にシミュレートする。
+#   知覚野の基本クラス。
+#   スパイク入力から特徴量を抽出するインターフェースおよび簡易実装を提供する。
 
 import torch
 from typing import Dict
@@ -27,7 +21,7 @@ class PerceptionCortex:
         self.feature_dim = feature_dim
         # 特徴を抽出するための簡易的な線形層（重み）
         self.feature_projection = torch.randn((num_neurons, feature_dim))
-        print("🧠 知覚野モジュールが初期化されました。")
+        # print("🧠 Perception Cortex initialized.") # ログ過多を防ぐためコメントアウト推奨
 
     def perceive(self, spike_pattern: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
@@ -43,23 +37,17 @@ class PerceptionCortex:
                 例: {'features': tensor([...])}
         """
         if spike_pattern.shape[1] != self.num_neurons:
-            raise ValueError(f"入力スパイクのニューロン数 ({spike_pattern.shape[1]}) が"
-                             f"知覚野のニューロン数 ({self.num_neurons}) と一致しません。")
-
-        print("👀 知覚野: スパイクパターンから特徴を抽出しています...")
+            # 簡易チェック: 次元が合わない場合はWarningを出してリサイズなどを試みるか、エラーにする
+            # ここでは厳密にチェック
+             raise ValueError(f"Input neuron count {spike_pattern.shape[1]} mismatch with cortex {self.num_neurons}")
 
         # 1. 時間的プーリング: 時間全体のスパイク活動を集約
-        #    各ニューロンの発火総数を計算
-        temporal_features = torch.sum(spike_pattern, dim=0)
+        temporal_features = torch.sum(spike_pattern, dim=0).float()
 
-        # 2. 空間的プーリング（特徴射影）:
-        #    集約された活動を、より低次元の特徴空間に射影する
-        #    (簡易的な全結合層の役割)
+        # 2. 特徴射影
         feature_vector = torch.matmul(temporal_features, self.feature_projection)
 
-        # 活性化関数（例: ReLU）を適用して非線形性を導入
+        # 3. 非線形性
         feature_vector = torch.relu(feature_vector)
-
-        print(f"  - {self.feature_dim}次元の特徴ベクトルを生成しました。")
 
         return {"features": feature_vector}
