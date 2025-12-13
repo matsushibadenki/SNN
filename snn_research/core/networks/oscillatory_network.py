@@ -5,11 +5,13 @@
 #   Kuramotoモデルに基づき、エネルギー最小状態への緩和を利用して
 #   最適化問題（MAX-CUT等）や連想記憶を実現する。
 #   BP不要、GPU不要（アナログ回路での実装に最適）。
+#
+#   修正: mypyエラー (Incompatible types) を解消するため、bias変数の型ヒントを追加。
 
 import torch
 import torch.nn as nn
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union # Unionを追加
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +66,8 @@ class OscillatoryNeuronGroup(nn.Module):
             coupling = torch.sum(self.weights * interaction, dim=1)
             
             # 外部入力バイアス（特定の位相へ引き込む力など）
-            bias = 0.0
+            # 修正: 型ヒントを明示して mypy エラーを回避
+            bias: Union[float, torch.Tensor] = 0.0
             if input_phase_bias is not None:
                 bias = input_phase_bias
             
