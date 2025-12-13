@@ -1,26 +1,32 @@
 # ファイルパス: snn_research/training/trainers/__init__.py
-# Title: トレーナーパッケージ初期化 (修正版)
-# Description:
-#   各モジュールに分割されたトレーナークラスをまとめてエクスポートします。
-#   これにより、外部からは `from snn_research.training.trainers import BreakthroughTrainer`
-#   のようにアクセス可能です。
+# タイトル: トレーナーモジュール初期化
+# 機能説明: 
+#   各種学習パラダイムに対応したトレーナーをエクスポートする。
+#   v2.6追加: Forward-Forward Trainerのエクスポート。
 
-from .breakthrough import BreakthroughTrainer
-from .distillation import DistillationTrainer
-from .self_supervised import SelfSupervisedTrainer
-from .physics_informed import PhysicsInformedTrainer
-from .probabilistic import ProbabilisticEnsembleTrainer
-from .planner import PlannerTrainer
-from .particle_filter import ParticleFilterTrainer
 from .bptt import BPTTTrainer
+from .stdp import STDPTrainer
+from .distillation import DistillationTrainer
+from .probabilistic import ProbabilisticTrainer
+from .physics_informed import PhysicsInformedTrainer
+from .self_supervised import SelfSupervisedTrainer
+from .particle_filter import ParticleFilterTrainer
+from .planner import PlannerTrainer
+from .breakthrough import BreakthroughTrainer
+
+# --- Non-BP / Forward-Only Trainers ---
+from .forward_forward import ForwardForwardTrainer
 
 __all__ = [
-    "BreakthroughTrainer",
+    "BPTTTrainer",
+    "STDPTrainer",
     "DistillationTrainer",
-    "SelfSupervisedTrainer",
+    "ProbabilisticTrainer",
     "PhysicsInformedTrainer",
-    "ProbabilisticEnsembleTrainer",
-    "PlannerTrainer",
+    "SelfSupervisedTrainer",
     "ParticleFilterTrainer",
-    "BPTTTrainer"
+    "PlannerTrainer",
+    "BreakthroughTrainer",
+    # New
+    "ForwardForwardTrainer",
 ]
