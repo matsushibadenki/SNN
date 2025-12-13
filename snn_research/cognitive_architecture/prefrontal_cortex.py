@@ -1,8 +1,8 @@
 # ファイルパス: snn_research/cognitive_architecture/prefrontal_cortex.py
-# Title: Prefrontal Cortex (Executive Control & Goal Setting) v14.0
+# Title: Prefrontal Cortex (Executive Control) v14.2 (Context Export)
 # Description:
 #   内発的動機と環境情報に基づき、高次の目標(Goal)を設定・維持・更新する。
-#   トップダウンの制御信号を生成し、ボトムアップの注意制御を修飾する。
+#   修正: 外部モジュール（推論エンジン等）が現在の実行コンテキストを参照できるメソッドを追加。
 
 from __future__ import annotations
 from typing import Dict, Any, Optional, TYPE_CHECKING
@@ -27,6 +27,7 @@ class PrefrontalCortex:
         self.current_goal: str = "Survive and Explore"
         self.current_context: str = "neutral"
         self.goal_stability: float = 0.0 # 目標の維持強度
+        self.last_update_reason: str = "initialization"
         
         # ワークスペースの購読
         self.workspace.subscribe(self.handle_conscious_broadcast)
@@ -69,7 +70,7 @@ class PrefrontalCortex:
         if source == "receptor" or (isinstance(content, str) and "request" in content.lower()):
             # 外部入力は優先度が高い
             req_text = str(content)
-            new_goal = f"Fulfill external request: {req_text[:30]}"
+            new_goal = f"Fulfill external request: {req_text[:50]}"
             reason = "external_demand"
             salience = 0.9
 
@@ -93,7 +94,7 @@ class PrefrontalCortex:
             elif context["curiosity"] > 0.8:
                 # 好奇心の対象があればそれを深掘り
                 topic = self.motivation_system.curiosity_context or "unknown"
-                new_goal = f"Investigate curiosity target: {str(topic)[:20]}"
+                new_goal = f"Investigate curiosity target: {str(topic)[:30]}"
                 reason = "high_curiosity"
                 salience = 0.8
 
@@ -102,6 +103,7 @@ class PrefrontalCortex:
             # 以前の目標の維持強度などを考慮する（単純な上書きではなく粘り強さを持たせる）
             logger.info(f"🤔 PFC Re-evaluating Goal: '{self.current_goal}' -> '{new_goal}' ({reason})")
             self.current_goal = new_goal
+            self.last_update_reason = reason
             
             # 新しい目標を全脳へ通達
             self.workspace.upload_to_workspace(
@@ -114,3 +116,15 @@ class PrefrontalCortex:
                 },
                 salience=salience
             )
+
+    def get_executive_context(self) -> Dict[str, Any]:
+        """
+        現在の実行制御状態（目標、コンテキスト、理由）を返す。
+        ReasoningEngineなどが思考の指針として使用する。
+        """
+        return {
+            "goal": self.current_goal,
+            "context": self.current_context,
+            "reason": self.last_update_reason,
+            "stability": self.goal_stability
+        }
