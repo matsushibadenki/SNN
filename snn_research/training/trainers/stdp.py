@@ -3,11 +3,14 @@
 # 機能説明: 
 #   Spike-Timing Dependent Plasticity (STDP) を用いた学習を行うトレーナー。
 #   生物学的妥当性の高い、局所的な学習則を適用する。
+#   修正: base_trainerのインポートパスを修正 (mypyエラー対応)
 
 from typing import Dict, Any, Optional
 import torch
 import logging
-from .base_trainer import AbstractTrainer, DataLoader
+
+# 修正: 相対パスではなく、絶対パスまたは一つ上の階層からインポート
+from snn_research.training.base_trainer import AbstractTrainer, DataLoader
 
 logger = logging.getLogger(__name__)
 
