@@ -1,8 +1,8 @@
 # ファイルパス: snn_research/cognitive_architecture/prefrontal_cortex.py
-# Title: Prefrontal Cortex (Executive Control) v14.2.1 (Mypy Fix)
+# Title: Prefrontal Cortex (Executive Control) v14.3 (Type Safety Fix)
 # Description:
 #   内発的動機と環境情報に基づき、高次の目標(Goal)を設定・維持・更新する。
-#   修正: _update_executive_control 内の型エラー(str | None -> str)を修正。
+#   修正: _update_executive_control における Optional[str] の代入エラーを解消。
 
 from __future__ import annotations
 from typing import Dict, Any, Optional, TYPE_CHECKING
@@ -100,10 +100,8 @@ class PrefrontalCortex:
 
         # 目標の更新判定
         if new_goal and new_goal != self.current_goal:
-            # 以前の目標の維持強度などを考慮する（単純な上書きではなく粘り強さを持たせる）
-            
-            # 理由の確定 (Noneの場合はデフォルト値を設定)
-            safe_reason = reason if reason is not None else "unspecified_context"
+            # 理由が None の場合のデフォルト値を設定 (mypyエラー回避)
+            safe_reason: str = reason if reason is not None else "context_change"
             
             logger.info(f"🤔 PFC Re-evaluating Goal: '{self.current_goal}' -> '{new_goal}' ({safe_reason})")
             
