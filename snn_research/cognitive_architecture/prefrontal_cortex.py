@@ -1,8 +1,8 @@
 # ファイルパス: snn_research/cognitive_architecture/prefrontal_cortex.py
-# Title: Prefrontal Cortex (Executive Control) v14.2 (Context Export)
+# Title: Prefrontal Cortex (Executive Control) v14.2.1 (Mypy Fix)
 # Description:
 #   内発的動機と環境情報に基づき、高次の目標(Goal)を設定・維持・更新する。
-#   修正: 外部モジュール（推論エンジン等）が現在の実行コンテキストを参照できるメソッドを追加。
+#   修正: _update_executive_control 内の型エラー(str | None -> str)を修正。
 
 from __future__ import annotations
 from typing import Dict, Any, Optional, TYPE_CHECKING
@@ -62,8 +62,8 @@ class PrefrontalCortex:
         source = context["source"]
         content = context["content"]
         
-        new_goal = None
-        reason = None
+        new_goal: Optional[str] = None
+        reason: Optional[str] = None
         salience = 0.5
 
         # 1. 外部からの指示・要求への反応
@@ -101,9 +101,14 @@ class PrefrontalCortex:
         # 目標の更新判定
         if new_goal and new_goal != self.current_goal:
             # 以前の目標の維持強度などを考慮する（単純な上書きではなく粘り強さを持たせる）
-            logger.info(f"🤔 PFC Re-evaluating Goal: '{self.current_goal}' -> '{new_goal}' ({reason})")
+            
+            # 理由の確定 (Noneの場合はデフォルト値を設定)
+            safe_reason = reason if reason is not None else "unspecified_context"
+            
+            logger.info(f"🤔 PFC Re-evaluating Goal: '{self.current_goal}' -> '{new_goal}' ({safe_reason})")
+            
             self.current_goal = new_goal
-            self.last_update_reason = reason
+            self.last_update_reason = safe_reason
             
             # 新しい目標を全脳へ通達
             self.workspace.upload_to_workspace(
@@ -111,7 +116,7 @@ class PrefrontalCortex:
                 data={
                     "type": "goal_setting",
                     "goal": self.current_goal,
-                    "reason": reason,
+                    "reason": safe_reason,
                     "context": self.current_context
                 },
                 salience=salience
