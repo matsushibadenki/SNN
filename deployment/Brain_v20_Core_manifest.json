@@ -1,0 +1,179 @@
+{
+    "total_neurons": 56145,
+    "total_synapses": 7420032,
+    "quantized_layers": [
+        {
+            "name": "layers.0.in_proj",
+            "type": "BitSpikeLinear",
+            "neurons": 512,
+            "synapses": 65536,
+            "quantization_scale": 527.6759875645964,
+            "error": 0.0004724288883153349
+        },
+        {
+            "name": "layers.0.conv1d",
+            "type": "Conv1d",
+            "neurons": 256,
+            "synapses": 1024,
+            "quantization_scale": 230.81523365110638,
+            "error": 0.0010723737068474293
+        },
+        {
+            "name": "layers.0.x_proj",
+            "type": "BitSpikeLinear",
+            "neurons": 320,
+            "synapses": 81920,
+            "quantization_scale": 507.80822367041253,
+            "error": 0.0004936698824167252
+        },
+        {
+            "name": "layers.0.dt_proj",
+            "type": "Linear",
+            "neurons": 256,
+            "synapses": 65536,
+            "quantization_scale": 535.2169147326068,
+            "error": 0.00046899064909666777
+        },
+        {
+            "name": "layers.0.out_proj",
+            "type": "BitSpikeLinear",
+            "neurons": 128,
+            "synapses": 32768,
+            "quantization_scale": 475.67642134887024,
+            "error": 0.0005247474182397127
+        },
+        {
+            "name": "layers.1.in_proj",
+            "type": "BitSpikeLinear",
+            "neurons": 512,
+            "synapses": 65536,
+            "quantization_scale": 628.2808017772977,
+            "error": 0.00039714487502351403
+        },
+        {
+            "name": "layers.1.conv1d",
+            "type": "Conv1d",
+            "neurons": 256,
+            "synapses": 1024,
+            "quantization_scale": 226.06257225901152,
+            "error": 0.0011079631512984633
+        },
+        {
+            "name": "layers.1.x_proj",
+            "type": "BitSpikeLinear",
+            "neurons": 320,
+            "synapses": 81920,
+            "quantization_scale": 515.6805193722377,
+            "error": 0.0004850085824728012
+        },
+        {
+            "name": "layers.1.dt_proj",
+            "type": "Linear",
+            "neurons": 256,
+            "synapses": 65536,
+            "quantization_scale": 501.06050439593605,
+            "error": 0.0004993537440896034
+        },
+        {
+            "name": "layers.1.out_proj",
+            "type": "BitSpikeLinear",
+            "neurons": 128,
+            "synapses": 32768,
+            "quantization_scale": 498.30443977695523,
+            "error": 0.0005005954299122095
+        },
+        {
+            "name": "layers.2.in_proj",
+            "type": "BitSpikeLinear",
+            "neurons": 512,
+            "synapses": 65536,
+            "quantization_scale": 528.2559639972842,
+            "error": 0.0004725790931843221
+        },
+        {
+            "name": "layers.2.conv1d",
+            "type": "Conv1d",
+            "neurons": 256,
+            "synapses": 1024,
+            "quantization_scale": 231.61760849426508,
+            "error": 0.0010746426414698362
+        },
+        {
+            "name": "layers.2.x_proj",
+            "type": "BitSpikeLinear",
+            "neurons": 320,
+            "synapses": 81920,
+            "quantization_scale": 442.7142040871621,
+            "error": 0.0005632413667626679
+        },
+        {
+            "name": "layers.2.dt_proj",
+            "type": "Linear",
+            "neurons": 256,
+            "synapses": 65536,
+            "quantization_scale": 447.76812880686873,
+            "error": 0.0005591275403276086
+        },
+        {
+            "name": "layers.2.out_proj",
+            "type": "BitSpikeLinear",
+            "neurons": 128,
+            "synapses": 32768,
+            "quantization_scale": 413.5869777660062,
+            "error": 0.0006050736410543323
+        },
+        {
+            "name": "layers.3.in_proj",
+            "type": "BitSpikeLinear",
+            "neurons": 512,
+            "synapses": 65536,
+            "quantization_scale": 586.5004508431624,
+            "error": 0.0004268033371772617
+        },
+        {
+            "name": "layers.3.conv1d",
+            "type": "Conv1d",
+            "neurons": 256,
+            "synapses": 1024,
+            "quantization_scale": 228.59307294378968,
+            "error": 0.0010988726280629635
+        },
+        {
+            "name": "layers.3.x_proj",
+            "type": "BitSpikeLinear",
+            "neurons": 320,
+            "synapses": 81920,
+            "quantization_scale": 535.4636628989099,
+            "error": 0.000464955170173198
+        },
+        {
+            "name": "layers.3.dt_proj",
+            "type": "Linear",
+            "neurons": 256,
+            "synapses": 65536,
+            "quantization_scale": 582.2102560452257,
+            "error": 0.0004297046398278326
+        },
+        {
+            "name": "layers.3.out_proj",
+            "type": "BitSpikeLinear",
+            "neurons": 128,
+            "synapses": 32768,
+            "quantization_scale": 477.6580974146528,
+            "error": 0.0005242566112428904
+        },
+        {
+            "name": "output_projection",
+            "type": "Linear",
+            "neurons": 50257,
+            "synapses": 6432896,
+            "quantization_scale": 496.0595390713515,
+            "error": 0.000508985947817564
+        }
+    ],
+    "estimated_power_mW": 747.0032,
+    "core_mapping": {
+        "required_cores": 55,
+        "layout": "Mesh_Grid_8x8"
+    }
+}

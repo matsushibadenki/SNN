@@ -1,0 +1,16 @@
+{
+  "timestamp": "2025-12-19 17:41:18.511028",
+  "hardware": "mps",
+  "tests": {
+    "smoke_HealthCheck_Model": {
+      "status": "PASSED",
+      "duration_sec": 0.0635991096496582,
+      "details": "Model built and inference successful."
+    },
+    "efficiency_HealthCheck_Model": {
+      "status": "PASSED",
+      "latency_ms": 26.066455841064453,
+      "energy_joules": 3.35533625e-08
+    }
+  }
+}

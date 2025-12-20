@@ -1,0 +1,40 @@
+# ファイルパス: configs/models/tskips_snn.yaml
+# (新規作成)
+# Title: TSkipsSNN (SHDデータセット用) 設定
+# Description:
+# SNN5改善レポート (セクション6.2, 引用[115, 117]) に基づく、
+# TSkipsSNN (Temporal Skips SNN) アーキテクチャの設定ファイル。
+# SHD (Spiking Heidelberg Digits) データセットでの使用を想定。
+
+model:
+  path: "tskips_snn_shd.pth"
+  architecture_type: "tskips_snn"
+  
+  # SHDデータセットは 700次元 (入力特徴量)
+  input_features: 700
+  # SHDデータセットは 20クラス (0-9のドイツ語読み)
+  num_classes: 20 # (SNNCoreが vocab_size として渡す)
+  
+  hidden_features: 256
+  num_layers: 3
+  time_steps: 100 # SHDデータセットの平均的な長さに合わせる
+  
+  # レイヤーごとの遅延接続設定 (引用[117]の実験に基づくスタブ)
+  # [[layer0], [layer1], [layer2]]
+  
+  # 順方向遅延 (FTSkips)
+  forward_delays_per_layer:
+    - [1, 2]  # Layer 0
+    - [1, 2]  # Layer 1
+    - [1, 2]  # Layer 2
+    
+  # 逆方向遅延 (BTSkips)
+  backward_delays_per_layer:
+    - [1]     # Layer 0 (入力から)
+    - [1, 2]  # Layer 1 (Layer 0から)
+    - [1, 2]  # Layer 2 (Layer 1から)
+
+  neuron:
+    type: "lif"
+    tau_mem: 10.0
+    base_threshold: 1.0

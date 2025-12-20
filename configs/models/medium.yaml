@@ -1,0 +1,18 @@
+# ファイルパス: configs/models/medium.yaml
+# 中規模モデルのアーキテクチャ設定
+
+model:
+  path: "breakthrough_snn_model_medium.pth"
+  architecture_type: "predictive_coding" # "predictive_coding" または "spiking_transformer"
+  d_model: 256
+  d_state: 128
+  num_layers: 8
+  time_steps: 20
+  n_head: 4
+  # ニューロン設定
+  neuron:
+    type: "lif" # "lif" または "dendritic"
+    # typeが "dendritic" の場合のみ使用されるパラメータ
+    num_branches: 4
+    branch_features: 64 # 例: d_model / num_branches
+    v_threshold: 1.2
