@@ -1,9 +1,9 @@
 # ファイルパス: snn_research/cognitive_architecture/async_brain_kernel.py
-# 日本語タイトル: Async Brain Kernel v2.6 - Robust & Async-Safe
+# 日本語タイトル: Async Brain Kernel v2.7 - Type Safe & Robust
 # 目的・内容:
-#   - モジュールが async def process() を持っている場合に正しく await するように修正。
-#   - Reflex Module (反射) を有効化。
-#   - Web Crawler の呼び出しを安全に。
+#   - mypyエラー修正: typing から Tuple をインポートし、PriorityQueue の型定義を補完。
+#   - 非同期・同期両対応の CognitiveModuleWrapper の維持。
+#   - 反射モジュール（Reflex Module）の低遅延実行パスの確保。
 
 import asyncio
 import logging
@@ -11,7 +11,7 @@ import time
 import uuid
 import torch
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Callable, Awaitable, Union, cast
+from typing import Dict, Any, List, Optional, Callable, Awaitable, Union, cast, Tuple  # Tupleを追加
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
@@ -30,29 +30,31 @@ class BrainEvent:
 class AsyncEventBus:
     def __init__(self) -> None:
         self.subscribers: Dict[str, List[Callable[[BrainEvent], Awaitable[None]]]] = {}
+        # Tuple[優先度, タイムスタンプ, イベントオブジェクト]
         self.event_queue: asyncio.PriorityQueue[Tuple[float, float, BrainEvent]] = asyncio.PriorityQueue()
-        self.history: deque[BrainEvent] = deque(maxlen=100) # deque の型引数を指定
+        self.history: deque[BrainEvent] = deque(maxlen=100)
         self.is_running: bool = True
 
-    def subscribe(self, event_type: str, callback: Callable[[BrainEvent], Awaitable[None]]):
+    def subscribe(self, event_type: str, callback: Callable[[BrainEvent], Awaitable[None]]) -> None:
         if event_type not in self.subscribers:
             self.subscribers[event_type] = []
         self.subscribers[event_type].append(callback)
 
-    async def publish(self, event: BrainEvent):
+    async def publish(self, event: BrainEvent) -> None:
         if not self.is_running:
             return
         await self.event_queue.put((-event.priority, event.timestamp, event))
         self.history.append(event)
         logger.debug(f"📨 Pub: {event.event_type} (Pri: {event.priority})")
 
-    async def dispatch_worker(self):
+    async def dispatch_worker(self) -> None:
         while self.is_running:
             try:
                 try:
                     priority_tuple = await asyncio.wait_for(self.event_queue.get(), timeout=1.0)
                 except asyncio.TimeoutError:
                     continue
+                
                 event = priority_tuple[2]
                 if event.event_type in self.subscribers:
                     tasks = [callback(event) for callback in self.subscribers[event.event_type]]
@@ -96,15 +98,11 @@ class CognitiveModuleWrapper:
                     return self.module.forward(input_data)
             elif hasattr(self.module, '__call__'):
                 return self.module(input_data)
-            elif hasattr(self.module, 'infer_state') and hasattr(self.module, 'select_action'):
-                state = self.module.infer_state(input_data)
-                action = self.module.select_action()
-                return action
         except Exception as e:
             logger.error(f"💥 Module Execution Error in '{self.name}': {e}")
             raise e
         return None
-
+        
 class AsyncArtificialBrain:
     def __init__(
         self,
