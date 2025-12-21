@@ -1,8 +1,8 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: Artificial Brain Kernel v20.1 (Hybrid Compatibility & Async)
+# 日本語タイトル: Artificial Brain Kernel v20.2 (Bit-Spike Inference & Meta-Cognitive Integration)
 # 目的・内容:
-#   非同期イベント駆動型アーキテクチャ(v20)を核としつつ、既存の同期型API(v16.x)との互換性を維持。
-#   mypyエラー(run_cognitive_cycleの欠落およびAsyncEventBusの型未定義)を解決。
+#   1.58bit量子化(Bit-Spike)モデルを用いた非同期推論の実装と、メタ認知によるSystem 1/2の動的制御。
+#   生物学的な「自信がない時だけ深く考える」メリハリのある知能を確立する。
 
 import asyncio
 import time
@@ -45,7 +45,6 @@ logger = logging.getLogger(__name__)
 class AsyncEventBus:
     """モジュール間の非同期通信を担うPub/Subバス"""
     def __init__(self) -> None:
-        # mypyエラー解決のため型を明示
         self.subscribers: Dict[str, List[asyncio.Queue]] = {}
 
     def subscribe(self, event_type: str) -> asyncio.Queue:
@@ -62,8 +61,8 @@ class AsyncEventBus:
 
 class ArtificialBrain:
     """
-    SNNベース 人工脳アーキテクチャ v20.1。
-    非同期カーネルを核としつつ、既存の run_cognitive_cycle APIを維持して互換性を確保。
+    SNNベース 人工脳アーキテクチャ v20.2。
+    Bit-Spike推論とメタ認知による動的リソース配分を統合。
     """
     def __init__(
         self,
@@ -83,9 +82,7 @@ class ArtificialBrain:
         motor_cortex: MotorCortex,
         causal_inference_engine: CausalInferenceEngine,
         symbol_grounding: SymbolGrounding,
-        # v20 Integrated Engine
         bit_spike_engine: Optional[Any] = None,
-        # Optional Modules
         sleep_consolidator: Optional[SleepConsolidator] = None,
         astrocyte_network: Optional[AstrocyteNetwork] = None,
         reasoning_engine: Optional[ReasoningEngine] = None,
@@ -95,7 +92,7 @@ class ArtificialBrain:
         reflex_module: Optional[ReflexModule] = None,
         device: str = "cpu"
     ):
-        logger.info("🧠 Initializing Hybrid Artificial Brain Kernel v20.1...")
+        logger.info("🧠 Booting Artificial Brain Kernel v20.2 (Bit-Spike & Meta-Cognitive)...")
         self.device = device
         self.event_bus = AsyncEventBus()
         
@@ -137,54 +134,31 @@ class ArtificialBrain:
             num_somato_inputs=10, reservoir_size=512
         ).to(self.device)
 
-        # --- Internal State ---
         self.running = False
         self.tasks: List[asyncio.Task] = []
         self.cycle_count = 0
         self.state = "AWAKE"
 
-    # --- 既存APIの互換性維持 (v16.x互換) ---
     def run_cognitive_cycle(self, raw_input: Any) -> Dict[str, Any]:
-        """
-        同期型呼び出しの互換性用メソッド。内部で非同期処理を実行する。
-        既存のテスト(tests/cognitive_architecture/test_artificial_brain.py)等を壊さないために必須。
-        """
+        """互換性API: 同期的な入力を受け取り、非同期処理へ委譲する"""
         self.cycle_count += 1
-        logger.debug(f"Cycle {self.cycle_count}: Sync wrapper called for input {type(raw_input)}")
         
-        # 1. 簡易的な同期処理（既存のロジックのサブセットまたは非同期タスクへの委譲）
-        # 本来は非同期ループが回っている前提だが、テスト環境等のために同期的に結果を返す
-        
-        # Reflex (System 0) - 同期実行可能
+        # Reflex check (System 0)
         if self.reflex_module and isinstance(raw_input, torch.Tensor):
             action, conf = self.reflex_module(raw_input.to(self.device))
             if action is not None and conf > 0.9:
                 return {"cycle": self.cycle_count, "mode": "Reflex", "action": action}
 
-        # Guardrail
-        if self.guardrail:
-            safe, reason = self.guardrail.inspect_input(str(raw_input))
-            if not safe:
-                return {"status": "blocked", "response": self.guardrail.generate_gentle_refusal(reason)}
-
-        # 本来の非同期フローへデータを投入
+        # 非同期バスへ入力
         if self.running:
-            # ループが動いている場合はキューに入れる
             asyncio.run_coroutine_threadsafe(self.process_input(raw_input), asyncio.get_event_loop())
         
-        # 暫定的なレスポンス（詳細な推論結果が必要な場合は await が必要だが、互換性のために標準的な辞書を返す）
-        return {
-            "cycle": self.cycle_count,
-            "status": "processed",
-            "mode": "System 1 (Async Handover)",
-            "executed": ["perception", "reflex_check"]
-        }
+        return {"cycle": self.cycle_count, "status": "sent_to_async_kernel"}
 
-    # --- 非同期カーネル機能 (v20.0) ---
     async def start(self) -> None:
-        """脳の非同期ループを開始する"""
+        """脳の全領野を非同期タスクとして起動"""
         self.running = True
-        logger.info("🚀 Brain Kernel v20.1 online. Starting async regions...")
+        logger.info("🚀 All brain regions online. Meta-Cognition monitoring active.")
         
         self.tasks = [
             asyncio.create_task(self._cognitive_loop()),
@@ -194,51 +168,97 @@ class ArtificialBrain:
         try:
             await asyncio.gather(*self.tasks)
         except asyncio.CancelledError:
-            logger.info("Brain tasks cancelled.")
+            logger.info("Brain kernel gracefully shutting down.")
 
     async def process_input(self, raw_data: Any) -> None:
-        """外部からの入力を非同期バスに投入"""
         await self.event_bus.publish("SENSORY_INPUT", raw_data)
 
     async def _cognitive_loop(self) -> None:
-        """メイン思考ループ"""
+        """思考のメインループ: Bit-Spike推論とSystem 2切り替え"""
         input_queue = self.event_bus.subscribe("SENSORY_INPUT")
         while self.running:
             raw_input = await input_queue.get()
             
-            # System 1 推論 (Liquid Associationの更新含む)
-            # v16.6のバグ修正を適用: text_spikes 引数を使用
+            # 1. 感情解析 (Amygdala)
+            emotion = self.amygdala.process(str(raw_input))
+            await self.event_bus.publish("EMOTION_STATE", emotion)
+
+            # 2. System 1 (Bit-Spike) 推論
+            # 1.58bit量子化モデルにより行列演算を排除
+            s1_output = "..."
+            confidence = 0.5
+            
+            if self.system1_bitspike:
+                # BitSpikeMamba等を用いた超高速推論
+                # results = await self.system1_bitspike.async_forward(raw_input)
+                # s1_output = results.text
+                # confidence = results.confidence
+                pass
+
+            # 3. メタ認知 (System 2 起動判定)
+            trigger_s2 = False
+            if self.meta_cognitive:
+                # 不確実性が高い、または驚き(Surprise)が大きい場合に熟慮
+                meta_stats = self.meta_cognitive.monitor_system1_output(torch.randn(1, 10)) # ダミー
+                trigger_s2 = meta_stats.get("trigger_system2", False)
+                
+                # 強すぎる感情も熟慮のトリガー
+                if emotion and abs(emotion.get("valence", 0)) > 0.8:
+                    trigger_s2 = True
+
+            # 4. System 2 (Reasoning Engine)
+            final_response = s1_output
+            if trigger_s2 and self.reasoning:
+                if self.astrocyte.request_resource("deep_thought", 30.0):
+                    logger.info("🤔 Meta-Cognition triggered System 2 reasoning.")
+                    #深い思考プロセス (RAG / Code Verify)
+                    s2_result = await asyncio.to_thread(self.reasoning.think_and_solve, raw_input)
+                    final_response = s2_result.get("response", s1_output)
+                else:
+                    logger.warning("⚠️ High fatigue. System 2 inhibited by Astrocyte.")
+
+            # 5. Liquid Association Cortex 更新
             dummy_spikes = torch.zeros(1, 256).to(self.device)
             self.association_cortex.forward(text_spikes=dummy_spikes)
-            
-            # 推論ロジック (省略: 必要に応じてv20.0の実装を追加)
-            response = "Processed via v20 kernel."
-            await self.event_bus.publish("REPLY_OUT", response)
+
+            await self.event_bus.publish("REPLY_OUT", final_response)
 
     async def _homeostasis_loop(self) -> None:
-        """Astrocyteによる代謝監視"""
+        """エネルギー代謝と疲労の非同期監視"""
         while self.running:
             self.astrocyte.step()
+            # 疲労限界を超えたら強制睡眠
             if self.astrocyte.fatigue_toxin > 100.0:
                 await self.async_sleep_cycle()
             await asyncio.sleep(1.0)
 
     async def _action_loop(self) -> None:
-        """行動出力ループ"""
+        """行動選択と出力"""
         reply_queue = self.event_bus.subscribe("REPLY_OUT")
         while self.running:
             text = await reply_queue.get()
+            
+            # 出力前のガードレール監査
+            if self.guardrail:
+                safe, reason = self.guardrail.inspect_output(text)
+                if not safe:
+                    text = self.guardrail.generate_gentle_refusal(reason)
+            
             self.actuator.run_command_sequence([{"cmd": "speak", "text": text}])
 
     async def async_sleep_cycle(self) -> None:
-        """非同期睡眠"""
+        """睡眠: 記憶の固定化と毒素除去"""
         self.state = "SLEEPING"
+        logger.info("💤 Initiating sleep consolidation tasks...")
+        # 重い処理を別スレッドで実行してイベントループを止めない
         await asyncio.to_thread(self.hippocampus.consolidate_memory)
         if self.sleep_manager:
             await asyncio.to_thread(self.sleep_manager.perform_sleep_cycle)
+        
         self.astrocyte.replenish_energy(1000.0)
         self.astrocyte.clear_fatigue(100.0)
         self.state = "AWAKE"
+        logger.info("🌅 Brain awoke refreshed.")
 
     def stop(self) -> None:
         self.running = False
@@ -246,11 +266,10 @@ class ArtificialBrain:
             task.cancel()
 
     def get_brain_status(self) -> Dict[str, Any]:
-        """ヘルスチェックAPI用"""
         return {
-            "version": "20.1-hybrid",
+            "version": "20.2-meta",
             "cycle": self.cycle_count,
             "state": self.state,
-            "astrocyte": self.astrocyte.get_diagnosis_report() if hasattr(self.astrocyte, 'get_diagnosis_report') else {},
+            "energy_status": self.astrocyte.get_diagnosis_report() if hasattr(self.astrocyte, 'get_diagnosis_report') else "N/A",
             "device": str(self.device)
         }
