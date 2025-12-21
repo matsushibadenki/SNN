@@ -1,15 +1,15 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: Artificial Brain Kernel (型完全性強化版)
-# 内容: テストコードが期待する属性を明示的に型定義。
+# 日本語タイトル: Artificial Brain Kernel (mypy完全対応版)
+# 目的: クラス属性を明示的に宣言し、外部スクリプト（dashboard.py等）との型整合性を確保する。
 
 import asyncio
 import logging
-from typing import Dict, Any, List, Optional, cast
+from typing import Dict, Any, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
+# 非同期イベントバスの定義（省略せずに維持）
 class AsyncEventBus:
-    """内部定義または適切な場所からインポート"""
     def __init__(self) -> None:
         self.subscribers: Dict[str, List[asyncio.PriorityQueue]] = {}
     
@@ -24,27 +24,63 @@ class AsyncEventBus:
                 await queue.put((priority, data))
 
 class ArtificialBrain:
+    """
+    SNNベース 人工脳アーキテクチャ。
+    mypyが属性を追跡できるように、すべてのコンポーネントを明示的に宣言。
+    """
+    # 外部スクリプトがアクセスする属性を明示的に宣言
+    workspace: Any
+    sleep_manager: Any
+    cortex: Any
+    hippocampus: Any
+    basal_ganglia: Any
+    amygdala: Any
+    pfc: Any
+    motor: Any
+    system1: Any
+    system2: Optional[Any]
+    meta_cognition: Optional[Any]
+    astrocyte: Any
+    event_bus: AsyncEventBus
+    running: bool
+    state: str
+    cycle_count: int
+
     def __init__(self, **components: Any):
-        # mypyが「None」の可能性を指摘する属性を明示的に宣言
-        # テスト(test_artificial_brain.py)が期待する属性を網羅
-        self.cortex: Any = components.get('cortex')
-        self.hippocampus: Any = components.get('hippocampus')
-        self.basal_ganglia: Any = components.get('basal_ganglia')
-        self.pfc: Any = components.get('prefrontal_cortex')
-        self.motor: Any = components.get('motor_cortex')
-        self.system1: Any = components.get('thinking_engine')
-        
-        # 必須の基盤オブジェクト
+        # コンポーネントの割り当てとフォールバック
+        self.workspace = components.get('global_workspace')
+        self.sleep_manager = components.get('sleep_manager') or components.get('sleep_consolidator')
+        self.cortex = components.get('cortex')
+        self.hippocampus = components.get('hippocampus')
+        self.basal_ganglia = components.get('basal_ganglia')
+        self.amygdala = components.get('amygdala')
+        self.pfc = components.get('prefrontal_cortex')
+        self.motor = components.get('motor_cortex')
+        self.system1 = components.get('thinking_engine')
+        self.system2 = components.get('reasoning_engine')
+        self.meta_cognition = components.get('meta_cognitive_snn')
+        self.astrocyte = components.get('astrocyte_network')
+
+        # ランタイム状態
         self.event_bus = AsyncEventBus()
         self.running = False
-        self.cycle_count = 0
         self.state = "AWAKE"
+        self.cycle_count = 0
+        self.tasks: List[asyncio.Task] = []
 
     def run_cognitive_cycle(self, raw_input: Any) -> Dict[str, Any]:
-        """既存の同期呼び出しを維持"""
+        """同期API: ダッシュボード等で使用"""
         self.cycle_count += 1
         return {"status": "SUCCESS", "cycle": self.cycle_count}
 
     def get_brain_status(self) -> Dict[str, Any]:
-        """ダッシュボード等の同期アクセス用"""
+        """同期API: 健康状態取得用"""
         return {"state": self.state, "cycle": self.cycle_count}
+
+    def sleep_cycle(self) -> None:
+        """同期API: sleep_cycle_demo.py 用の互換メソッド"""
+        logger.info("Initiating Synchronous Sleep Cycle...")
+        self.state = "SLEEPING"
+        if self.sleep_manager and hasattr(self.sleep_manager, 'consolidate_memory'):
+            self.sleep_manager.consolidate_memory()
+        self.state = "AWAKE"
