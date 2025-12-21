@@ -82,66 +82,66 @@ KPIの達成に加え、ドキュメント・テスト・デモが揃ってい�
 
 ```mermaid
 graph TD  
-    subgraph "Async Brain Kernel (Python asyncio)"  
-        EB\[Async Event Bus \- Pub/Sub\]  
+subgraph Layer_2["Async Brain Kernel (Python asyncio)"]
+        EB[Async Event Bus - Pub/Sub]  
           
-        subgraph "Perception Modules"  
-            VC\[Visual Cortex \- SNN\]  
-            AC\[Auditory Cortex\]  
-            BC\[Bio-Signal Cortex \- ECG/EMG\]  
+subgraph Layer_5["Perception Modules"]
+            VC[Visual Cortex - SNN]  
+            AC[Auditory Cortex]  
+            BC[Bio-Signal Cortex - ECG/EMG]  
         end  
           
-        subgraph "Cognitive Core"  
-            BSM\[BitSpikeMamba \- System 1\]  
-            RE\[Reasoning Engine \- System 2\]  
-            MC\_MOD\[Meta-Cognitive SNN\]  
-            SWM\[Spiking World Model \- JEPA\]  
+subgraph Layer_11["Cognitive Core"]
+            BSM[BitSpikeMamba - System 1]  
+            RE[Reasoning Engine - System 2]  
+            MC_MOD[Meta-Cognitive SNN]  
+            SWM[Spiking World Model - JEPA]  
         end  
           
-        subgraph "Memory System"  
-            RAG\[RAG System \- Vector \+ Knowledge Graph\]  
-            SC\[Sleep Consolidator\]  
+subgraph Layer_18["Memory System"]
+            RAG[RAG System - Vector + Knowledge Graph]  
+            SC[Sleep Consolidator]  
         end  
           
-        subgraph "Homeostasis & Control"  
-            AN\[Astrocyte Network\]  
-            NS\[Neuromorphic Scheduler\]  
-            RM\[Reflex Module \- System 0\]  
-            GW\[Global Workspace \- Consciousness\]  
+subgraph Layer_23["Homeostasis & Control"]
+            AN[Astrocyte Network]  
+            NS[Neuromorphic Scheduler]  
+            RM[Reflex Module - System 0]  
+            GW[Global Workspace - Consciousness]  
         end  
           
-        subgraph "Actuation"  
-            MOTOR\[Motor Cortex\]  
+subgraph Layer_30["Actuation"]
+            MOTOR[Motor Cortex]  
         end  
           
-        subgraph "Safety & Ethics"  
-            EG\[Ethical Guardrails\]  
+subgraph Layer_34["Safety & Ethics"]
+            EG[Ethical Guardrails]  
         end  
           
-        VC \--\>|SENSORY\_INPUT| EB  
-        AC \--\>|SENSORY\_INPUT| EB  
-        BC \--\>|SENSORY\_INPUT| EB  
+        VC -->|SENSORY_INPUT| EB  
+        AC -->|SENSORY_INPUT| EB  
+        BC -->|SENSORY_INPUT| EB  
           
-        EB \<--\>|THOUGHT/PREDICTION| BSM  
-        EB \<--\>|REASONING\_TASK| RE  
-        EB \<--\>|METACOGNITION| MC\_MOD  
-        EB \<--\>|WORLD\_SIMULATION| SWM  
+        EB <-->|THOUGHT/PREDICTION| BSM  
+        EB <-->|REASONING_TASK| RE  
+        EB <-->|METACOGNITION| MC_MOD  
+        EB <-->|WORLD_SIMULATION| SWM  
           
-        EB \<--\>|MEMORY\_QUERY| RAG  
-        EB \<--\>|CONSOLIDATION| SC  
+        EB <-->|MEMORY_QUERY| RAG  
+        EB <-->|CONSOLIDATION| SC  
           
-        AN \-.-\>|Energy Control| VC  
-        AN \-.-\>|Energy Control| BSM  
-        AN \-.-\>|Energy Control| RE  
-        NS \-.-\>|Resource Allocation| BSM  
-        RM \-.-\>|Emergency Override| EB  
+        AN -.->|Energy Control| VC  
+        AN -.->|Energy Control| BSM  
+        AN -.->|Energy Control| RE  
+        NS -.->|Resource Allocation| BSM  
+        RM -.->|Emergency Override| EB  
           
-        GW \-- Broadcast \--\> EB  
+        GW --> EB  
           
-        EB \--\>|ACTION\_COMMAND| MOTOR  
+        EB -->|ACTION_COMMAND| MOTOR  
           
-        EG \-.-\>|Monitor| EB  
-        EG \-.-\>|Monitor| RE  
+        EG -.->|Monitor| EB  
+        EG -.->|Monitor| RE  
     end
 ```
 
