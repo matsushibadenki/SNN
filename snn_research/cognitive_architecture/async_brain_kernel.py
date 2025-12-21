@@ -28,11 +28,11 @@ class BrainEvent:
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 class AsyncEventBus:
-    def __init__(self):
+    def __init__(self) -> None:
         self.subscribers: Dict[str, List[Callable[[BrainEvent], Awaitable[None]]]] = {}
-        self.event_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
-        self.history: deque = deque(maxlen=100)
-        self.is_running = True
+        self.event_queue: asyncio.PriorityQueue[Tuple[float, float, BrainEvent]] = asyncio.PriorityQueue()
+        self.history: deque[BrainEvent] = deque(maxlen=100) # deque の型引数を指定
+        self.is_running: bool = True
 
     def subscribe(self, event_type: str, callback: Callable[[BrainEvent], Awaitable[None]]):
         if event_type not in self.subscribers:
