@@ -143,6 +143,7 @@ graph TD
         EG \-.-\>|Monitor| EB  
         EG \-.-\>|Monitor| RE  
     end
+```
 
 ### **主要モジュール**
 
