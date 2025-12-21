@@ -46,7 +46,7 @@ async def run_reasoning_to_sleep_demo():
     
     # System 2: Reasoning Engine (熟慮・コード検証・RAG統合)
     reasoning_engine = ReasoningEngine(
-        generative_model=system1_model, # SFormerの代わりにBitSpikeMambaを統合
+        generative_model=system1_model, # BitSpikeMambaを統合
         astrocyte=astrocyte,
         device=device,
         enable_code_verification=True # サンドボックスによる実行検証
@@ -76,10 +76,10 @@ async def run_reasoning_to_sleep_demo():
     reasoning_result = reasoning_engine.think_and_solve(input_ids)
     
     print("\n--- Reasoning Output ---")
-    print(f"Final Answer (Probabilistic): {reasoning_result['final_text'] if 'final_text' in reasoning_result else 'Calculated via logic'}")
-    print(f"Thought Trace (Steps): {reasoning_result['thought_trace']}")
-    print(f"Verifier Score: {reasoning_result['verifier_score']:.4f}")
-    print(f"Strategy: {reasoning_result['strategy']}")
+    print(f"Final Answer (Probabilistic): {reasoning_result.get('final_text', 'Calculated via logic')}")
+    print(f"Thought Trace (Steps): {reasoning_result.get('thought_trace', [])}")
+    print(f"Verifier Score: {reasoning_result.get('verifier_score', 0.0):.4f}")
+    print(f"Strategy: {reasoning_result.get('strategy', 'unknown')}")
     print("------------------------\n")
 
     # 4. 睡眠フェーズへの移行 (Sleep Consolidation)
