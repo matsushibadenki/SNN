@@ -1,64 +1,134 @@
-# ファイルパス: snn_research/cognitive_architecture/perception_cortex.py
-# Title: Perception Cortex (Base Module)
-# Description:
-#   知覚野の基本クラス。
-#   スパイク入力から特徴量を抽出するインターフェースおよび簡易実装を提供する。
+# ファイルパス: snn_research/cognitive_architecture/prefrontal_cortex.py
+# 日本語タイトル: 前頭前野モジュール (循環参照解決版)
+# 目的: 実行制御、ゴール設定、および動的なコンテキスト更新を行う。
 
-import torch
-from typing import Dict
+from __future__ import annotations
+import logging
+from typing import Dict, Any, Optional, TYPE_CHECKING
 
-class PerceptionCortex:
+# 循環インポート防止のため、実行時はインポートせず型チェック時のみ有効化
+if TYPE_CHECKING:
+    from .global_workspace import GlobalWorkspace
+    from .intrinsic_motivation import IntrinsicMotivationSystem
+
+logger = logging.getLogger(__name__)
+
+class PrefrontalCortex:
     """
-    スパイクパターンから特徴を抽出する知覚野モジュール。
+    実行制御（Executive Control）を司る前頭前野モジュール。
+    ワークスペースを監視し、内発的動機付けに基づいてゴールを再評価する。
     """
-    def __init__(self, num_neurons: int, feature_dim: int = 64):
+    # 型アノテーションに文字列を使用し、実行時の依存を排除
+    workspace: 'GlobalWorkspace'
+
+    def __init__(self, workspace: 'GlobalWorkspace', motivation_system: 'IntrinsicMotivationSystem'):
         """
         Args:
-            num_neurons (int): 入力されるスパイクパターンのニューロン数。
-            feature_dim (int): 出力される特徴ベクトルの次元数。
+            workspace: GlobalWorkspaceのインスタンス。
+            motivation_system: 内発的動機付けシステムのインスタンス。
         """
-        self.num_neurons = num_neurons
-        self.feature_dim = feature_dim
-        # 特徴を抽出するための簡易的な線形層（重み）
-        self.feature_projection = torch.randn((num_neurons, feature_dim))
+        self.workspace = workspace
+        self.motivation_system = motivation_system
+        
+        self.current_goal: str = "Survive and Explore"
+        self.current_context: str = "neutral"
+        self.goal_stability: float = 0.0
+        self.last_update_reason: str = "initialization"
+        
+        # ワークスペースのブロードキャストを購読
+        if hasattr(self.workspace, 'subscribe'):
+            self.workspace.subscribe(self.handle_conscious_broadcast)
+            
+        logger.info("🧠 Prefrontal Cortex (PFC) initialized.")
 
-    def perceive(self, spike_pattern: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def handle_conscious_broadcast(self, source: str, conscious_data: Any) -> None:
         """
-        入力されたスパイクパターンを知覚し、特徴ベクトルを抽出する。
-
-        Args:
-            spike_pattern (torch.Tensor):
-                スパイクパターン。期待される形状: (Batch, num_neurons) 
-                または (Time, num_neurons)、あるいは (Batch, Time, num_neurons)
-
-        Returns:
-            Dict[str, torch.Tensor]:
-                抽出された特徴ベクトルを含む辞書。
+        ワークスペースからのブロードキャストを受け取り、エグゼクティブ・コントロールを更新する。
         """
-        # デバイスの整合性を確保
-        projection = self.feature_projection.to(spike_pattern.device)
+        # 自身が発信源の情報は無視
+        if source == "prefrontal_cortex":
+            return
 
-        # 入力次元の整理
-        # matmul (A, B) で Bが (784, 256) の場合、Aの最後次元が 784 である必要がある
-        if spike_pattern.shape[-1] != self.num_neurons:
-             raise ValueError(f"Input neuron count {spike_pattern.shape[-1]} mismatch with cortex {self.num_neurons}")
+        # 動機付けシステムから現在の内部状態を取得
+        internal_state = self.motivation_system.get_internal_state()
+        
+        context = {
+            "source": source,
+            "content": conscious_data,
+            "boredom": internal_state.get("boredom", 0.0),
+            "curiosity": internal_state.get("curiosity", 0.0),
+            "confidence": internal_state.get("confidence", 0.5)
+        }
+        
+        self._update_executive_control(context)
 
-        # 1. 時間的/空間的プーリング
-        # 3次元 (Batch, Time, Neurons) の場合は Time(dim=1) で集約
-        # 2次元 (Batch, Neurons) の場合はそのまま
-        if spike_pattern.ndim == 3:
-            aggregated_features = torch.sum(spike_pattern, dim=1).float()
-        elif spike_pattern.ndim == 2:
-            aggregated_features = spike_pattern.float()
-        else:
-            aggregated_features = spike_pattern.view(-1, self.num_neurons).float()
+    def _update_executive_control(self, context: Dict[str, Any]):
+        """
+        知覚や感情に基づいて、現在のゴールや行動指針を決定する。
+        """
+        source = context["source"]
+        content = context["content"]
+        
+        new_goal: Optional[str] = None
+        reason: Optional[str] = None
+        salience = 0.5
 
-        # 2. 特徴射影 (matmul)
-        # aggregated_features: (Batch, num_neurons)
-        # projection: (num_neurons, feature_dim)
-        feature_vector = torch.matmul(aggregated_features, projection)
+        # 1. 外部要求（Receptor等）の優先処理
+        if source == "receptor" or (isinstance(content, str) and "request" in content.lower()):
+            req_text = str(content)
+            new_goal = f"Fulfill external request: {req_text[:50]}"
+            reason = "external_demand"
+            salience = 0.9
 
-        # 3. 非線形性
-        feature_vector = torch.relu(feature_vector)
+        # 2. 感情（恐怖・危機）に基づく生存優先
+        elif isinstance(content, dict) and content.get("type") == "emotion":
+            valence = content.get("valence", 0.0)
+            arousal = content.get("arousal", 0.0)
+            if valence < -0.7 and arousal > 0.6:
+                new_goal = "Ensure safety / Avoid negative stimulus"
+                reason = "fear_response"
+                salience = 1.0
 
-        return {"features": feature_vector}
+        # 3. 内発的動機（退屈・好奇心）に基づく探索
+        elif not new_goal:
+            if context["boredom"] > 0.8:
+                new_goal = "Find something new / Explore random"
+                reason = "high_boredom"
+                salience = 0.7
+            elif context["curiosity"] > 0.8:
+                # motivation_systemがcuriosity_context属性を持っていることを想定
+                topic = getattr(self.motivation_system, 'curiosity_context', "unknown")
+                new_goal = f"Investigate curiosity target: {str(topic)[:30]}"
+                reason = "high_curiosity"
+                salience = 0.8
+
+        # ゴールが更新された場合の処理
+        if new_goal and new_goal != self.current_goal:
+            safe_reason: str = reason if reason is not None else "context_change"
+            
+            logger.info(f"🤔 PFC Re-evaluating Goal: '{self.current_goal}' -> '{new_goal}' ({safe_reason})")
+            
+            self.current_goal = new_goal
+            self.last_update_reason = safe_reason
+            
+            # ワークスペースへ新しいゴールを提示
+            if hasattr(self.workspace, 'upload_to_workspace'):
+                self.workspace.upload_to_workspace(
+                    source="prefrontal_cortex",
+                    data={
+                        "type": "goal_setting",
+                        "goal": self.current_goal,
+                        "reason": safe_reason,
+                        "context": self.current_context
+                    },
+                    salience=salience
+                )
+
+    def get_executive_context(self) -> Dict[str, Any]:
+        """現在のPFCの状態を取得する"""
+        return {
+            "goal": self.current_goal,
+            "context": self.current_context,
+            "reason": self.last_update_reason,
+            "stability": self.goal_stability
+        }
