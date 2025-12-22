@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: 人工脳コア・アーキテクチャ (多次元完全整合版)
-# 目的: 入力テンソルの次元数(1D/2D/3D)を問わず、最後の次元をニューロン数として整合させる。
+# 日本語タイトル: 人工脳コア・アーキテクチャ (Cortex整合版)
+# 目的: 全脳モジュールのインターフェースを統合し、安定した認知サイクルを実行する。
 
 import torch
 import torch.nn as nn
@@ -57,36 +57,32 @@ class ArtificialBrain(nn.Module):
         else:
             sensory_tensor = sensory_input.to(device)
 
-        # --- [修正 v22] 最後の次元をニューロン数として正規化 ---
+        # 次元の整合性確保 (最後の次元を 784 に合わせる)
         if sensory_tensor.ndim == 1:
-            sensory_tensor = sensory_tensor.unsqueeze(0) # (N,) -> (1, N)
+            sensory_tensor = sensory_tensor.unsqueeze(0)
 
-        target_n = self.perception.num_neurons # 784
+        target_n = self.perception.num_neurons
         current_n = sensory_tensor.shape[-1]
         
         if current_n != target_n:
             if current_n < target_n:
-                # パディング: 最後の次元(dim=-1)を target_n に合わせる
                 diff = target_n - current_n
                 pad_shape = list(sensory_tensor.shape)
                 pad_shape[-1] = diff
                 padding = torch.zeros(*pad_shape, device=device, dtype=sensory_tensor.dtype)
                 sensory_tensor = torch.cat([sensory_tensor, padding], dim=-1)
             else:
-                # スライス: 最後の次元を超過分カット
                 sensory_tensor = sensory_tensor[..., :target_n]
 
         # 1. 知覚処理
         perception_result = self.perception.perceive(sensory_tensor)
         
-        # perceptual_info の集約 (BatchやTimeを潰してベクトル化)
+        # 特徴ベクトルの集約
         raw_features = perception_result.get("features")
         if raw_features is not None:
-            # 全次元を平均して (feature_dim,) のベクトルにする
-            # 理由: 後続の amygdala や cortex は単一ベクトルを期待しているため
-            while raw_features.ndim > 1:
-                raw_features = torch.mean(raw_features.float(), dim=0)
             perceptual_info = raw_features
+            while perceptual_info.ndim > 1:
+                perceptual_info = torch.mean(perceptual_info.float(), dim=0)
         else:
             perceptual_info = torch.zeros(256, device=device)
 
@@ -97,11 +93,13 @@ class ArtificialBrain(nn.Module):
                 try:
                     method("sensory", perceptual_info)
                     break
-                except (TypeError, AttributeError):
+                except Exception:
                     continue
         
         # 3. 感情・記憶・意思決定
         emotional_val = self.amygdala.process(perceptual_info)
+        
+        # [核心的修正] 修正した retrieve メソッドを使用
         knowledge = self.cortex.retrieve(perceptual_info)
         
         summary = self.workspace.get_summary() if hasattr(self.workspace, 'get_summary') else []
@@ -118,7 +116,8 @@ class ArtificialBrain(nn.Module):
             "cycle": self.cycle_count,
             "action": str(selected_action),
             "motor_output": motor_output,
-            "broadcasted": True
+            "broadcasted": True,
+            "knowledge_retrieved": len(knowledge) > 0
         }
 
     def get_brain_status(self) -> Dict[str, Any]:
