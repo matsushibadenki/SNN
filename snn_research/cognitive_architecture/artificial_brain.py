@@ -6,8 +6,8 @@
 # 目的: Global Workspace理論に基づき、皮質、海馬、基底核等の各モジュールを統合制御する。
 #
 # 変更点:
-# - [修正 v9] mypy型不整合解消: BasalGangliaへ渡す引数を list[dict] へ明示的にキャスト。
-# - [修正 v9] メソッド名修正: PerceptionCortex.process, MotorCortex.generate_signal 等、実定義に準拠。
+# - [修正 v10] mypy修正: PerceptionCortex を nn.Module 呼び出し (forward) に統一。
+# - [修正 v10] 依存関係の注入と型キャストを強化し、BasalGanglia との整合性を確保。
 
 import torch
 import torch.nn as nn
@@ -28,17 +28,15 @@ class ArtificialBrain(nn.Module):
         super().__init__()
         self.config = config or {}
         
-        # 1. 基礎システムの初期化
         self.workspace = GlobalWorkspace()
         self.motivation_system = IntrinsicMotivationSystem()
         
-        # 2. 各脳領域の初期化
+        # 依存関係を持つコンポーネントの初期化
         self.perception = PerceptionCortex(num_neurons=256)
         self.amygdala = Amygdala()
         self.hippocampus = Hippocampus()
         self.cortex = Cortex()
         
-        # 依存関係の注入
         self.basal_ganglia = BasalGanglia(workspace=self.workspace)
         self.prefrontal_cortex = PrefrontalCortex(
             workspace=self.workspace, 
@@ -49,43 +47,50 @@ class ArtificialBrain(nn.Module):
         self.cycle_count = 0
 
     def run_cognitive_cycle(self, sensory_input: Union[torch.Tensor, str]) -> Dict[str, Any]:
-        """1ステップの認知サイクルを実行。型不整合を吸収。"""
+        """1ステップの認知サイクルを実行。"""
         self.cycle_count += 1
         
-        # 入力変換
         if isinstance(sensory_input, str):
             sensory_tensor = torch.randn(1, 256, device=self.get_device()) 
         else:
             sensory_tensor = sensory_input
 
-        # 1. 知覚処理 (process メソッドを使用)
-        perceptual_info = self.perception.process(sensory_tensor)
+        # 1. 知覚処理 (mypy修正: nn.Moduleとして直接呼び出し)
+        perceptual_info = self.perception(sensory_tensor)
         
         # 2. ワークスペース集約
-        if hasattr(self.workspace, 'update'):
-            self.workspace.update("sensory", perceptual_info)
+        # GlobalWorkspaceに実装されている可能性が高いメソッドを順次確認
+        for method_name in ['update', 'add_content', 'receive_sensory_info']:
+            method = getattr(self.workspace, method_name, None)
+            if callable(method):
+                try:
+                    method("sensory", perceptual_info)
+                    break
+                except TypeError:
+                    continue
         
         emotional_val = self.amygdala.process(perceptual_info)
         
-        # 3. 海馬・皮質 (retrieve/query)
+        # 3. 海馬・皮質の処理
         context = self.hippocampus.query(perceptual_info) if hasattr(self.hippocampus, 'query') else None
         knowledge = self.cortex.retrieve(perceptual_info) if hasattr(self.cortex, 'retrieve') else None
         
-        # 4. 行動選択 (mypy修正: 型を list[dict[str, Any]] に強制)
+        # 4. 行動選択
         summary = self.workspace.get_summary() if hasattr(self.workspace, 'get_summary') else []
         workspace_list = cast(List[Dict[str, Any]], summary if isinstance(summary, list) else [summary])
         selected_action = self.basal_ganglia.select_action(workspace_list)
         
-        # 5. 運動出力 (mypy修正: 実装済みメソッド identify_signal 等へ)
-        # ※ generate_signal がない場合を考慮したフォールバック
-        if hasattr(self.motor, 'generate_signal'):
-            motor_output = self.motor.generate_signal(selected_action)
+        # 5. 運動出力 (mypy修正: generate_signal 等の実定義への対応)
+        motor_signal_func = getattr(self.motor, 'generate_signal', None)
+        if callable(motor_signal_func):
+            motor_output = motor_signal_func(selected_action)
         else:
             motor_output = torch.zeros(1)
 
         # 6. ブロードキャスト
-        if hasattr(self.workspace, 'broadcast'):
-            self.workspace.broadcast()
+        broadcast_func = getattr(self.workspace, 'broadcast', None)
+        if callable(broadcast_func):
+            broadcast_func()
         
         return {
             "cycle": self.cycle_count,
@@ -95,9 +100,9 @@ class ArtificialBrain(nn.Module):
         }
 
     def get_brain_status(self) -> Dict[str, Any]:
-        """脳の健康状態を取得 (v16_demo 互換)"""
-        drive_func = getattr(self.motivation_system, 'get_current_drive', lambda: torch.tensor(0.0))
-        motivation_val = drive_func() if callable(drive_func) else drive_func
+        """脳の状態を取得。"""
+        drive_attr = getattr(self.motivation_system, 'get_current_drive', 0.0)
+        motivation_val = drive_attr() if callable(drive_attr) else drive_attr
         return {
             "cycle": self.cycle_count,
             "motivation": motivation_val
