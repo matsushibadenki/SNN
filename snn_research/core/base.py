@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/base.py
-# Title: SNNモデル 基底クラス (プロフェッショナル版)
+# Title: SNNモデル 基底クラス (リファクタリング版)
 # Description: DDP対応のスパイク集計、標準的なPyTorch状態管理、および高度な重み初期化ロジックの統合。
 
 import torch
@@ -21,6 +21,9 @@ class BaseModel(nn.Module):
     すべてのSNNモデルの基盤となる抽象クラス。
     分散学習(DDP)環境でのスパイク統計の同期と、再帰的な状態管理を提供します。
     """
+    def __init__(self):
+        super().__init__()
+
     def _init_weights(self) -> None:
         """標準的な初期化戦略。各サブクラスで必要に応じてオーバーライド可能。"""
         for m in self.modules():
@@ -48,7 +51,7 @@ class BaseModel(nn.Module):
             ts = getattr(m, 'total_spikes', None)
             if isinstance(ts, torch.Tensor):
                 # デバイスが異なる場合は転送して加算
-                total += ts.to(device)
+                total += ts.to(device).sum()
         
         # 分散学習環境での同期
         if dist.is_available() and dist.is_initialized():
