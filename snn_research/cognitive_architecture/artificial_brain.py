@@ -1,11 +1,6 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
 # 日本語タイトル: 人工脳コア・アーキテクチャ (次元完全整合版)
 # 目的: Global Workspace理論に基づき、入力形状に左右されず安定した認知サイクルを実行する。
-#
-# 変更点:
-# - [修正 v21] RuntimeError: Tensors must have same number of dimensions を解決。
-# - パディング生成時に sensory_tensor.shape を基底とすることで、次元数ミスマッチを根絶。
-# - GlobalWorkspace の動的なメソッド解決 (add_content/receive_sensory_info) を維持。
 
 import torch
 import torch.nn as nn
@@ -54,51 +49,43 @@ class ArtificialBrain(nn.Module):
         1ステップの認知サイクルを実行する。
         """
         self.cycle_count += 1
+        device = self.get_device()
         
         # 入力の Tensor 化
         if isinstance(sensory_input, str):
-            sensory_tensor = torch.randn(1, 784, device=self.get_device()) 
+            # 文字列入力の場合はダミーの 1枚分(1, 784)を作成
+            sensory_tensor = torch.randn(1, 784, device=device) 
         else:
-            sensory_tensor = sensory_input.to(self.get_device())
+            sensory_tensor = sensory_input.to(device)
 
-        # --- [核心的修正] 次元の不整合を動的に解決 ---
-        if sensory_tensor.ndim >= 2:
-            current_n = sensory_tensor.shape[1]
-            target_n = self.perception.num_neurons # 784
-            
-            if current_n != target_n:
-                if current_n < target_n:
-                    # 不足分を計算
-                    diff = target_n - current_n
-                    
-                    # 入力と同じ次元構成(ndim)でパディングを作成
-                    # shape: (Batch, diff, *others)
-                    pad_shape = list(sensory_tensor.shape)
-                    pad_shape[1] = diff
-                    
-                    padding = torch.zeros(
-                        *pad_shape, 
-                        device=sensory_tensor.device, 
-                        dtype=sensory_tensor.dtype
-                    )
-                    
-                    # dim=1 (ニューロン次元) で結合
-                    sensory_tensor = torch.cat([sensory_tensor, padding], dim=1)
-                else:
-                    # 超過分をスライスで調整
-                    sensory_tensor = sensory_tensor[:, :target_n, ...]
-        elif sensory_tensor.ndim == 1:
+        # --- 次元の不整合を動的に解決 ---
+        if sensory_tensor.ndim == 1:
             # (N,) -> (1, N)
             sensory_tensor = sensory_tensor.unsqueeze(0)
-            return self.run_cognitive_cycle(sensory_tensor)
 
-        # 1. 知覚処理 (shape[1]=784 が保証された状態で perceive を実行)
-        perception_result = self.perception.perceive(sensory_tensor)
-        perceptual_info = perception_result.get("features", torch.zeros(256, device=self.get_device()))
+        # dim=1 がニューロン数であることを前提に調整
+        target_n = self.perception.num_neurons # 784
+        current_n = sensory_tensor.shape[1]
         
-        # 統計集約 (後続モジュールのインターフェースに合わせる)
-        if perceptual_info.ndim > 1:
-            perceptual_info = torch.mean(perceptual_info.float(), dim=0)
+        if current_n != target_n:
+            if current_n < target_n:
+                # パディング
+                diff = target_n - current_n
+                pad_shape = list(sensory_tensor.shape)
+                pad_shape[1] = diff
+                padding = torch.zeros(*pad_shape, device=device, dtype=sensory_tensor.dtype)
+                sensory_tensor = torch.cat([sensory_tensor, padding], dim=1)
+            else:
+                # スライス (超過分をカット)
+                sensory_tensor = sensory_tensor[:, :target_n]
+
+        # 1. 知覚処理
+        perception_result = self.perception.perceive(sensory_tensor)
+        # features は (Batch, 256) で返る
+        perceptual_info_batch = perception_result.get("features", torch.zeros(sensory_tensor.shape[0], 256, device=device))
+        
+        # 後続モジュールがバッチ未対応の場合に備え、代表値（平均）を取得
+        perceptual_info = torch.mean(perceptual_info_batch.float(), dim=0)
 
         # 2. ワークスペース集約
         for method_name in ['receive_sensory_info', 'update', 'add_content']:
