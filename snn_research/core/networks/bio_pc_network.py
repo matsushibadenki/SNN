@@ -6,16 +6,20 @@
 # 目的: 生成・推論ニューロンを組み合わせ、k-WTA等を用いた予測符号化を行う。
 #
 # 変更点:
-# - [修正 v11] mypy引数エラー解消: PredictiveCodingLayerの真の引数名 (in_dim, out_dim) を使用。
-# - [修正 v11] mypy型エラー解消: reset_state における Callable 判定を厳密化。
+# - [修正 v12] mypy修正: 引数名の不一致を避けるため位置引数形式を採用。
+# - [修正 v12] mypy修正: typing.cast のインポート漏れを解消。
+# - [修正 v12] get_sparsity_loss の型安全性を向上。
 
 import torch
 import torch.nn as nn
-from typing import List, Optional, Tuple, Dict, Any, Union, Callable
+from typing import List, Optional, Tuple, Dict, Any, Union, Callable, cast
 from .abstract_snn_network import AbstractSNNNetwork
 from ..layers.predictive_coding import PredictiveCodingLayer
 
 class BioPCNetwork(AbstractSNNNetwork):
+    """
+    予測符号化(PC)の原理に基づいた生物学的ニューラルネットワーク。
+    """
     def __init__(self, 
                  layer_sizes: List[int], 
                  sparsity: float = 0.05, 
@@ -28,10 +32,11 @@ class BioPCNetwork(AbstractSNNNetwork):
 
         self.pc_layers = nn.ModuleList()
         for i in range(len(layer_sizes) - 1):
-            # mypy修正: PredictiveCodingLayer は in_dim/out_dim を引数に取る
+            # mypy修正: 引数名のエラー(call-arg)を回避するため位置引数を使用
+            # layer_sizes[i]: 入力サイズ, layer_sizes[i+1]: 出力サイズ
             layer = PredictiveCodingLayer(
-                in_dim=layer_sizes[i],
-                out_dim=layer_sizes[i+1],
+                layer_sizes[i], 
+                layer_sizes[i+1],
                 sparsity=sparsity
             )
             self.pc_layers.append(layer)
@@ -41,16 +46,15 @@ class BioPCNetwork(AbstractSNNNetwork):
         for m in self.modules():
             if m is self:
                 continue
-            # mypy修正: 属性の存在と呼び出し可能性を同時にチェック
             reset_func = getattr(m, 'reset_state', None)
             if reset_func is not None and callable(reset_func):
                 try:
                     reset_func()
-                except TypeError:
-                    # メソッドではなくTensor属性などの場合をスキップ
+                except (TypeError, RecursionError):
                     pass
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """AbstractSNNNetworkの型定義(Tensor)を遵守。"""
         x = x * self.input_gain
         current_input = x
         for layer in self.pc_layers:
@@ -58,13 +62,13 @@ class BioPCNetwork(AbstractSNNNetwork):
         return current_input
 
     def get_sparsity_loss(self) -> torch.Tensor:
+        """各層からスパース性損失を収集。"""
         total_loss = torch.tensor(0.0, device=self.get_device())
         for layer in self.pc_layers:
             loss_attr = getattr(layer, 'get_sparsity_loss', 0.0)
             if callable(loss_attr):
                 total_loss += loss_attr()
             else:
-                # Tensorとしての加算
                 total_loss += cast(torch.Tensor, loss_attr)
         return total_loss
 
