@@ -5,11 +5,12 @@
 # ファイル名: Bio-PC ネットワーク実装
 #
 # 変更点:
-# - [修正 v8] mypyエラー解消: PredictiveCodingLayerへの引数名を input_size/output_size 等の正しい名称へ修正。
+# - [修正 v9] mypyエラー解消: 引数名を PredictiveCodingLayer の定義 (in_features/out_features) に完全統合。
+# - [修正 v9] mypyエラー解消: get_sparsity_loss における Tensor 呼び出しエラーを修正。
 
 import torch
 import torch.nn as nn
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict, Any, Callable
 from .abstract_snn_network import AbstractSNNNetwork
 from ..layers.predictive_coding import PredictiveCodingLayer
 
@@ -26,10 +27,10 @@ class BioPCNetwork(AbstractSNNNetwork):
 
         self.pc_layers = nn.ModuleList()
         for i in range(len(layer_sizes) - 1):
-            # mypy修正: PredictiveCodingLayer の実際の引数名に合わせて修正
+            # mypy修正: PredictiveCodingLayer の実際の定義 (in_features, out_features) に準拠
             layer = PredictiveCodingLayer(
-                input_size=layer_sizes[i],    # in_features -> input_size
-                output_size=layer_sizes[i+1],  # out_features -> output_size
+                in_features=layer_sizes[i],
+                out_features=layer_sizes[i+1],
                 sparsity=sparsity
             )
             self.pc_layers.append(layer)
@@ -37,6 +38,7 @@ class BioPCNetwork(AbstractSNNNetwork):
         self.last_activations: Dict[str, torch.Tensor] = {}
 
     def reset_state(self) -> None:
+        """無限再帰防止版リセット"""
         for name, m in self.named_modules():
             if m is self: continue
             if hasattr(m, 'reset_state') and callable(getattr(m, 'reset_state')):
@@ -50,10 +52,16 @@ class BioPCNetwork(AbstractSNNNetwork):
         return current_input
 
     def get_sparsity_loss(self) -> torch.Tensor:
+        """各レイヤーからスパース性損失を収集"""
         total_loss = torch.tensor(0.0, device=self.get_device())
         for layer in self.pc_layers:
-            if hasattr(layer, 'calculate_sparsity_loss'):
-                total_loss += layer.calculate_sparsity_loss()
+            # get_sparsity_loss がメソッドか属性かを確認して安全に加算
+            if hasattr(layer, 'get_sparsity_loss'):
+                val = getattr(layer, 'get_sparsity_loss')
+                if callable(val):
+                    total_loss += val()
+                else:
+                    total_loss += val
         return total_loss
 
     def get_device(self) -> torch.device:
