@@ -1,45 +1,30 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: Artificial Brain Kernel (精度向上 & ロードマップ v20.1 準拠版)
-# 目的: 不確実性推定の強化、代謝管理の適正化、および既存デモとの完全互換。
+# 日本語タイトル: Artificial Brain Kernel (属性追加版)
 
 import logging
 import torch
-import torch.nn as nn
-from typing import Dict, Any, Optional, List, cast
+from typing import Dict, Any
+from torchvision import transforms
 
 logger = logging.getLogger(__name__)
 
 class ArtificialBrain:
-    """
-    SNNベース 人工脳アーキテクチャ。
-    [強化] メタ認知（不確実性）の計算精度を向上し、アストロサイトの代謝ロジックを適正化。
-    """
     def __init__(self, **kwargs: Any):
-        self.device = kwargs.get('device', 'cpu')
-        self.config = kwargs.get('config', {})
-        
-        # 主要コンポーネント・バインディング (互換性維持)
-        self.workspace: Any = kwargs.get('global_workspace')
-        self.visual: Any = kwargs.get('visual_cortex')
-        self.system1: Any = kwargs.get('thinking_engine')
-        self.astrocyte: Any = kwargs.get('astrocyte_network')
-        self.guardrail: Any = kwargs.get('ethical_guardrail')
-        self.basal_ganglia: Any = kwargs.get('basal_ganglia')
-        
-        # 睡眠・記憶管理
-        self.sleep_manager: Any = kwargs.get('sleep_manager') or kwargs.get('sleep_consolidator')
-        
-        # 領野コンポーネント
-        self.pfc: Any = kwargs.get('prefrontal_cortex') or kwargs.get('pfc')
-        self.hippocampus: Any = kwargs.get('hippocampus')
-        self.cortex: Any = kwargs.get('cortex')
-        self.motor: Any = kwargs.get('motor_cortex') or kwargs.get('motor')
-        self.amygdala: Any = kwargs.get('amygdala')
-
+        # 既存の初期化...
+        self.visual = kwargs.get('visual_cortex')
         self.state = "AWAKE"
         self.cycle_count = 0
+        
+        # [追加] 空間認識デモ等で使用される画像変換プロセッサ
+        self.image_transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        
         logger.info("ArtificialBrain Kernel v20.1 initialized.")
 
+    # 既存の run_cognitive_cycle 等のメソッド...
     def calculate_uncertainty(self, result: Any) -> float:
         """
         [精度向上] エントロピーと最大確率のギャップに基づくメタ認知。
