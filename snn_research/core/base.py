@@ -47,10 +47,9 @@ class BaseModel(nn.Module):
         total = torch.tensor(0.0, device=device)
         
         for m in self.modules():
-            # レイヤーが total_spikes 属性を持っているか確認
             ts = getattr(m, 'total_spikes', None)
             if isinstance(ts, torch.Tensor):
-                # デバイスが異なる場合は転送して加算
+                # デバイスを合わせ、テンソル全体の合計を加算
                 total += ts.to(device).sum()
         
         # 分散学習環境での同期
@@ -64,11 +63,9 @@ class BaseModel(nn.Module):
         ネットワーク全体の統計情報と膜電位を再帰的にリセット。
         """
         for m in self.modules():
-            # 1. SpikingJelly等の標準的なreset()呼び出し
             if hasattr(m, 'reset') and callable(m.reset):
                 m.reset()
             
-            # 2. スパイク統計（total_spikes）およびバッファ（spikes）のリセット
             for attr in ['total_spikes', 'spikes']:
                 val = getattr(m, attr, None)
                 if isinstance(val, torch.Tensor):
