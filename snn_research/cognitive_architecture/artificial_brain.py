@@ -1,10 +1,11 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: 人工脳コア・アーキテクチャ (次元整合性修正版)
-# 目的: 各脳モジュールを統合し、入力次元の不整合を自動的に吸収して安定した認知サイクルを実行する。
+# 日本語タイトル: 人工脳コア・アーキテクチャ (次元整合性自動調整版)
+# 目的: 各脳モジュールを統合し、入力次元のミスマッチを吸収して安定した認知サイクルを実行する。
 #
-# 修正内容:
-# - [修正 v13] ValueError: Input neuron count mismatch に対処。
-# - 入力 Tensor の最終次元が 784 でない場合、パディングまたはカットを行い強制的に適合させる。
+# 変更点:
+# - [修正 v14] ValueError: Input neuron count mismatch に対処。
+# - run_cognitive_cycle 内で、入力 Tensor の最終次元を PerceptionCortex.num_neurons (784) へ強制適合させる。
+# - ヘルスチェック時の低次元入力(3次元)をゼロパディングで補完。
 
 import torch
 import torch.nn as nn
@@ -21,21 +22,25 @@ from .perception_cortex import PerceptionCortex
 from .intrinsic_motivation import IntrinsicMotivationSystem
 
 class ArtificialBrain(nn.Module):
+    """
+    複数の脳領域モジュールを統合する人工脳メインクラス。
+    Global Workspace理論に基づき、知覚、記憶、意思決定を統合制御する。
+    """
     def __init__(self, config: Optional[Dict[str, Any]] = None, **kwargs: Any):
         super().__init__()
         self.config = config or {}
         
-        # 基礎システムの初期化
+        # 1. 基礎システムの初期化
         self.workspace = GlobalWorkspace()
         self.motivation_system = IntrinsicMotivationSystem()
         
-        # 知覚野の初期化 (PerceptionCortexは 784 ニューロンを期待)
+        # 2. 各脳領域の初期化 (PerceptionCortexはデフォルトで784 neuronsを期待)
         self.perception = PerceptionCortex(num_neurons=784, feature_dim=256)
         self.amygdala = Amygdala()
         self.hippocampus = Hippocampus()
         self.cortex = Cortex()
         
-        # 意思決定系への依存関係注入
+        # 意思決定系への依存注入
         self.basal_ganglia = BasalGanglia(workspace=self.workspace)
         self.prefrontal_cortex = PrefrontalCortex(
             workspace=self.workspace, 
@@ -48,45 +53,46 @@ class ArtificialBrain(nn.Module):
     def run_cognitive_cycle(self, sensory_input: Union[torch.Tensor, str]) -> Dict[str, Any]:
         """
         1ステップの認知サイクルを実行する。
-        入力次元の不整合が発生した場合、自動的にパディングまたは切り出しを行う。
+        入力次元の不整合を検知した場合、自動的にターゲット次元(784)へ適合させる。
         """
         self.cycle_count += 1
         
-        # 文字列入力の場合はランダムな Tensor を生成
+        # 文字列入力の場合はランダムTensorを生成
         if isinstance(sensory_input, str):
             sensory_tensor = torch.randn(1, 784, device=self.get_device()) 
         else:
             sensory_tensor = sensory_input
 
         # --- [修正] 次元整合ロジックの強化 ---
-        # PerceptionCortex.perceive は入力の shape[1] (または最終次元) が num_neurons と一致することを求める
+        # ログ: ValueError: Input neuron count 3 mismatch with cortex 784 に対応
         if sensory_tensor.ndim > 0:
             current_dim = sensory_tensor.shape[-1]
             target_dim = self.perception.num_neurons
             
             if current_dim != target_dim:
                 if current_dim < target_dim:
-                    # ゼロパディングで不足分を補う
+                    # 不足分をゼロパディングで補う (3 -> 784)
                     padding_shape = list(sensory_tensor.shape[:-1]) + [target_dim - current_dim]
-                    padding = torch.zeros(*padding_shape, device=sensory_tensor.device)
+                    padding = torch.zeros(*padding_shape, device=sensory_tensor.device, dtype=sensory_tensor.dtype)
                     sensory_tensor = torch.cat([sensory_tensor, padding], dim=-1)
                 else:
                     # 超過分をスライスでカット
                     sensory_tensor = sensory_tensor[..., :target_dim]
 
-        # 1. 知覚処理 (次元整合済みのため安全に呼び出し可能)
+        # 1. 知覚処理 (次元整合済みのため安全)
+        # PerceptionCortex.perceive は {'features': tensor} を返す
         perception_result = self.perception.perceive(sensory_tensor)
         perceptual_info = perception_result.get("features", torch.zeros(256, device=self.get_device()))
         
-        # 2. ワークスペース集約
+        # 2. ワークスペースへの情報集約 (add_content を使用)
         self.workspace.add_content("sensory", perceptual_info)
         emotional_val = self.amygdala.process(perceptual_info)
         self.workspace.add_content("emotional", emotional_val)
         
-        # 3. 皮質・海馬による処理
+        # 3. 海馬・皮質による参照
         knowledge = self.cortex.retrieve(perceptual_info)
         
-        # 4. 基底核による行動選択
+        # 4. 基底核による行動選択 (型キャストによりリスト形式を保証)
         summary = self.workspace.get_summary()
         workspace_list = cast(List[Dict[str, Any]], summary if isinstance(summary, list) else [summary])
         selected_action = self.basal_ganglia.select_action(workspace_list)
@@ -94,7 +100,7 @@ class ArtificialBrain(nn.Module):
         # 5. 運動出力の生成
         motor_output = self.motor.generate_signal(selected_action)
 
-        # 6. ブロードキャスト (意識的な情報拡散)
+        # 6. 意識的なブロードキャスト
         self.workspace.broadcast()
         
         return {
@@ -112,6 +118,7 @@ class ArtificialBrain(nn.Module):
         }
 
     def get_device(self) -> torch.device:
+        """モジュールの現在のデバイスを取得"""
         try:
             return next(self.parameters()).device
         except StopIteration:
