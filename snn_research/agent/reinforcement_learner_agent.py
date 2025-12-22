@@ -1,42 +1,24 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
-# Title: 強化学習エージェント (Mypy Return Type Fixed)
-# Description: get_action の戻り値を明示的に int に変換。
+# 目的: BioSNN初期化時の引数不一致を修正。
 
 import torch
-import numpy as np
-from typing import Dict, Any, List, Optional, Tuple, Callable, cast
-
+from typing import Dict, Any, List, Optional, Tuple, cast
 from snn_research.models.bio.simple_network import BioSNN
 from snn_research.learning_rules.base_rule import BioLearningRule
-from snn_research.communication import SpikeEncoderDecoder
 
 class ReinforcementLearnerAgent:
-    """
-    BioSNNを用いた強化学習エージェント。
-    """
-    def __init__(
-        self, 
-        input_size: int, 
-        output_size: int, 
-        device: str,
-        synaptic_rule: BioLearningRule, 
-        homeostatic_rule: Optional[BioLearningRule] = None
-    ):
-        self.device = device
+    def __init__(self, input_size: int, output_size: int, device: str, synaptic_rule: BioLearningRule, homeostatic_rule: Optional[BioLearningRule] = None):
         self.input_size = input_size
         self.output_size = output_size
-        
         layer_sizes = [input_size, (input_size + output_size) * 2, output_size]
         
+        # 引数名を BioSNN.__init__ に合わせる
         self.model = BioSNN(
             layer_sizes=layer_sizes,
-            neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0},
+            neuron_params={'tau_mem': 10.0},
             synaptic_rule=synaptic_rule,
-            homeostatic_rule=homeostatic_rule,
-            neuron_type="adaptive_lif"
+            homeostatic_rule=homeostatic_rule
         ).to(device)
-
-        self.experience_buffer: List[List[torch.Tensor]] = []
 
     def get_action(self, state: torch.Tensor, record_experience: bool = True) -> int:
         self.model.eval()
