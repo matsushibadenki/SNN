@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/models/bio/simple_network.py
-# Title: Bio-Inspired SNN (Interface Sync & Mypy Fixed)
-# Description: BioSNNのコンストラクタとupdate_weightsの引数定義を明確化し、型安全性を確保。
+# Title: Bio-Inspired SNN (Mypy Final Fixed)
+# Description: homeostatic_rulesのNoneチェックとcausal_contributionへの安全なアクセスを実装。
 
 import torch
 import torch.nn as nn
@@ -33,7 +33,6 @@ class BioSNN(BaseModel):
     ):
         super().__init__()
         self.layer_sizes = layer_sizes
-        # 設定の安全な取得
         config = sparsification_config or {}
         self.sparsification_enabled = config.get("enabled", False)
         self.contribution_threshold = config.get("contribution_threshold", 0.0)
@@ -78,7 +77,6 @@ class BioSNN(BaseModel):
         return current_spikes, hidden_spikes_history
 
     def update_weights(self, all_layer_spikes: List[torch.Tensor], optional_params: Optional[Dict[str, Any]] = None):
-        """重み更新ロジック。"""
         if not self.training: return
         backward_credit: Optional[torch.Tensor] = None
         current_params = (optional_params or {}).copy()
@@ -92,18 +90,28 @@ class BioSNN(BaseModel):
                 pre_spikes=pre_spikes, post_spikes=post_spikes, weights=self.weights[i], optional_params=current_params
             )
             
-            # 恒常性維持更新
+            # 恒常性維持更新 (Noneチェックを追加してmypyエラーを解消)
             dw_homeo = torch.zeros_like(self.weights[i])
-            if self.homeostatic_rules[i]:
-                res, _ = self.homeostatic_rules[i].update(pre_spikes=pre_spikes, post_spikes=post_spikes, weights=self.weights[i], optional_params=optional_params)
+            h_rule = self.homeostatic_rules[i]
+            if h_rule is not None:
+                res, _ = h_rule.update(
+                    pre_spikes=pre_spikes, post_spikes=post_spikes, weights=self.weights[i], optional_params=optional_params
+                )
                 if res is not None: dw_homeo = res
 
             dw = dw_synaptic + dw_homeo
 
-            # スパース化 ⑮
-            if self.sparsification_enabled and hasattr(self.synaptic_rules[i], 'get_causal_contribution'):
-                contrib = self.synaptic_rules[i].get_causal_contribution()
-                if contrib is not None: dw = dw * (contrib > self.contribution_threshold).float()
+            # ⑮ スパース化 (型安全にget_causal_contributionを呼び出し)
+            if self.sparsification_enabled:
+                rule = self.synaptic_rules[i]
+                contrib = None
+                if isinstance(rule, CausalTraceCreditAssignmentEnhancedV2):
+                    contrib = rule.get_causal_contribution()
+                elif hasattr(rule, 'get_causal_contribution'):
+                    contrib = getattr(rule, 'get_causal_contribution')()
+                
+                if contrib is not None:
+                    dw = dw * (contrib > self.contribution_threshold).float()
 
             with torch.no_grad():
                 self.weights[i].add_(dw)
