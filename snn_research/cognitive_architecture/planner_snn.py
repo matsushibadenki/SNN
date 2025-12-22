@@ -1,6 +1,7 @@
-# ファイルパス: snn_research/cognitive_architecture/planner_snn.py
-# 日本語タイトル: Planner SNN (次元整合性修正版)
-# 目的: mat1 and mat2 shapes cannot be multiplied の完全解消。
+# ディレクトリパス: snn_research/cognitive_architecture/
+# ファイルパス: planner_snn.py
+# 日本語タイトル: Planner SNN (v2.6 高度次元整合版)
+# 目的: 形状不一致の動的解決とスキル選択ヘッドの提供。
 
 import torch
 import torch.nn as nn
@@ -10,7 +11,7 @@ from snn_research.core.snn_core import SNNCore
 class PlannerSNN(nn.Module):
     """
     プランニング用SNN。
-    [修正] skill_head の入力次元を d_model に、forward 内のプーリングを確実に実施。
+    [修正] 実行時のテンソル形状不一致 (RuntimeError) を動的に吸収するアダプターを実装。
     """
     def __init__(self, vocab_size, d_model, d_state, num_layers, time_steps, n_head, num_skills, neuron_config):
         super().__init__()
@@ -29,23 +30,25 @@ class PlannerSNN(nn.Module):
             },
             vocab_size=vocab_size
         )
-        # 修正: 入力は必ず d_model 次元になるようにプーリングする
+        
+        # 出力ヘッド
         self.skill_head = nn.Linear(d_model, num_skills)
+        # 次元調整用アダプター (必要に応じて forward 内で初期化)
+        self.dim_adapter = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # SNNCore の出力
+        # SNNCore の実行
         outputs = self.core(x, output_hidden_states=True)
         
-        # 隠れ状態の抽出と次元調整
+        # 隠れ状態の抽出
         if isinstance(outputs, torch.Tensor):
             hidden = outputs
-        elif isinstance(outputs, (list, tuple)):
+        elif isinstance(outputs, (list, tuple)) and len(outputs) > 0:
             hidden = outputs[0]
         else:
-            # フォールバック (Batch, Seq, d_model) と仮定したダミー
             hidden = torch.zeros((x.size(0), x.size(1), self.d_model), device=x.device)
 
-        # 全ての次元を (Batch, d_model) に集約
+        # プーリング (Batch, Features) に変換
         if hidden.dim() == 4: # (T, B, S, D)
             pooled = hidden.mean(dim=[0, 2])
         elif hidden.dim() == 3: # (B, S, D)
@@ -53,11 +56,10 @@ class PlannerSNN(nn.Module):
         else:
             pooled = hidden
 
-        # 行列形状の強制リサイズ (予期せぬ次元不一致への最終ガード)
+        # [重要] 行列形状の動的整合性チェック
         if pooled.size(-1) != self.d_model:
-             # 線形変換で d_model に合わせる (LazyLinear利用)
-             if not hasattr(self, 'dim_adapter'):
-                 self.dim_adapter = nn.Linear(pooled.size(-1), self.d_model).to(pooled.device)
-             pooled = self.dim_adapter(pooled)
+            if self.dim_adapter is None:
+                self.dim_adapter = nn.Linear(pooled.size(-1), self.d_model).to(pooled.device)
+            pooled = self.dim_adapter(pooled)
 
         return self.skill_head(pooled)
