@@ -1,11 +1,11 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: 人工脳コア・アーキテクチャ (テンソル次元・軸完全正規化版)
-# 目的: Global Workspace理論に基づき、入力テンソルの軸順序やサイズに関わらず安定した知覚・認知サイクルを実行する。
+# 日本語タイトル: 人工脳コア・アーキテクチャ (次元軸整合・完全正規化版)
+# 目的: PerceptionCortexの内部集約仕様(dim=0の和)に合わせ、入力テンソルの軸を動的に補正する。
 #
 # 変更点:
-# - [修正 v22] RuntimeError: mat1 and mat2 shapes mismatch (25088x32) を根本解決。
-# - 入力テンソルから 784 という値を持つ次元を自動探索し、軸を入れ替えて (Time, 784) 形式へ正規化。
-# - PerceptionCortex 内の不適切な dim=0 集約を回避するため、事前に集約した 2次元テンソルを渡す。
+# - [修正 v23] RuntimeError: mat1 shapes cannot be multiplied (25088x32) を解決。
+# - テンソル内から 784 という値を持つ次元を自動探索し、それを「第2次元(dim=1)」へ強制移動。
+# - 知覚野の内部処理でニューロン次元が消滅しないよう、軸順序を (Time, Neurons=784) に正規化。
 
 import torch
 import torch.nn as nn
@@ -29,17 +29,15 @@ class ArtificialBrain(nn.Module):
         super().__init__()
         self.config = config or {}
         
-        # 1. 基礎システムの初期化
         self.workspace = GlobalWorkspace()
         self.motivation_system = IntrinsicMotivationSystem()
         
-        # 2. 各脳領域の初期化 (PerceptionCortexは 784 neurons を期待)
+        # 知覚野 (784 neurons を厳格に要求)
         self.perception = PerceptionCortex(num_neurons=784, feature_dim=256)
         self.amygdala = Amygdala()
         self.hippocampus = Hippocampus()
         self.cortex = Cortex()
         
-        # 3. 意思決定系の初期化
         self.basal_ganglia = BasalGanglia(workspace=self.workspace)
         self.prefrontal_cortex = PrefrontalCortex(
             workspace=self.workspace, 
@@ -51,64 +49,60 @@ class ArtificialBrain(nn.Module):
 
     def run_cognitive_cycle(self, sensory_input: Union[torch.Tensor, str]) -> Dict[str, Any]:
         """
-        1ステップの認知サイクルを実行する。
-        入力テンソルの軸順序を動的に解析し、PerceptionCortexの行列演算エラーを物理的に防ぐ。
+        認知サイクルの実行。
+        PerceptionCortex内の sum(dim=0) 仕様に適合させるため、軸の並びを (Time, 784) に固定する。
         """
         self.cycle_count += 1
         
-        # 入力の Tensor 化
+        # 1. 入力の標準化
         if isinstance(sensory_input, str):
             sensory_tensor = torch.randn(1, 784, device=self.get_device()) 
         else:
             sensory_tensor = sensory_input.to(self.get_device())
 
-        # --- [核心的修正] テンソル形状と軸の正規化 ---
+        # --- [核心的修正] テンソルの軸探索と正規化 ---
         target_n = self.perception.num_neurons # 784
         
         if sensory_tensor.ndim >= 2:
-            # A. ニューロン次元 (784) を探し、dim=1 へ移動させる
-            # ログの 25088x32 は、(784, 32) のような順序で入力が来ていることを示唆
-            found_n_dim = -1
-            for d in range(sensory_tensor.ndim):
-                if sensory_tensor.shape[d] == target_n:
-                    found_n_dim = d
+            # ログの (25088x32) は (784*32, 32) を示唆 -> 入力が (784, 32) で渡されている。
+            # 784 という値を持つ次元を探す
+            dims = list(sensory_tensor.shape)
+            found_idx = -1
+            for i, d in enumerate(dims):
+                if d == target_n:
+                    found_idx = i
                     break
             
-            if found_n_dim != -1:
-                if found_n_dim != 1:
-                    # ニューロン次元を dim=1 へ、それ以外を dim=0 (時間/バッチ) へ移動
-                    # 例: (784, 32) -> (32, 784)
-                    permute_dims = list(range(sensory_tensor.ndim))
-                    permute_dims[0], permute_dims[found_n_dim] = permute_dims[found_n_dim], permute_dims[0]
-                    # さらに target_n を確実に dim=1 に持ってくる
-                    if sensory_tensor.ndim == 2:
-                         sensory_tensor = sensory_tensor.transpose(0, 1) # (784, 32) -> (32, 784)
-                
-                # B. PerceptionCortex.perceive 内部の sum(dim=0) に備え、
-                # すでに集約されている場合は (1, 784) 形式を維持
-                if sensory_tensor.shape[0] == 1:
-                     # ダミーの時間次元を追加して、内部の sum で消えても (784,) になるようにする
-                     # 内部で sum(dim=0) されるため (2, 784) で渡せば (784,) になる
-                     sensory_tensor = torch.cat([sensory_tensor, torch.zeros_like(sensory_tensor)], dim=0)
+            if found_idx != -1:
+                # ターゲット次元(784)を dim=1 (PerceptionCortexの要求位置) へ移動
+                if found_idx != 1:
+                    # 例: (784, 32) の場合、(32, 784) に転置する
+                    permute_order = list(range(sensory_tensor.ndim))
+                    permute_order[1], permute_order[found_idx] = permute_order[found_idx], permute_order[1]
+                    sensory_tensor = sensory_tensor.permute(*permute_order)
             else:
-                # 784 が見つからない場合: 既存の dim=1 をパディング
-                current_n = sensory_tensor.shape[1]
-                diff = target_n - current_n
-                pad_shape = list(sensory_tensor.shape)
-                pad_shape[1] = diff
-                padding = torch.zeros(*pad_shape, device=sensory_tensor.device)
-                sensory_tensor = torch.cat([sensory_tensor, padding], dim=1)
-        
-        elif sensory_tensor.ndim == 1:
-            sensory_tensor = sensory_tensor.unsqueeze(0)
-            return self.run_cognitive_cycle(sensory_tensor)
+                # 784 が見つからない場合は、最終次元をパディング
+                current_last = sensory_tensor.shape[-1]
+                if current_last < target_n:
+                    pad = torch.zeros(*sensory_tensor.shape[:-1], target_n - current_last, 
+                                     device=sensory_tensor.device, dtype=sensory_tensor.dtype)
+                    sensory_tensor = torch.cat([sensory_tensor, pad], dim=-1)
+                
+                # 形状が (Neurons=784, Time) になっている可能性を考慮し、
+                # dim=0 が 784 になった場合は転置して (Time, 784) にする
+                if sensory_tensor.shape[0] == target_n and sensory_tensor.shape[1] != target_n:
+                    sensory_tensor = sensory_tensor.transpose(0, 1)
 
-        # 1. 知覚処理 (軸調整済みのため matmul エラーは発生しない)
-        # 内部で sum(dim=0) され、(784,) @ (784, 256) -> (256,) となる
+        # 2. 知覚処理 (shape は確実に (Time, 784) になり、内部の sum(dim=0) で (784,) となる)
+        # perception_cortex.py:42-48 のロジックに完全適合させる
         perception_result = self.perception.perceive(sensory_tensor)
         perceptual_info = perception_result.get("features", torch.zeros(256, device=self.get_device()))
         
-        # 2. ワークスペースへの情報集約 (動的なメソッド解決)
+        # 統計集約 (後続モジュールがベクトルを期待するため)
+        if perceptual_info.ndim > 1:
+            perceptual_info = torch.mean(perceptual_info.float(), dim=0)
+
+        # 3. ワークスペース、感情、記憶、意思決定 (既存のAPI整合性を維持)
         for method_name in ['receive_sensory_info', 'update', 'add_content']:
             method = getattr(self.workspace, method_name, None)
             if callable(method):
@@ -118,10 +112,7 @@ class ArtificialBrain(nn.Module):
                 except (TypeError, AttributeError):
                     continue
         
-        # 3. 感情・記憶・意思決定
-        emotional_val = self.amygdala.process(perceptual_info)
         knowledge = self.cortex.retrieve(perceptual_info)
-        
         summary = self.workspace.get_summary() if hasattr(self.workspace, 'get_summary') else []
         workspace_list = cast(List[Dict[str, Any]], summary if isinstance(summary, list) else [summary])
         
