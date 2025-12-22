@@ -55,14 +55,18 @@ class AsyncBitSpikeMambaAdapter:
                 neuron_config={"type": "lif", "tau_mem": 2.0}
             ).to(device)
             
-            # checkpoint_path引数が指定されていればそれを使い、なければデフォルトパスを確認
             ckpt = checkpoint_path if checkpoint_path else "models/checkpoints/trained_brain_v20.pth"
             
             if os.path.exists(ckpt):
-                logger.info(f"📂 Loading trained weights from {ckpt}...")
+                logger.info(f"📂 Attempting to load weights from {ckpt}...")
                 state_dict = torch.load(ckpt, map_location=device)
-                self.model.load_state_dict(state_dict)
-                logger.info("🎉 Weights loaded successfully!")
+                
+                # [Fix] 厳密な読み込みを行い、エラー時は警告を出して続行
+                try:
+                    self.model.load_state_dict(state_dict, strict=True)
+                    logger.info("🎉 Weights loaded successfully!")
+                except RuntimeError as e:
+                    logger.warning(f"⚠️ Weight mismatch detected. Using random weights. Details: {e}")
             else:
                 logger.warning(f"⚠️ Checkpoint not found at {ckpt}. Using random weights.")
 
