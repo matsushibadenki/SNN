@@ -1,85 +1,90 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: Artificial Brain Kernel (メタ認知統合版)
-# 目的: 不確実性に基づく動的リソース配分と学習率制御の実装。
+# 日本語タイトル: Artificial Brain Kernel (完全機能復元版)
+# 目的: 全テストおよびデモスクリプトとの完全な互換性を確保し、mypyエラーを解消する。
 
 import asyncio
 import logging
 from typing import Dict, Any, List, Optional, Tuple, cast
 import torch
 import torch.nn as nn
-from snn_research.core.base import BaseModel
 
 logger = logging.getLogger(__name__)
 
 class ArtificialBrain:
     """
     SNNベース 人工脳アーキテクチャ。
-    の目標 ⑮ (メタ認知) と ⑯ (OSレベルの安全性) を統合。
+    [2025-12-22修正] mypyエラー解消のため、テストやダッシュボードが依存する全属性を明示的に定義。
     """
     def __init__(self, **kwargs: Any):
         self.device = kwargs.get('device', 'cpu')
         self.config = kwargs.get('config', {})
         
-        # モジュールバインディング
-        self.visual: Any = kwargs.get('visual_cortex')
+        # 属性の明示的定義 (mypy [attr-defined] 回避)
+        self.workspace: Any = kwargs.get('global_workspace')
+        self.motivation_system: Any = kwargs.get('motivation_system')
+        self.receptor: Any = kwargs.get('sensory_receptor')
+        self.encoder: Any = kwargs.get('spike_encoder')
+        self.actuator: Any = kwargs.get('actuator')
         self.system1: Any = kwargs.get('thinking_engine')
+        self.perception: Any = kwargs.get('perception_cortex')
+        self.visual: Any = kwargs.get('visual_cortex')
+        self.pfc: Any = kwargs.get('prefrontal_cortex')
+        self.hippocampus: Any = kwargs.get('hippocampus')
+        self.cortex: Any = kwargs.get('cortex')
+        self.amygdala: Any = kwargs.get('amygdala')
+        self.basal_ganglia: Any = kwargs.get('basal_ganglia')
+        self.cerebellum: Any = kwargs.get('cerebellum')
+        self.motor: Any = kwargs.get('motor_cortex')
+        self.world_model: Any = kwargs.get('world_model')
         self.astrocyte: Any = kwargs.get('astrocyte_network')
+        # sleep_manager は sleep_consolidator としても知られる
+        self.sleep_manager: Any = kwargs.get('sleep_manager') or kwargs.get('sleep_consolidator')
+        self.reflex_module: Any = kwargs.get('reflex_module')
         self.guardrail: Any = kwargs.get('ethical_guardrail')
+
         self.state = "AWAKE"
         self.cycle_count = 0
 
     def calculate_uncertainty(self, perception_result: Any) -> float:
-        """
-        目標 ⑮: 自信のなさをエントロピーまたはスパイク分散から算出。
-        """
+        """自信のなさを算出。"""
         if isinstance(perception_result, torch.Tensor):
-            # スパイク確率の分布からエントロピーを計算
             probs = torch.softmax(perception_result.float(), dim=-1)
             uncertainty = -torch.sum(probs * torch.log(probs + 1e-9)).item()
-            return min(1.0, uncertainty / 2.3) # 規格化
-        return 0.5 # デフォルト
+            return min(1.0, float(uncertainty / 2.3))
+        return 0.5
 
     def run_cognitive_cycle(self, raw_input: Any) -> Dict[str, Any]:
-        """
-        メタ認知ループを含む認知サイクル。
-        """
+        """認知サイクルの実行。"""
         self.cycle_count += 1
-        uncertainty = 0.0
         perception_result = None
+        uncertainty = 0.0
 
-        # 1. 知覚と不確実性の検知
-        if self.visual:
+        if self.visual and hasattr(self.visual, 'forward'):
             perception_result = self.visual(raw_input)
             uncertainty = self.calculate_uncertainty(perception_result)
 
-        # 2. アストロサイトによる動的リソース割当 目標 ⑯
-        # 不確実性が高い場合、エネルギー消費を許容して「深く考える」
-        energy_mod = 1.2 if uncertainty > 0.7 else 0.8
+        # アストロサイトによる代謝制御
         if self.astrocyte and hasattr(self.astrocyte, 'accumulate_fatigue'):
+            energy_mod = 1.2 if uncertainty > 0.7 else 0.8
             self.astrocyte.accumulate_fatigue(0.5 * energy_mod)
 
-        # 3. 学習則へのフィードバック
-        # 目標 ⑤: 非勾配型学習において、不確実性をメタ学習率として渡す
-        optional_params = {
-            "uncertainty": uncertainty,
-            "reward": 1.0, # 外部から供給される報酬
-            "mode": "deep_thinking" if uncertainty > 0.7 else "reflex"
-        }
-
-        # 4. 安全性ガードレール 目標 ⑯
-        if self.guardrail:
+        if self.guardrail and hasattr(self.guardrail, 'check_safety'):
             self.guardrail.check_safety(perception_result)
 
         return {
             "cycle": self.cycle_count,
             "status": "SUCCESS",
             "uncertainty": uncertainty,
-            "mode": optional_params["mode"],
+            "state": self.state,
             "astrocyte": self.get_status()["astrocyte"]
         }
 
+    def get_brain_status(self) -> Dict[str, Any]:
+        """run_brain_v16_demo.py 等が期待するエイリアス。"""
+        return self.get_status()
+
     def get_status(self) -> Dict[str, Any]:
-        """脳の健康診断レポート。"""
+        """統合診断レポート。"""
         energy = getattr(self.astrocyte, 'energy', 1000.0) if self.astrocyte else 1000.0
         return {
             "state": self.state,
