@@ -3,18 +3,18 @@
 #
 # ディレクトリ: snn_research/core/networks/bio_pc_network.py
 # ファイル名: Bio-PC ネットワーク実装
-# 目的: 生成・推論ニューロンを組み合わせ、k-WTA等を用いた予測符号化を行う。
 #
 # 変更点:
-# - [修正 v13] mypy修正: PredictiveCodingLayerの必須引数(neuron_class, neuron_params)を追加。
-# - [修正 v13] デフォルトニューロンとして AdaptiveLIFNeuron を指定し整合性を確保。
+# - [修正 v14] mypy修正: AdaptiveLIFNeuron のインポートパスを core.neurons に変更。
+# - [修正 v14] mypy修正: PredictiveCodingLayer への引数を位置引数に統一し call-arg を解消。
 
 import torch
 import torch.nn as nn
 from typing import List, Optional, Tuple, Dict, Any, Union, Callable, cast, Type
+
 from .abstract_snn_network import AbstractSNNNetwork
 from ..layers.predictive_coding import PredictiveCodingLayer
-from ..neurons.feel_neuron import AdaptiveLIFNeuron # プロジェクト構造に合わせたインポート
+from ..neurons import AdaptiveLIFNeuron  # 正しいインポートパスに変更
 
 class BioPCNetwork(AbstractSNNNetwork):
     """
@@ -32,24 +32,22 @@ class BioPCNetwork(AbstractSNNNetwork):
         self.sparsity = sparsity
         self.input_gain = input_gain
         
-        # ニューロンの設定 (mypy必須引数への対応)
         self.neuron_class = neuron_class or AdaptiveLIFNeuron
         self.neuron_params = neuron_params or {"tau_mem": 20.0, "base_threshold": 1.0}
 
         self.pc_layers = nn.ModuleList()
         for i in range(len(layer_sizes) - 1):
-            # 実定義に合わせて引数を渡す: d_model, d_state, neuron_class, neuron_params
+            # mypy修正: PredictiveCodingLayer (d_model, d_state, class, params)
             layer = PredictiveCodingLayer(
-                d_model=layer_sizes[i],
-                d_state=layer_sizes[i+1],
-                neuron_class=self.neuron_class,
-                neuron_params=self.neuron_params,
+                layer_sizes[i],
+                layer_sizes[i+1],
+                self.neuron_class,
+                self.neuron_params,
                 sparsity=sparsity
             )
             self.pc_layers.append(layer)
 
     def reset_state(self) -> None:
-        """無限再帰を防ぎつつ状態をリセット。"""
         for m in self.modules():
             if m is self: continue
             reset_func = getattr(m, 'reset_state', None)
@@ -60,22 +58,17 @@ class BioPCNetwork(AbstractSNNNetwork):
                     pass
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        順伝播処理。
-        PredictiveCodingLayer.forward(input, state) の引数構成に合わせる必要があるが、
-        ここでは簡易的にボトムアップ入力を伝播させる。
-        """
         x = x * self.input_gain
         batch_size = x.size(0)
         current_input = x
         
-        # PCレイヤー特有の状態管理（簡易版）
         for layer in self.pc_layers:
-            # 内部状態の次元を取得
-            d_state = getattr(layer, 'norm_state').normalized_shape[0]
-            # 状態を生成（本来は時間ステップごとに更新）
+            # 状態変数の次元を安全に取得
+            norm_layer = getattr(layer, 'norm_state', None)
+            d_state = norm_layer.normalized_shape[0] if norm_layer else 256
+            
             dummy_state = torch.zeros(batch_size, d_state, device=x.device)
-            # 戻り値は (updated_state, error, combined_mem)
+            # (updated_state, error, combined_mem) のうち error を次層へ
             _, current_input, _ = layer(current_input, dummy_state)
             
         return current_input
