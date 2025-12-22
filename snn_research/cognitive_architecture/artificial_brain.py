@@ -3,11 +3,10 @@
 #
 # ディレクトリ: snn_research/cognitive_architecture/
 # ファイル名: 人工脳コア・アーキテクチャ
-# 目的: Global Workspace理論に基づき、皮質、海馬、基底核等の各モジュールを統合制御する。
 #
 # 変更点:
-# - [修正 v10] mypy修正: PerceptionCortex を nn.Module 呼び出し (forward) に統一。
-# - [修正 v10] 依存関係の注入と型キャストを強化し、BasalGanglia との整合性を確保。
+# - [修正 v11] mypy修正: PerceptionCortex.perceive を明示的に呼び出し。
+# - [修正 v11] mypy修正: 戻り値辞書から 'features' キーを抽出して後続へ渡す。
 
 import torch
 import torch.nn as nn
@@ -31,8 +30,7 @@ class ArtificialBrain(nn.Module):
         self.workspace = GlobalWorkspace()
         self.motivation_system = IntrinsicMotivationSystem()
         
-        # 依存関係を持つコンポーネントの初期化
-        self.perception = PerceptionCortex(num_neurons=256)
+        self.perception = PerceptionCortex(num_neurons=784, feature_dim=256)
         self.amygdala = Amygdala()
         self.hippocampus = Hippocampus()
         self.cortex = Cortex()
@@ -51,23 +49,21 @@ class ArtificialBrain(nn.Module):
         self.cycle_count += 1
         
         if isinstance(sensory_input, str):
-            sensory_tensor = torch.randn(1, 256, device=self.get_device()) 
+            sensory_tensor = torch.randn(1, 784, device=self.get_device()) 
         else:
             sensory_tensor = sensory_input
 
-        # 1. 知覚処理 (mypy修正: nn.Moduleとして直接呼び出し)
-        perceptual_info = self.perception(sensory_tensor)
+        # 1. 知覚処理 (mypy修正: perceive メソッドを使用)
+        # 戻り値は {'features': tensor}
+        perception_result = self.perception.perceive(sensory_tensor)
+        perceptual_info = perception_result.get("features", torch.zeros(256))
         
         # 2. ワークスペース集約
-        # GlobalWorkspaceに実装されている可能性が高いメソッドを順次確認
-        for method_name in ['update', 'add_content', 'receive_sensory_info']:
+        for method_name in ['add_content', 'update', 'receive_sensory_info']:
             method = getattr(self.workspace, method_name, None)
             if callable(method):
-                try:
-                    method("sensory", perceptual_info)
-                    break
-                except TypeError:
-                    continue
+                method("sensory", perceptual_info)
+                break
         
         emotional_val = self.amygdala.process(perceptual_info)
         
@@ -80,17 +76,13 @@ class ArtificialBrain(nn.Module):
         workspace_list = cast(List[Dict[str, Any]], summary if isinstance(summary, list) else [summary])
         selected_action = self.basal_ganglia.select_action(workspace_list)
         
-        # 5. 運動出力 (mypy修正: generate_signal 等の実定義への対応)
-        motor_signal_func = getattr(self.motor, 'generate_signal', None)
-        if callable(motor_signal_func):
-            motor_output = motor_signal_func(selected_action)
-        else:
-            motor_output = torch.zeros(1)
+        # 5. 運動出力 (mypy修正: 存在するメソッド generate_signal へ)
+        motor_func = getattr(self.motor, 'generate_signal', None)
+        motor_output = motor_func(selected_action) if callable(motor_func) else torch.zeros(1)
 
         # 6. ブロードキャスト
-        broadcast_func = getattr(self.workspace, 'broadcast', None)
-        if callable(broadcast_func):
-            broadcast_func()
+        if hasattr(self.workspace, 'broadcast'):
+            self.workspace.broadcast()
         
         return {
             "cycle": self.cycle_count,
@@ -100,7 +92,6 @@ class ArtificialBrain(nn.Module):
         }
 
     def get_brain_status(self) -> Dict[str, Any]:
-        """脳の状態を取得。"""
         drive_attr = getattr(self.motivation_system, 'get_current_drive', 0.0)
         motivation_val = drive_attr() if callable(drive_attr) else drive_attr
         return {
