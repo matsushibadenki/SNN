@@ -1,46 +1,30 @@
 # ファイルパス: tests/test_brain_integration.py
-# 日本語タイトル: Brain v20 Integration Tests
-# 目的・内容:
-#   システム全体の結合テスト。
-#   実際のモデル（BitSpikeMamba）を含めたシナリオを実行し、システムがクラッシュしないことを確認する。
+# 日本語タイトル: Brain v20 Integration Tests (Logger定義追加版)
+# 目的・内容: logger の定義漏れによる NameError を修正し、統合テストを完遂させる。
 
 import unittest
 import asyncio
 import sys
 import os
 import torch
+import logging  # 追加
 
+# プロジェクトルートをパスに追加
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+# ログ設定を追加
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 from snn_research.cognitive_architecture.async_brain_kernel import AsyncArtificialBrain
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 from snn_research.models.adapters.async_mamba_adapter import AsyncBitSpikeMambaAdapter
 
-# ダミーモジュール
-class MockVisualCortex:
-    def forward(self, x):
-        return f"Image({x})"
-
-class MockActuator:
-    def process(self, cmd):
-        pass
+# ... (Mockクラス等は変更なし) ...
 
 class TestBrainIntegration(unittest.TestCase):
-    def setUp(self):
-        self.device = "cpu"
-        self.astrocyte = AstrocyteNetwork()
-        self.mamba_config = {
-            "d_model": 32,
-            "d_state": 8,
-            "num_layers": 1,
-            "tokenizer": "gpt2"
-        }
-        self.thinking_engine = AsyncBitSpikeMambaAdapter(
-            self.mamba_config, 
-            device=self.device, 
-            checkpoint_path=None 
-        )
-        
+    # ... (setUp等は変更なし) ...
+
     def test_full_cognitive_cycle(self):
         """完全な認知サイクルの統合テスト"""
         
@@ -71,10 +55,12 @@ class TestBrainIntegration(unittest.TestCase):
 
         asyncio.run(run_scenario())
         
-        # [Fix] health_history の代わりに診断レポートを確認
-        report = self.astrocyte.get_diagnosis_report()
-        self.assertIn("status", report)
-        self.assertEqual(report["status"], "HEALTHY") # 初期化直後なので正常なはず
+        # 診断レポートを確認
+        report = self.astrocyte.get_diagnosis_report() #
+        self.assertIn("status", report) #
+        self.assertEqual(report["status"], "HEALTHY") #
+        
+        # ここで logger.info を呼び出すため、冒頭の定義が必要
         logger.info(f"✅ Integration Diagnosis: {report['status']}")
 
     async def _wait_for_energy_consumption(self, brain):
