@@ -61,7 +61,7 @@ class TestBrainIntegration(unittest.TestCase):
             # 入力送信
             await brain.receive_input("Hello Test")
             
-            # 処理が流れるのを待つ（タイムアウト付き）
+            # 処理が流れるのを待つ
             try:
                 await asyncio.wait_for(self._wait_for_energy_consumption(brain), timeout=10.0)
             except asyncio.TimeoutError:
@@ -71,10 +71,11 @@ class TestBrainIntegration(unittest.TestCase):
 
         asyncio.run(run_scenario())
         
-        # アストロサイトの履歴から活動があったか確認
-        diagnosis = self.astrocyte.get_diagnosis_report()
-        # 活動していればエネルギーが減っている、または履歴が残っているはず
-        self.assertGreater(len(self.astrocyte.health_history) + 1, 0) # 少なくとも初期化されている
+        # [Fix] health_history の代わりに診断レポートを確認
+        report = self.astrocyte.get_diagnosis_report()
+        self.assertIn("status", report)
+        self.assertEqual(report["status"], "HEALTHY") # 初期化直後なので正常なはず
+        logger.info(f"✅ Integration Diagnosis: {report['status']}")
 
     async def _wait_for_energy_consumption(self, brain):
         """エネルギーが消費される（＝何かが動いた）のを待つ"""
