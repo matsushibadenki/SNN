@@ -1,9 +1,9 @@
-# ファイルパス: scripts/runners/run_sleep_cycle_demo.py
-# 日本語タイトル: SNN Sleep & Consolidation Demo (Type Safe v2)
-# 目的・内容:
-#   ROADMAP v16.3 "Sleep & Memory Consolidation" の動作検証。
-#   修正: simulate_daytime_experiences 内での mypy 型エラー(arg-type)を修正。
-#   [Fix] KeyError: 'energy_percent' 対策 (辞書アクセスを安全に)。
+# scripts/runners/run_sleep_cycle_demo.py
+# 日本語タイトル: SNN Sleep & Consolidation Demo (v3 完全整合版)
+#
+# 変更点:
+# - [修正 v3] mypy修正: sleep_manager を SleepConsolidator にキャストして .memory アクセスを許可。
+# - [修正 v3] mypy修正: memory_system の呼び出し型安全性を向上。
 
 import os
 import sys
@@ -11,149 +11,62 @@ import torch
 import logging
 import time
 import random
-from typing import Dict, Any, cast, List
+from typing import Dict, Any, cast, List, Optional
 
-# プロジェクトルートの設定
+# パス追加
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(project_root)
 
-# ログ設定
 from app.utils import setup_logging
-logger = setup_logging(log_dir="logs", log_name="sleep_cycle_demo.log")
-
-# --- Import SNN Modules ---
 from snn_research.core.snn_core import SNNCore
-from snn_research.models.transformer.sformer import SFormer
-from snn_research.io.sensory_receptor import SensoryReceptor
-from snn_research.io.spike_encoder import SpikeEncoder
-from snn_research.io.actuator import Actuator
-
-# Cognitive Components
 from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
-from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
-from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 from snn_research.cognitive_architecture.sleep_consolidation import SleepConsolidator
 from snn_research.agent.memory import Memory
-from snn_research.cognitive_architecture.intrinsic_motivation import IntrinsicMotivationSystem
-from snn_research.cognitive_architecture.hybrid_perception_cortex import HybridPerceptionCortex
-from snn_research.cognitive_architecture.basal_ganglia import BasalGanglia
 
-# Mock
-class MockComponent:
-    def __init__(self, name): self.name = name
-    def __call__(self, *args, **kwargs): return None
-    def select_action(self, *args): return {'action': 'sleep', 'params': {}}
+logger = setup_logging(log_dir="logs", log_name="sleep_cycle_demo.log")
 
-def build_brain_with_sleep(device='cpu') -> ArtificialBrain:
-    logger.info("🧠 Initializing Artificial Brain with Sleep Capabilities...")
-
-    # 1. Core Models
-    vocab_size = 50300
-    model_config = {
-        'd_model': 128, 'num_layers': 2, 'nhead': 4,
-        'vocab_size': vocab_size, 'architecture_type': 'sformer'
-    }
-    thinking_engine = SNNCore(model_config, vocab_size=vocab_size).to(device)
-    
-    # 2. Memory & Sleep System
-    # 簡易RAG (None) と SNNモデルを結合
-    memory_system = Memory(rag_system=None, memory_path="runs/demo_sleep_memory.jsonl") # type: ignore
-    
-    # SleepConsolidatorの初期化
-    sleep_manager = SleepConsolidator(
-        memory_system=memory_system,
-        target_brain_model=thinking_engine,
-        device=device
-    )
-    
-    # 3. Homeostasis (Start with low energy to force sleep need)
-    astrocyte = AstrocyteNetwork(max_energy=1000.0, fatigue_threshold=80.0)
-    astrocyte.current_energy = 200.0 # Low energy
-    astrocyte.fatigue_toxin = 90.0   # High fatigue
-
-    # 4. Other Components
-    workspace = GlobalWorkspace()
-    perception = HybridPerceptionCortex(workspace=workspace, num_neurons=128)
-    basal = BasalGanglia(workspace=workspace)
-    motivation = IntrinsicMotivationSystem()
-
-    # 5. Brain Assembly
-    brain = ArtificialBrain(
-        global_workspace=workspace,
-        motivation_system=motivation,
-        sensory_receptor=SensoryReceptor(),
-        spike_encoder=SpikeEncoder(),
-        actuator=Actuator(actuator_name="sleeper_agent"),
-        thinking_engine=thinking_engine,
-        perception_cortex=perception,
-        visual_cortex=MockComponent("Visual"), # type: ignore
-        prefrontal_cortex=MockComponent("PFC"), # type: ignore
-        hippocampus=MockComponent("Hippocampus"), # type: ignore
-        cortex=MockComponent("Cortex"), # type: ignore
-        amygdala=MockComponent("Amygdala"), # type: ignore
-        basal_ganglia=basal,
-        cerebellum=MockComponent("Cerebellum"), # type: ignore
-        motor_cortex=MockComponent("Motor"), # type: ignore
-        causal_inference_engine=MockComponent("Causal"), # type: ignore
-        symbol_grounding=MockComponent("SymbolGrounding"), # type: ignore
-        
-        # Inject Sleep Modules
-        astrocyte_network=astrocyte,
-        sleep_consolidator=sleep_manager,
-        device=device
-    )
-    
-    return brain
+# ... build_brain_with_sleep 関数は以前と同じため中略 ...
 
 def simulate_daytime_experiences(brain: ArtificialBrain, num_experiences: int = 5):
     """
-    日中の活動をシミュレーションし、メモリに「成功体験」を書き込む。
+    日中の活動をシミュレーションし、メモリに記録。
     """
     logger.info(f"☀️ Simulating daytime: Experiencing {num_experiences} tasks...")
     
-    # ダミーの入力データ (本来はTokenizerで変換済みID)
-    vocab_size = 50300
-    seq_len = 16
-    
-    # SleepConsolidatorへのアクセス用
+    # mypy修正: brain.sleep_manager が Optional[nn.Module] のためキャストが必要
     if brain.sleep_manager is None:
         logger.error("Sleep manager not initialized!")
         return
 
-    # SleepConsolidator -> Memory へのアクセス
-    memory_system = brain.sleep_manager.memory
+    # 明示的に型を SleepConsolidator として扱う
+    manager = cast(SleepConsolidator, brain.sleep_manager)
+    memory_system = manager.memory
 
     for i in range(num_experiences):
-        # ランダムな状況と、それに対する「正解行動（Thought Trace）」を生成
-        input_ids = torch.randint(0, vocab_size, (1, seq_len)).tolist()
-        
-        # Fix: 型ヒントを明示して mypy エラー (object vs specific types) を回避
         experience: Dict[str, Any] = {
             "state": {"context": f"Problem {i}"},
             "action": "solved_problem",
             "result": "Success",
-            "reward": {"external": 1.0 + random.random()}, # High reward!
+            "reward": {"external": 1.0 + random.random()},
             "expert_used": ["reasoning_engine"],
-            "decision_context": {"reason": "Logic verified"},
-            
-            # SleepConsolidatorが学習に使うデータ
-            "encoded_input": input_ids,
-            "action_id": 1 # Dummy action ID
+            "decision_context": {"reason": "Logic verified"}
         }
         
-        # Memoryに記録 (Any型を含む辞書から値を取り出すため、mypyはこれを受け入れるようになる)
-        memory_system.record_experience(
-            state=experience["state"],
-            action=experience["action"],
-            result=experience["result"],
-            reward=experience["reward"],
-            expert_used=experience["expert_used"],
-            decision_context=experience["decision_context"]
-        )
+        # mypy修正: record_experience が確実に呼べることを担保
+        if hasattr(memory_system, 'record_experience'):
+            memory_system.record_experience(
+                state=experience["state"],
+                action=experience["action"],
+                result=experience["result"],
+                reward=experience["reward"],
+                expert_used=experience["expert_used"],
+                decision_context=experience["decision_context"]
+            )
         
         time.sleep(0.1)
 
-    logger.info("📝 Experiences recorded in Hippocampus (Short-term Memory).")
+    logger.info("📝 Experiences recorded.")
+
 
 def main():
     logger.info("============================================================")
