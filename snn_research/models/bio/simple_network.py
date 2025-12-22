@@ -1,46 +1,110 @@
 # ファイルパス: snn_research/models/bio/simple_network.py
-# 日本語タイトル: 生物学的SNN シンプルネットワーク (リファクタリング版)
-# 目的: CausalTrace学習則との連携におけるmypyエラーを解消し、解析機能を強化。
+# Title: Bio-Inspired SNN (Interface Sync & Mypy Fixed)
+# Description: BioSNNのコンストラクタとupdate_weightsの引数定義を明確化し、型安全性を確保。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, List, Optional, Tuple, Union
+from typing import Dict, Any, Optional, Tuple, List, cast
+import copy
+import logging
 
-class BioSNN(nn.Module):
+from .lif_neuron_legacy import BioLIFNeuron
+from snn_research.core.neurons import AdaptiveLIFNeuron, IzhikevichNeuron
+from snn_research.learning_rules.base_rule import BioLearningRule
+from snn_research.learning_rules.causal_trace import CausalTraceCreditAssignmentEnhancedV2
+from snn_research.core.synapse_dynamics import apply_probabilistic_transmission
+from snn_research.core.base import BaseModel
+
+logger = logging.getLogger(__name__)
+
+class BioSNN(BaseModel):
     """
-    生物学的妥当性を重視したSNNネットワーク。
-    学習則と密接に連携し、因果貢献度の可視化などをサポート。
+    生物学的学習則を用いたSNNモデル。
     """
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(
+        self, 
+        layer_sizes: List[int], 
+        neuron_params: Dict[str, Any], 
+        synaptic_rule: BioLearningRule, 
+        homeostatic_rule: Optional[BioLearningRule] = None, 
+        sparsification_config: Optional[Dict[str, Any]] = None,
+        synaptic_reliability: float = 0.9,
+        neuron_type: str = "adaptive_lif"
+    ):
         super().__init__()
-        self.config = config
-        # レイヤー定義や学習則の初期化ロジック (既存機能を維持)
-        # self.layers = ...
-        # self.learning_rules = ...
-
-    def update_weights(self, layer_idx: int, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, 
-                       reward: float, uncertainty: float):
-        """
-        特定のレイヤーの重みを更新し、因果的貢献度を抽出する。
-        """
-        # (省略: レイヤーと学習則の取得処理)
-        # layer_synaptic_rule = self.learning_rules[layer_idx]
+        self.layer_sizes = layer_sizes
+        # 設定の安全な取得
+        config = sparsification_config or {}
+        self.sparsification_enabled = config.get("enabled", False)
+        self.contribution_threshold = config.get("contribution_threshold", 0.0)
+        self.synaptic_reliability = synaptic_reliability
         
-        # ここでエラーが発生していた箇所を修正
-        layer_synaptic_rule: Any = None # 実際には初期化されたインスタンス
-        
-        # 修正案: メソッドがあるか、属性があるかを安全にチェックする
-        causal_contribution = None
-        if hasattr(layer_synaptic_rule, 'get_causal_contribution'):
-            causal_contribution = layer_synaptic_rule.get_causal_contribution()
-        elif hasattr(layer_synaptic_rule, 'causal_contribution'):
-            causal_contribution = layer_synaptic_rule.causal_contribution
+        self.layers = nn.ModuleList()
+        self.weights = nn.ParameterList()
+        self.synaptic_rules: List[BioLearningRule] = []
+        self.homeostatic_rules: List[Optional[BioLearningRule]] = []
 
-        # 因果貢献度を使用した解析ロジック (既存機能)
-        if causal_contribution is not None:
-            # 解析やデバッグ表示など
-            pass
+        def create_neuron(size: int) -> nn.Module:
+            p = neuron_params.copy()
+            if neuron_type == "adaptive_lif":
+                if 'v_threshold' in p:
+                    p.setdefault('base_threshold', p.pop('v_threshold'))
+                valid_keys = [
+                    'tau_mem', 'base_threshold', 'adaptation_strength', 
+                    'target_spike_rate', 'noise_intensity', 'threshold_decay', 
+                    'threshold_step', 'v_reset', 'homeostasis_rate'
+                ]
+                return AdaptiveLIFNeuron(features=size, **{k: v for k, v in p.items() if k in valid_keys})
+            elif neuron_type == "izhikevich":
+                return IzhikevichNeuron(features=size, **{k: v for k, v in p.items() if k in ['a', 'b', 'c', 'd', 'dt']})
+            return BioLIFNeuron(n_neurons=size, neuron_params=p)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # 順伝播ロジック (既存機能を維持)
-        return x
+        for i in range(len(layer_sizes) - 1):
+            self.layers.append(create_neuron(layer_sizes[i+1]))
+            w_init = torch.abs(torch.randn(layer_sizes[i+1], layer_sizes[i]) * (1.0 / (layer_sizes[i] ** 0.5))) * 0.5
+            self.weights.append(nn.Parameter(w_init))
+            self.synaptic_rules.append(copy.deepcopy(synaptic_rule))
+            self.homeostatic_rules.append(copy.deepcopy(homeostatic_rule) if homeostatic_rule else None)
+
+    def forward(self, input_spikes: torch.Tensor) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+        hidden_spikes_history = []
+        current_spikes = input_spikes
+        for i, layer in enumerate(self.layers):
+            effective_weight = apply_probabilistic_transmission(self.weights[i], self.synaptic_reliability, training=self.training)
+            current = torch.nn.functional.linear(current_spikes, effective_weight)
+            out = layer(current)
+            current_spikes = out[0] if isinstance(out, tuple) else out
+            hidden_spikes_history.append(current_spikes)
+        return current_spikes, hidden_spikes_history
+
+    def update_weights(self, all_layer_spikes: List[torch.Tensor], optional_params: Optional[Dict[str, Any]] = None):
+        """重み更新ロジック。"""
+        if not self.training: return
+        backward_credit: Optional[torch.Tensor] = None
+        current_params = (optional_params or {}).copy()
+
+        for i in reversed(range(len(self.weights))):
+            pre_spikes, post_spikes = all_layer_spikes[i], all_layer_spikes[i+1]
+            current_params["causal_credit"] = backward_credit.mean().item() if backward_credit is not None else 0.0
+            
+            # シナプス可塑性更新
+            dw_synaptic, backward_credit = self.synaptic_rules[i].update(
+                pre_spikes=pre_spikes, post_spikes=post_spikes, weights=self.weights[i], optional_params=current_params
+            )
+            
+            # 恒常性維持更新
+            dw_homeo = torch.zeros_like(self.weights[i])
+            if self.homeostatic_rules[i]:
+                res, _ = self.homeostatic_rules[i].update(pre_spikes=pre_spikes, post_spikes=post_spikes, weights=self.weights[i], optional_params=optional_params)
+                if res is not None: dw_homeo = res
+
+            dw = dw_synaptic + dw_homeo
+
+            # スパース化 ⑮
+            if self.sparsification_enabled and hasattr(self.synaptic_rules[i], 'get_causal_contribution'):
+                contrib = self.synaptic_rules[i].get_causal_contribution()
+                if contrib is not None: dw = dw * (contrib > self.contribution_threshold).float()
+
+            with torch.no_grad():
+                self.weights[i].add_(dw)
+                self.weights[i].clamp_(min=-2.0, max=2.0)
