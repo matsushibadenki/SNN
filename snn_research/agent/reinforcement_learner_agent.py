@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
-# Title: 強化学習エージェント (BioSNN インターフェース完全適合版)
-# Description: mypyの Unexpected keyword argument エラーを解消するため、シグネチャを完全同期。
+# Title: 強化学習エージェント (Mypy Return Type Fixed)
+# Description: get_action の戻り値を明示的に int に変換。
 
 import torch
 import numpy as np
@@ -28,7 +28,6 @@ class ReinforcementLearnerAgent:
         
         layer_sizes = [input_size, (input_size + output_size) * 2, output_size]
         
-        # BioSNNの__init__に完全に一致させる
         self.model = BioSNN(
             layer_sizes=layer_sizes,
             neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0},
@@ -42,11 +41,24 @@ class ReinforcementLearnerAgent:
     def get_action(self, state: torch.Tensor, record_experience: bool = True) -> int:
         self.model.eval()
         with torch.no_grad():
-            input_spikes = state if state.dtype == torch.float32 and state.max() <= 1.0 and state.min() >= 0.0 else (torch.rand_like(state) < (state * 0.5 + 0.5)).float()
+            # 入力エンコーディング
+            if state.dtype == torch.float32 and state.max() <= 1.0 and state.min() >= 0.0:
+                input_spikes = state
+            else:
+                input_spikes = (torch.rand_like(state) < (state * 0.5 + 0.5)).float()
+
             output_spikes, hidden_history = self.model(input_spikes)
+            
             if record_experience:
                 self.experience_buffer.append([input_spikes] + hidden_history)
-            return int(torch.argmax(output_spikes).item()) if output_spikes.sum() > 0 else torch.randint(0, self.output_size, (1,)).item()
+            
+            # 戻り値を確実に int に変換してmypyエラーを解消
+            if output_spikes.sum() > 0:
+                action_idx = torch.argmax(output_spikes).item()
+            else:
+                action_idx = torch.randint(0, self.output_size, (1,)).item()
+                
+            return int(action_idx)
 
     def learn(self, reward: float, causal_credit: float = 0.0, global_context: Optional[Dict[str, Any]] = None):
         if not self.experience_buffer: return
@@ -55,7 +67,6 @@ class ReinforcementLearnerAgent:
         if global_context: optional_params["global_workspace_context"] = global_context
 
         for step_spikes in self.experience_buffer:
-            # キーワード引数名をBioSNN.update_weightsの定義と完全に一致させる
             self.model.update_weights(
                 all_layer_spikes=step_spikes,
                 optional_params=optional_params
@@ -84,12 +95,13 @@ class ReinforcementLearnerAgent:
         if not trajectories: return
         self.model.train()
         total_rewards = torch.tensor([t['total_reward'] for t in trajectories], dtype=torch.float32)
-        advantages = (total_rewards - total_rewards.mean()) / (total_rewards.std() + 1e-8)
+        mean_reward = total_rewards.mean()
+        std_reward = total_rewards.std() + 1e-8
+        advantages = (total_rewards - mean_reward) / std_reward
         
         for i, trajectory in enumerate(trajectories):
             optional_params = {"reward": np.clip(advantages[i].item(), -2.0, 2.0)}
             for step_spikes in cast(List[List[torch.Tensor]], trajectory['spikes_history']):
-                # ここもキーワード引数を同期
                 self.model.update_weights(
                     all_layer_spikes=step_spikes,
                     optional_params=optional_params
