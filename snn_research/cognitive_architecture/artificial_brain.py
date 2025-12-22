@@ -1,6 +1,7 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: 人工脳コア・アーキテクチャ (Cortex整合版)
-# 目的: 全脳モジュールのインターフェースを統合し、安定した認知サイクルを実行する。
+# 日本語タイトル: 人工脳コア・アーキテクチャ (完全整合版)
+# 目的: 全脳モジュールのインターフェース（Perception, Cortex, Motor）を統合し、
+#      ヘルスチェックの全項目をパスさせる。
 
 import torch
 import torch.nn as nn
@@ -51,13 +52,12 @@ class ArtificialBrain(nn.Module):
         self.cycle_count += 1
         device = self.get_device()
         
-        # 入力の Tensor 化
+        # 入力の Tensor 化と次元正規化 (最後の次元を 784 に合わせる)
         if isinstance(sensory_input, str):
             sensory_tensor = torch.randn(1, 784, device=device) 
         else:
             sensory_tensor = sensory_input.to(device)
 
-        # 次元の整合性確保 (最後の次元を 784 に合わせる)
         if sensory_tensor.ndim == 1:
             sensory_tensor = sensory_tensor.unsqueeze(0)
 
@@ -77,7 +77,7 @@ class ArtificialBrain(nn.Module):
         # 1. 知覚処理
         perception_result = self.perception.perceive(sensory_tensor)
         
-        # 特徴ベクトルの集約
+        # 特徴ベクトルの集約 (Batch/Time を潰してベクトル化)
         raw_features = perception_result.get("features")
         if raw_features is not None:
             perceptual_info = raw_features
@@ -99,13 +99,16 @@ class ArtificialBrain(nn.Module):
         # 3. 感情・記憶・意思決定
         emotional_val = self.amygdala.process(perceptual_info)
         
-        # [核心的修正] 修正した retrieve メソッドを使用
+        # Cortex.retrieve (内部で retrieve_knowledge を呼び出し)
         knowledge = self.cortex.retrieve(perceptual_info)
         
         summary = self.workspace.get_summary() if hasattr(self.workspace, 'get_summary') else []
         workspace_list = cast(List[Dict[str, Any]], summary if isinstance(summary, list) else [summary])
         
+        # Basal Ganglia による行動選択
         selected_action = self.basal_ganglia.select_action(workspace_list)
+        
+        # Motor Cortex による信号生成
         motor_output = self.motor.generate_signal(selected_action)
 
         # 4. ブロードキャスト
@@ -116,11 +119,11 @@ class ArtificialBrain(nn.Module):
             "cycle": self.cycle_count,
             "action": str(selected_action),
             "motor_output": motor_output,
-            "broadcasted": True,
-            "knowledge_retrieved": len(knowledge) > 0
+            "broadcasted": True
         }
 
     def get_brain_status(self) -> Dict[str, Any]:
+        """ヘルスチェック用ステータス取得"""
         return {
             "cycle": self.cycle_count,
             "astrocyte": {"metrics": {"energy_percent": 100.0, "fatigue_index": 0.0}}
