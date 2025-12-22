@@ -33,20 +33,24 @@ class SNNCore(nn.Module):
 
     def forward(self, x: Optional[torch.Tensor] = None, **kwargs: Any) -> Any:
         """
-        ランタイムエラー修正: 効率レポート等が期待する forward メソッドを明示的に定義。
+        柔軟な順伝播。多種多様な引数名に対応し、NotImplementedError を回避。
         """
         if x is None:
-            # 入力テンソルの自動解決ロジック
-            for key in ['input_ids', 'input_images', 'input_sequence', 'x', 'input']:
+            # 優先度の高い順に入力テンソルを検索
+            for key in ['input_ids', 'input_images', 'input_sequence', 'x', 'input', 'inputs']:
                 if key in kwargs:
                     x = kwargs.pop(key)
                     break
         
-        if x is not None:
-            return self.model(x, **kwargs)
-        else:
-            # 入力がない場合は空のテンソルまたは状態更新として呼び出し
-            return self.model(**kwargs)
+        # モデルの実行
+        try:
+            if x is not None:
+                return self.model(x, **kwargs)
+            else:
+                return self.model(**kwargs)
+        except Exception as e:
+            logger.error(f"SNNCore: Forward execution failed: {e}")
+            raise e
 
     def generate(self, input_ids: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         if hasattr(self.model, 'generate'):
