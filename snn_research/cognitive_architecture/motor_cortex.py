@@ -1,14 +1,9 @@
 # ファイルパス: snn_research/cognitive_architecture/motor_cortex.py
-# (修正)
-#
-# Title: Motor Cortex (運動野) モジュール
-#
+# Title: Motor Cortex (運動野) インターフェース統合版
 # Description:
-# - mypyエラーを解消するため、Optional型を明示的にインポート・使用するよう修正。
-# - 人工脳アーキテクチャの「運動層」の最終出力を担うコンポーネント。
-# - 小脳から受け取った一連の精密な運動コマンドを、
-#   実際のアクチュエータを駆動するための具体的な出力信号に変換する。
-# - これにより、抽象的な行動計画が物理的なアクションとして結実する。
+#   - 人工脳アーキテクチャの運動出力を担う。
+#   - ArtificialBrainからの直接呼び出し(generate_signal)に対応。
+#   - 既存のコマンドシーケンス実行機能(execute_commands)も維持。
 
 from typing import List, Dict, Any, Optional
 
@@ -16,11 +11,33 @@ class MotorCortex:
     actuators: List[str]
 
     def __init__(self, actuators: Optional[List[str]] = None):
+        """
+        Args:
+            actuators: 制御対象のアクチュエータリスト。
+        """
         if actuators is None:
             self.actuators = ['output_alpha', 'output_beta']
         else:
             self.actuators = actuators
         print("🧠 運動野モジュールが初期化されました。")
+
+    def generate_signal(self, action: Any) -> List[str]:
+        """
+        選択された行動を具体的な運動信号（ログ文字列）に変換する。
+        ArtificialBrain の run_cognitive_cycle から呼び出される。
+        
+        Args:
+            action: 選択された行動（文字列やIDなど）。
+        
+        Returns:
+            List[str]: 生成された実行ログ。
+        """
+        # 単一の行動をコマンド形式にラップして既存の execute_commands を再利用
+        command_packet = [{
+            'timestamp': 0.0,
+            'command': str(action)
+        }]
+        return self.execute_commands(command_packet)
 
     def execute_commands(self, motor_commands: List[Dict[str, Any]]) -> List[str]:
         """
@@ -34,12 +51,12 @@ class MotorCortex:
         print("🦾 運動野: コマンドシーケンスの実行を開始...")
 
         for command_data in motor_commands:
-            timestamp = command_data.get('timestamp')
-            command = command_data.get('command')
-            target_actuator = self.actuators[0] # 簡易的に割り当て
+            timestamp = command_data.get('timestamp', 0.0)
+            command = command_data.get('command', 'IDLE')
+            # 登録されている最初のアクチュエータを使用
+            target_actuator = self.actuators[0] if self.actuators else "unknown"
 
-            # 実際のハードウェア制御APIをここに記述する
-            # ex: hardware_api.send(target_actuator, command)
+            # 実際のハードウェア制御APIをここに記述可能
             
             log_entry = f"[T={timestamp:.2f}s] ACTUATOR<{target_actuator}>: EXECUTE '{command}'"
             print(f"  - {log_entry}")
