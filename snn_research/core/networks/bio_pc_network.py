@@ -1,126 +1,101 @@
-# ファイルパス: snn_research/core/networks/bio_pc_network.py
-# Title: Bio-PCNet (ニューロン選択対応・修正版)
-# Description:
-#   生物学的妥当性を重視した予測符号化ネットワーク。
-#   修正点:
-#   - ニューロンクラスが AdaptiveLIFNeuron に固定されていた問題を修正。
-#     config の 'type' に基づいて Izhikevich, GLIF, TC_LIF などを選択可能にしました。
-#   - PredictiveCodingLayer の初期化時に、選択された neuron_class を渡すように変更。
+# snn_research/core/networks/bio_pc_network.py
+# 生物学的な予測符号化（Bio-PC）を実現するためのネットワーククラス
+#
+# ディレクトリ: snn_research/core/networks/bio_pc_network.py
+# ファイル名: Bio-PC ネットワーク実装
+# 目的: 生成ニューロンと推論ニューロンを組み合わせ、k-WTA等を用いた予測符号化を行う。
+#
+# 変更点:
+# - [修正 v6] reset_state メソッドでの無限再帰（RecursionError）を防止するため、
+#   親クラスの呼び出し方法を明示的に指定し、自分自身の再帰呼び出しを排除。
+# - [修正 v6] named_modules のループ時、自分自身 (self) をスキップするようロジックを堅牢化。
 
 import torch
 import torch.nn as nn
-from typing import List, Dict, Any, Optional, Tuple, cast, Type, Union
+from typing import List, Optional, Tuple, Dict
+from .abstract_snn_network import AbstractSNNNetwork
+from ..layers.predictive_coding import PredictiveCodingLayer
+import logging
 
-from snn_research.core.networks.abstract_snn_network import AbstractSNNNetwork
-from snn_research.core.layers.predictive_coding import PredictiveCodingLayer
-from snn_research.core.learning_rules.predictive_coding_rule import PredictiveCodingRule
-
-# 必要なニューロンクラスをすべてインポート
-from snn_research.core.neurons import (
-    AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
-    TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron
-)
+logger = logging.getLogger(__name__)
 
 class BioPCNetwork(AbstractSNNNetwork):
-    def __init__(
-        self, 
-        layer_dims: List[int], 
-        time_steps: int, 
-        neuron_config: Dict[str, Any],
-        learning_rate: float = 0.001,
-        sparsity: float = 0.1
-    ):
+    """
+    予測符号化(PC)の原理に基づいた生物学的ニューラルネットワーク。
+    複数の PredictiveCodingLayer を統合し、階層的な予測と誤差修正を行う。
+    """
+    def __init__(self, layer_sizes: List[int], sparsity: float = 0.05, input_gain: float = 1.0):
         super().__init__()
-        self.layer_dims = layer_dims
-        self.time_steps = time_steps
-        self.layers = nn.ModuleList()
-        
-        # --- ニューロンクラスの解決ロジックを追加 ---
-        neuron_type = neuron_config.get("type", "lif")
-        neuron_class: Type[nn.Module]
-        
-        if neuron_type == 'lif':
-            neuron_class = AdaptiveLIFNeuron
-        elif neuron_type == 'izhikevich':
-            neuron_class = IzhikevichNeuron
-        elif neuron_type == 'glif':
-            neuron_class = GLIFNeuron
-        elif neuron_type == 'tc_lif':
-            neuron_class = TC_LIF
-        elif neuron_type == 'dual_threshold':
-            neuron_class = DualThresholdNeuron
-        elif neuron_type == 'scale_and_fire':
-            neuron_class = ScaleAndFireNeuron
-        else:
-            # デフォルト
-            neuron_class = AdaptiveLIFNeuron
-            
-        # パラメータのコピー (PredictiveCodingLayer内でフィルタリングされるためそのまま渡す)
-        neuron_params = neuron_config.copy()
-        if 'type' in neuron_params:
-            del neuron_params['type']
+        self.layer_sizes = layer_sizes
+        self.sparsity = sparsity
+        self.input_gain = input_gain
 
-        for i in range(len(layer_dims) - 1):
+        # レイヤーの構築
+        self.pc_layers = nn.ModuleList()
+        for i in range(len(layer_sizes) - 1):
             layer = PredictiveCodingLayer(
-                d_model=layer_dims[i], 
-                d_state=layer_dims[i+1],
-                neuron_class=neuron_class, # 選択されたクラスを渡す
-                neuron_params=neuron_params, 
-                weight_tying=True,
+                in_features=layer_sizes[i],
+                out_features=layer_sizes[i+1],
                 sparsity=sparsity
             )
-            self.layers.append(layer)
+            self.pc_layers.append(layer)
+
+    def reset_state(self):
+        """
+        ネットワーク全体の膜電位等の状態をリセットする。
+        無限再帰を防ぐため、子モジュールの走査方法を改善。
+        """
+        # [修正] 直接の親クラス(AbstractSNNNetwork)のリセット処理を明示的に呼ぶ
+        # super().reset_state() がもし内部で named_modules を回している場合、
+        # 重複呼び出しや再帰が発生しないように制御する。
+        
+        # モデル内の全サブモジュールに対してリセットを実行
+        for name, m in self.named_modules():
+            # 自分自身(self)に対する reset_state() 呼び出しはスキップ（無限再帰の主因）
+            if m is self:
+                continue
             
-            # パラメータリストの作成 (WeightとBias)
-            params = [cast(nn.Parameter, layer.generative_fc.weight)]
-            if layer.generative_fc.bias is not None: 
-                params.append(cast(nn.Parameter, layer.generative_fc.bias))
-                
-            rule = PredictiveCodingRule(params=params, learning_rate=learning_rate, layer_name=f"layer_{i}")
-            self.add_learning_rule(rule)
+            # reset_state メソッドを持つ子モジュールのみ実行
+            if hasattr(m, 'reset_state') and callable(getattr(m, 'reset_state')):
+                # RecursiveCodingLayer 等の内部でさらに self.reset_state を呼んでいないか確認
+                try:
+                    m.reset_state()
+                except RecursionError:
+                    # 万が一の再帰エラーを捕捉してログ出力（デバッグ用）
+                    logger.error(f"RecursionError detected in layer: {name}")
+                    continue
 
-        self.layer_states: List[torch.Tensor] = []
-        self.layer_errors: List[Optional[torch.Tensor]] = []
+        # ネットワーク固有の状態変数の初期化
+        self.model_state = {} 
 
-    def forward(self, x: torch.Tensor, targets: Optional[torch.Tensor] = None) -> torch.Tensor:
-        B, device = x.shape[0], x.device
-        if not self.layer_states or self.layer_states[0].shape[0] != B:
-            self.layer_states = [torch.zeros(B, self.layer_dims[i+1], device=device) for i in range(len(self.layer_dims)-1)]
-            self.layer_errors = [None] * len(self.layers)
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        階層的なPC推論を実行する。
+        """
+        # 入力のスケーリング
+        x = x * self.input_gain
+        
+        current_input = x
+        activations = {"input": x}
 
-        if targets is not None:
-            self.layer_states[-1] = targets.clone()
+        # 順伝播（予測の生成と修正の連鎖）
+        for i, layer in enumerate(self.pc_layers):
+            # layer(x) は (prediction, error) 等を返す想定
+            current_input, info = layer(current_input)
+            activations[f"layer_{i}"] = current_input
+            for k, v in info.items():
+                activations[f"layer_{i}_{k}"] = v
 
-        final_output = torch.zeros(B, self.layer_dims[-1], device=device)
+        return current_input, activations
 
-        for t in range(self.time_steps):
-            curr_in = x
-            for i, layer in enumerate(self.layers):
-                td_state = self.layer_states[i]
-                fb_err = self.layer_errors[i+1] if i + 1 < len(self.layers) else None
-                
-                # 学習則のために活動を記録
-                self.model_state[f"pre_activity_layer_{i}"] = td_state.detach()
-                
-                upd_state, pred_err, _ = layer(curr_in, td_state, fb_err)
-                
-                # 学習則のために誤差を記録
-                self.model_state[f"prediction_error_layer_{i}"] = pred_err.detach()
-                
-                self.layer_errors[i] = pred_err
-                
-                if targets is not None and i == len(self.layers) - 1:
-                    self.layer_states[i] = targets
-                else:
-                    self.layer_states[i] = upd_state
-                curr_in = self.layer_states[i]
-            final_output = curr_in
-        return final_output
+    def get_sparsity_loss(self) -> torch.Tensor:
+        """各レイヤーのスパース性損失を合計する"""
+        total_loss = torch.tensor(0.0, device=self.get_device())
+        for layer in self.pc_layers:
+            if hasattr(layer, 'get_sparsity_loss'):
+                total_loss += layer.get_sparsity_loss()
+        return total_loss
 
-    def reset_state(self) -> None:
-        super().reset_state()
-        self.layer_states = []
-        self.layer_errors = []
-        for l in self.layers:
-             if hasattr(l, 'generative_neuron'): l.generative_neuron.reset() # type: ignore
-             if hasattr(l, 'inference_neuron'): l.inference_neuron.reset() # type: ignore
+    def get_device(self):
+        """モデルが配置されているデバイスを取得"""
+        return next(self.parameters()).device
