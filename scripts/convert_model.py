@@ -1,8 +1,13 @@
 # scripts/convert_model.py
-# (更新: ログ出力の強制・バッファリング対策)
 # ANNモデルからSNNモデルへの変換・蒸留を実行するためのスクリプト
 #
+# ディレクトリ: scripts/convert_model.py
+# ファイル名: ANN-SNN 高忠実度変換スクリプト
+# 目的: 学習済みANN（CNN/LLM）の重みを抽出し、SNNアーキテクチャへ適合・変換する。
+#
 # 変更点:
+# - [修正 v8] チェックポイントファイルが辞書形式(epoch, model_state_dict等を含む)の場合に対応。
+# - [修正 v8] model_state_dict 抽出後に DataParallel の 'module.' プレフィックス除去を行うよう順序を調整。
 # - [修正 v7] print(..., flush=True) を使用して出力を即座にフラッシュ。
 # - [修正 v7] ロガー設定を main 関数の先頭で再設定。
 
@@ -23,14 +28,17 @@ from omegaconf import OmegaConf
 
 def get_calibration_loader(container):
     """キャリブレーション用の小規模なデータローダーを返す"""
-    vocab_size = container.tokenizer.provided.vocab_size()
+    # 既存の機能を維持しつつ安全に取得
+    try:
+        vocab_size = container.tokenizer.provided.vocab_size()
+    except:
+        vocab_size = 32000  # デフォルト
     dummy_data = torch.randint(0, vocab_size, (128, 32)) # 多様なサンプル
     dummy_dataset = TensorDataset(dummy_data)
     return DataLoader(dummy_dataset, batch_size=16)
 
 def main():
-    # --- 修正: ロギングの強制再設定 ---
-    # 他のライブラリによる設定をリセット
+    # --- ロギングの強制再設定 ---
     root = logging.getLogger()
     if root.handlers:
         for handler in root.handlers:
@@ -70,7 +78,6 @@ def main():
         logger.error(f"設定ファイルの読み込みまたはモデルの初期化に失敗しました: {e}")
         sys.exit(1)
 
-    # --- 修正: flush=True で確実に出力 ---
     msg = "✅ SNNモデルと設定の準備が完了しました。"
     logger.info(msg)
     print(msg, flush=True)
@@ -87,9 +94,18 @@ def main():
         if args.method == "cnn-convert":
             logger.info(f"CNN変換を開始します: {args.ann_model_path} -> {args.output_snn_path}")
             ann_model = SimpleCNN(num_classes=10) 
-            state_dict = torch.load(args.ann_model_path, map_location='cpu')
-            if list(state_dict.keys())[0].startswith('module.'):
-                 state_dict = {k[7:]: v for k, v in state_dict.items()}
+            checkpoint = torch.load(args.ann_model_path, map_location='cpu')
+            
+            # チェックポイントが辞書形式（model_state_dictを含む）か、state_dict単体かを判定
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+            else:
+                state_dict = checkpoint
+
+            # DataParallel ('module.') のプレフィックス除去
+            if any(k.startswith('module.') for k in state_dict.keys()):
+                 state_dict = {k.replace('module.', '', 1): v for k, v in state_dict.items()}
+            
             ann_model.load_state_dict(state_dict)
             converter.convert_cnn_weights(ann_model, args.output_snn_path, calibration_loader)
 
@@ -100,6 +116,10 @@ def main():
                 output_path=args.output_snn_path,
                 calibration_loader=calibration_loader
             )
+            
+        logger.info(f"✅ 変換が成功しました。保存先: {args.output_snn_path}")
+        print(f"✅ 変換が成功しました。保存先: {args.output_snn_path}", flush=True)
+
     except Exception as e:
         logger.error(f"変換プロセス中に致命的なエラーが発生しました: {e}", exc_info=True)
         sys.exit(1)
