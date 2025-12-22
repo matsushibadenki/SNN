@@ -1,26 +1,47 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
-# 目的: BioSNN初期化時の引数不一致を修正。
+# Title: 強化学習エージェント (Mypy完全修正 & インターフェース整合版)
+# Description: Callable, numpy のインポート追加と experience_buffer の型定義を修正。
 
 import torch
-from typing import Dict, Any, List, Optional, Tuple, cast
+import numpy as np  # [修正] np が未定義だったため追加
+from typing import Dict, Any, List, Optional, Tuple, Callable, cast  # [修正] Callable を追加
+
 from snn_research.models.bio.simple_network import BioSNN
 from snn_research.learning_rules.base_rule import BioLearningRule
 
 class ReinforcementLearnerAgent:
-    def __init__(self, input_size: int, output_size: int, device: str, synaptic_rule: BioLearningRule, homeostatic_rule: Optional[BioLearningRule] = None):
+    """
+    BioSNNを用いた強化学習エージェント。
+    不確実性駆動型学習と GRPO アルゴリズムをサポート。
+    """
+    def __init__(
+        self, 
+        input_size: int, 
+        output_size: int, 
+        device: str, 
+        synaptic_rule: BioLearningRule, 
+        homeostatic_rule: Optional[BioLearningRule] = None
+    ):
+        self.device = device
         self.input_size = input_size
         self.output_size = output_size
+        
         layer_sizes = [input_size, (input_size + output_size) * 2, output_size]
         
-        # 引数名を BioSNN.__init__ に合わせる
+        # BioSNNの初期化
         self.model = BioSNN(
             layer_sizes=layer_sizes,
-            neuron_params={'tau_mem': 10.0},
+            neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0},
             synaptic_rule=synaptic_rule,
-            homeostatic_rule=homeostatic_rule
+            homeostatic_rule=homeostatic_rule,
+            neuron_type="adaptive_lif"
         ).to(device)
 
+        # [修正] 型アノテーションを明示して mypy [has-type] エラーを解消
+        self.experience_buffer: List[List[torch.Tensor]] = []
+
     def get_action(self, state: torch.Tensor, record_experience: bool = True) -> int:
+        """状態に基づきアクションを選択し、必要に応じてスパイク履歴を保存。"""
         self.model.eval()
         with torch.no_grad():
             # 入力エンコーディング
@@ -32,9 +53,9 @@ class ReinforcementLearnerAgent:
             output_spikes, hidden_history = self.model(input_spikes)
             
             if record_experience:
+                # 履歴の保存
                 self.experience_buffer.append([input_spikes] + hidden_history)
             
-            # 戻り値を確実に int に変換してmypyエラーを解消
             if output_spikes.sum() > 0:
                 action_idx = torch.argmax(output_spikes).item()
             else:
@@ -43,38 +64,70 @@ class ReinforcementLearnerAgent:
             return int(action_idx)
 
     def learn(self, reward: float, causal_credit: float = 0.0, global_context: Optional[Dict[str, Any]] = None):
-        if not self.experience_buffer: return
+        """保存された経験に基づきオンライン学習を実行。"""
+        if not self.experience_buffer:
+            return
+
         self.model.train()
-        optional_params: Dict[str, Any] = {"reward": reward + causal_credit * 10.0}
-        if global_context: optional_params["global_workspace_context"] = global_context
+        optional_params: Dict[str, Any] = {
+            "reward": reward + causal_credit * 10.0,
+            "uncertainty": 0.5  # デフォルト値
+        }
+        if global_context:
+            optional_params["global_workspace_context"] = global_context
 
         for step_spikes in self.experience_buffer:
             self.model.update_weights(
                 all_layer_spikes=step_spikes,
                 optional_params=optional_params
             )
+        
+        # [修正] 再初期化時にも型推論を助ける
         self.experience_buffer = []
 
-    def sample_thought_trajectories(self, initial_state: torch.Tensor, env_step_func: Callable[[int], Tuple[torch.Tensor, float, bool, Any]], num_samples: int = 4, max_steps: int = 10) -> List[Dict[str, Any]]:
+    def sample_thought_trajectories(
+        self, 
+        initial_state: torch.Tensor, 
+        env_step_func: Callable[[int], Tuple[torch.Tensor, float, bool, Any]], 
+        num_samples: int = 4, 
+        max_steps: int = 10
+    ) -> List[Dict[str, Any]]:
+        """GRPO等のための思考軌跡サンプリング。"""
         trajectories = []
         for _ in range(num_samples):
             current_state = initial_state.clone()
-            trajectory: Dict[str, Any] = {'actions': [], 'rewards': [], 'spikes_history': [], 'total_reward': 0.0}
+            trajectory: Dict[str, Any] = {
+                'actions': [], 
+                'rewards': [], 
+                'spikes_history': [], 
+                'total_reward': 0.0
+            }
+            
             self.experience_buffer = []
+            
             for _ in range(max_steps):
                 action = self.get_action(current_state, record_experience=True)
                 next_state, reward, done, _ = env_step_func(action)
+                
                 cast(List[int], trajectory['actions']).append(action)
                 cast(List[float], trajectory['rewards']).append(reward)
                 trajectory['total_reward'] = cast(float, trajectory['total_reward']) + reward
+                
                 current_state = next_state
-                if done: break
+                if done:
+                    break
+            
             trajectory['spikes_history'] = list(self.experience_buffer)
             trajectories.append(trajectory)
+            
+        self.experience_buffer = []
         return trajectories
 
     def learn_with_grpo(self, trajectories: List[Dict[str, Any]], baseline_reward: float = 0.0):
-        if not trajectories: return
+        """GRPO (Group Relative Policy Optimization) による方策改善。"""
+        if not trajectories:
+            return
+
         self.model.train()
         total_rewards = torch.tensor([t['total_reward'] for t in trajectories], dtype=torch.float32)
         mean_reward = total_rewards.mean()
@@ -82,7 +135,9 @@ class ReinforcementLearnerAgent:
         advantages = (total_rewards - mean_reward) / std_reward
         
         for i, trajectory in enumerate(trajectories):
-            optional_params = {"reward": np.clip(advantages[i].item(), -2.0, 2.0)}
+            # [修正] np.clip を安全に呼び出し
+            optional_params = {"reward": float(np.clip(advantages[i].item(), -2.0, 2.0))}
+            
             for step_spikes in cast(List[List[torch.Tensor]], trajectory['spikes_history']):
                 self.model.update_weights(
                     all_layer_spikes=step_spikes,
