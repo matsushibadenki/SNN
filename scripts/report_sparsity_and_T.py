@@ -109,7 +109,12 @@ def measure_efficiency(model_config_path: str, data_path: str, model_path: Optio
     logger.info(f"Running inference with input shape: {dummy_input.shape}")
     
     with torch.no_grad():
-        _ = model(dummy_input)
+        if hasattr(model, 'forward'):
+            _ = model(dummy_input)
+        else:
+        # SNNCoreがnn.Moduleを継承しており、上記修正でforwardが追加されているため、
+        # 通常のモジュール呼び出しが正しく動作するようになります。
+            _ = model(dummy_input)
     
     total_spikes = model.get_total_spikes()
     logger.info(f"Total Spikes: {total_spikes}")
