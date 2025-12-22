@@ -8,6 +8,7 @@ import os
 import sys
 import logging
 import time
+import argparse
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -114,5 +115,25 @@ def train():
         logger.warning("Stopped by user.")
         torch.save(model.state_dict(), SAVE_PATH)
 
+def train_demo(epochs=1, max_steps=None):
+    # モデル初期化などのロジック
+    # ...
+    
+    for epoch in range(epochs):
+        # 進行状況がわかるように tqdm や print を追加
+        print(f"  Epoch {epoch+1}/{epochs} starting...")
+        
+        for i, batch in enumerate(dataloader):
+            if max_steps and i >= max_steps:
+                break
+            # 学習処理...
+            
+    print("  Training demo finished.")
+
 if __name__ == "__main__":
-    train()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--max_steps", type=int, default=5) # デフォルトを小さく設定
+    args = parser.parse_args()
+    
+    train_demo(epochs=args.epochs, max_steps=args.max_steps)
