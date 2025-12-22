@@ -1,7 +1,6 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
-# Title: 強化学習エージェント (Reinforcement Learner Agent with GRPO) [Type Fixed]
-# Description:
-#   sample_thought_trajectories 内での trajectory 変数の型推論エラーを修正。
+# Title: 強化学習エージェント (BioSNN 引数整合性修正版)
+# Description: BioSNNのリファクタリングに伴う引数不一致(Unexpected keyword argument)を解消。
 
 import torch
 import numpy as np
@@ -30,11 +29,13 @@ class ReinforcementLearnerAgent:
         hidden_size = (input_size + output_size) * 2
         layer_sizes = [input_size, hidden_size, output_size]
         
+        # BioSNNのリファクタリング後の引数構成に適合させる
         self.model = BioSNN(
             layer_sizes=layer_sizes,
             neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0},
             synaptic_rule=synaptic_rule,
-            homeostatic_rule=homeostatic_rule
+            homeostatic_rule=homeostatic_rule,
+            neuron_type="adaptive_lif"  # デフォルト値を明示
         ).to(device)
 
         self.encoder = SpikeEncoderDecoder(num_neurons=input_size, time_steps=1)
@@ -51,6 +52,7 @@ class ReinforcementLearnerAgent:
             output_spikes, hidden_spikes_history = self.model(input_spikes)
             
             if record_experience:
+                # 入力スパイクと隠れ層の履歴を統合して保存
                 self.experience_buffer.append([input_spikes] + hidden_spikes_history)
             
             if output_spikes.sum() > 0:
@@ -77,6 +79,7 @@ class ReinforcementLearnerAgent:
             optional_params["global_workspace_context"] = global_context
 
         for step_spikes in self.experience_buffer:
+            # BioSNN.update_weights(all_layer_spikes, optional_params) に適合
             self.model.update_weights(
                 all_layer_spikes=step_spikes,
                 optional_params=optional_params
@@ -96,7 +99,6 @@ class ReinforcementLearnerAgent:
         for _ in range(num_samples):
             current_state = initial_state.clone()
             
-            # 型エラー修正: Dict[str, Any]として明示的に初期化
             trajectory: Dict[str, Any] = {
                 'actions': [],
                 'rewards': [],
@@ -110,10 +112,9 @@ class ReinforcementLearnerAgent:
                 action = self.get_action(current_state, record_experience=True)
                 next_state, reward, done, _ = env_step_func(action)
                 
-                # 型エラー修正: castを使ってmypyにリストであることを伝える
                 cast(List[int], trajectory['actions']).append(action)
                 cast(List[float], trajectory['rewards']).append(reward)
-                # floatとの加算エラー回避のため明示的に型を認識させる
+                
                 current_total = cast(float, trajectory['total_reward'])
                 trajectory['total_reward'] = current_total + reward
                 
@@ -146,10 +147,10 @@ class ReinforcementLearnerAgent:
             adv = np.clip(adv, -2.0, 2.0)
             optional_params = {"reward": adv}
             
-            # spikes_history も List[List[Tensor]] であることを cast
             history = cast(List[List[torch.Tensor]], trajectory['spikes_history'])
             
             for step_spikes in history:
+                # 引数名を最新のBioSNNの定義に合わせる
                 self.model.update_weights(
                     all_layer_spikes=step_spikes,
                     optional_params=optional_params
