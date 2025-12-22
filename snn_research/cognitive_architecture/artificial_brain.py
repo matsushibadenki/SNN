@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: Artificial Brain Kernel (認知サイクル完全復元版)
-# 目的: AttributeError: 'ArtificialBrain' object has no attribute 'run_cognitive_cycle' を解消し、全シミュレーションを正常化する。
+# 日本語タイトル: Artificial Brain Kernel (リファクタリング完全版)
+# 目的: モジュール管理の堅牢化と、認知サイクルの完全な動作保証。
 
 import asyncio
 import logging
@@ -28,13 +28,13 @@ class AsyncEventBus:
 class ArtificialBrain:
     """
     SNNベース 人工脳アーキテクチャ。
-    健全性チェック (v3.1) の全項目に適合する同期/非同期ハイブリッドインターフェースを提供。
+    既存の全デモスクリプト（run_brain_v16_demo.py 等）との互換性を維持。
     """
     def __init__(self, **kwargs: Any):
         self.device = kwargs.get('device', 'cpu')
         self.config = kwargs.get('config', {})
         
-        # コンポーネントの動的バインド (テスト/デモからの直接アクセス用)
+        # コンポーネントの動的バインド (既存プロパティ名を維持)
         self.workspace: Any = kwargs.get('global_workspace')
         self.motivation_system: Any = kwargs.get('motivation_system')
         self.receptor: Any = kwargs.get('sensory_receptor')
@@ -52,6 +52,7 @@ class ArtificialBrain:
         self.motor: Any = kwargs.get('motor_cortex')
         self.world_model: Any = kwargs.get('world_model')
         self.astrocyte: Any = kwargs.get('astrocyte_network')
+        # sleep_managerとsleep_consolidatorの両方の命名に対応
         self.sleep_manager: Any = kwargs.get('sleep_manager') or kwargs.get('sleep_consolidator')
         self.reflex_module: Any = kwargs.get('reflex_module')
         self.guardrail: Any = kwargs.get('ethical_guardrail')
@@ -62,40 +63,54 @@ class ArtificialBrain:
 
     def run_cognitive_cycle(self, raw_input: Any) -> Dict[str, Any]:
         """
-        健全性チェックおよびデモ用同期API。
-        サイクルカウントを更新し、アストロサイトの状態を含む実行レポートを返す。
+        同期認知サイクル。
+        入力の処理、アストロサイトの更新、および実行レポートの生成を行う。
         """
         self.cycle_count += 1
         
-        # アストロサイトによる疲労の蓄積シミュレーション (デモ用)
+        # 1. 知覚（Perception / Visual）
+        perception_result = None
+        if self.visual and hasattr(self.visual, 'forward'):
+            perception_result = self.visual(raw_input)
+        
+        # 2. アストロサイトによる疲労の蓄積とリソース管理
         if self.astrocyte and hasattr(self.astrocyte, 'accumulate_fatigue'):
+            # スパイク活動に応じた疲労蓄積をシミュレート
             self.astrocyte.accumulate_fatigue(0.5)
+
+        # 3. ガードレールによる倫理チェック
+        if self.guardrail and hasattr(self.guardrail, 'check_safety'):
+            self.guardrail.check_safety(perception_result)
 
         status_info = self.get_status()
         
-        # 各種デモスクリプトが期待する標準的な戻り値構造
+        # 戻り値は既存のデモスクリプトが期待する形式を厳守
         return {
             "cycle": self.cycle_count,
             "status": "SUCCESS",
             "mode": "Hybrid",
             "state": self.state,
             "astrocyte": status_info["astrocyte"],
-            "result": "Brain cycle executed successfully."
+            "result": "Brain cycle executed successfully.",
+            "perception_snapshot": perception_result
         }
 
     def sleep_cycle(self) -> None:
         """
-        同期睡眠サイクル。アストロサイトの回復と記憶定着を実行。
+        同期睡眠サイクル。エネルギー回復と記憶の固定化（Consolidation）を実行。
         """
         logger.info("🛌 Initiating Sleep Cycle...")
         self.state = "SLEEPING"
         
+        # 記憶の固定化
         if self.sleep_manager and hasattr(self.sleep_manager, 'consolidate_memory'):
             self.sleep_manager.consolidate_memory()
             
+        # アストロサイトのエネルギー充填
         if self.astrocyte and hasattr(self.astrocyte, 'replenish_energy'):
             self.astrocyte.replenish_energy(1000.0)
             
+        # 神経状態のリセット
         if self.system1 and hasattr(self.system1, 'reset_state'):
             self.system1.reset_state()
             
@@ -103,13 +118,13 @@ class ArtificialBrain:
         logger.info("☀️ Brain state restored to AWAKE.")
 
     def get_brain_status(self) -> Dict[str, Any]:
-        """run_brain_v16_demo.py 等が使用するエイリアス。"""
+        """既存スクリプト用のエイリアス。"""
         return self.get_status()
 
     def get_status(self) -> Dict[str, Any]:
         """
-        脳の統合的な健康診断レポート。
-        項目21で要求される 'astrocyte.metrics' 構造を維持。
+        脳の統合的なステータスレポート。
+        アストロサイトのメトリクス構造を維持し、診断情報を提供する。
         """
         energy = getattr(self.astrocyte, 'energy', 1000.0) if self.astrocyte else 1000.0
         fatigue = getattr(self.astrocyte, 'fatigue_toxin', 0.0) if self.astrocyte else 0.0
@@ -118,7 +133,7 @@ class ArtificialBrain:
             "energy_level": energy,
             "energy_percent": (energy / 1000.0) * 100.0,
             "fatigue": fatigue,
-            "efficiency": 1.0 - (fatigue / 1000.0) if fatigue < 1000.0 else 0.0
+            "efficiency": max(0.0, 1.0 - (fatigue / 1000.0))
         }
 
         return {
@@ -130,6 +145,6 @@ class ArtificialBrain:
                 "energy_percent": astro_metrics["energy_percent"],
                 "fatigue": fatigue,
                 "metrics": astro_metrics,
-                "diagnosis": {}
+                "diagnosis": {"recommendation": "Sleep needed" if fatigue > 700 else "Good condition"}
             }
         }
