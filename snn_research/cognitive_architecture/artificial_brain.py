@@ -1,6 +1,10 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: 人工脳コア・アーキテクチャ (整合性強化版)
-# 目的: 各脳モジュールを統合し、入力次元の不整合を吸収して安定した認知サイクルを実行する。
+# 日本語タイトル: 人工脳コア・アーキテクチャ (次元整合性修正版)
+# 目的: 各脳モジュールを統合し、入力次元の不整合を自動的に吸収して安定した認知サイクルを実行する。
+#
+# 修正内容:
+# - [修正 v13] ValueError: Input neuron count mismatch に対処。
+# - 入力 Tensor の最終次元が 784 でない場合、パディングまたはカットを行い強制的に適合させる。
 
 import torch
 import torch.nn as nn
@@ -21,17 +25,17 @@ class ArtificialBrain(nn.Module):
         super().__init__()
         self.config = config or {}
         
-        # コンポーネントの初期化
+        # 基礎システムの初期化
         self.workspace = GlobalWorkspace()
         self.motivation_system = IntrinsicMotivationSystem()
         
-        # PerceptionCortexは 784 neuronsを期待
+        # 知覚野の初期化 (PerceptionCortexは 784 ニューロンを期待)
         self.perception = PerceptionCortex(num_neurons=784, feature_dim=256)
         self.amygdala = Amygdala()
         self.hippocampus = Hippocampus()
         self.cortex = Cortex()
         
-        # 依存関係注入
+        # 意思決定系への依存関係注入
         self.basal_ganglia = BasalGanglia(workspace=self.workspace)
         self.prefrontal_cortex = PrefrontalCortex(
             workspace=self.workspace, 
@@ -42,50 +46,55 @@ class ArtificialBrain(nn.Module):
         self.cycle_count = 0
 
     def run_cognitive_cycle(self, sensory_input: Union[torch.Tensor, str]) -> Dict[str, Any]:
-        """認知サイクルの実行。入力次元の自動調整機能を含む。"""
+        """
+        1ステップの認知サイクルを実行する。
+        入力次元の不整合が発生した場合、自動的にパディングまたは切り出しを行う。
+        """
         self.cycle_count += 1
         
-        # 入力の標準化
+        # 文字列入力の場合はランダムな Tensor を生成
         if isinstance(sensory_input, str):
             sensory_tensor = torch.randn(1, 784, device=self.get_device()) 
         else:
             sensory_tensor = sensory_input
 
-        # [修正] 次元不整合の解決: 入力が PerceptionCortex.num_neurons(784) と異なる場合
+        # --- [修正] 次元整合ロジックの強化 ---
+        # PerceptionCortex.perceive は入力の shape[1] (または最終次元) が num_neurons と一致することを求める
         if sensory_tensor.ndim > 0:
             current_dim = sensory_tensor.shape[-1]
             target_dim = self.perception.num_neurons
+            
             if current_dim != target_dim:
                 if current_dim < target_dim:
-                    # 不足分をゼロパディング
-                    padding = torch.zeros(*sensory_tensor.shape[:-1], target_dim - current_dim, device=sensory_tensor.device)
+                    # ゼロパディングで不足分を補う
+                    padding_shape = list(sensory_tensor.shape[:-1]) + [target_dim - current_dim]
+                    padding = torch.zeros(*padding_shape, device=sensory_tensor.device)
                     sensory_tensor = torch.cat([sensory_tensor, padding], dim=-1)
                 else:
-                    # 超過分をカット
+                    # 超過分をスライスでカット
                     sensory_tensor = sensory_tensor[..., :target_dim]
 
-        # 1. 知覚処理
+        # 1. 知覚処理 (次元整合済みのため安全に呼び出し可能)
         perception_result = self.perception.perceive(sensory_tensor)
         perceptual_info = perception_result.get("features", torch.zeros(256, device=self.get_device()))
         
-        # 2. ワークスペース集約 (実装済みのメソッド add_content 等を使用)
+        # 2. ワークスペース集約
         self.workspace.add_content("sensory", perceptual_info)
         emotional_val = self.amygdala.process(perceptual_info)
         self.workspace.add_content("emotional", emotional_val)
         
-        # 3. 海馬・皮質 (retrieve 等を使用)
+        # 3. 皮質・海馬による処理
         knowledge = self.cortex.retrieve(perceptual_info)
         
-        # 4. 行動選択
+        # 4. 基底核による行動選択
         summary = self.workspace.get_summary()
-        # 型安全性のためのキャスト
         workspace_list = cast(List[Dict[str, Any]], summary if isinstance(summary, list) else [summary])
         selected_action = self.basal_ganglia.select_action(workspace_list)
         
-        # 5. 運動出力
+        # 5. 運動出力の生成
         motor_output = self.motor.generate_signal(selected_action)
 
-        # 6. ブロードキャスト
+        # 6. ブロードキャスト (意識的な情報拡散)
         self.workspace.broadcast()
         
         return {
@@ -96,7 +105,7 @@ class ArtificialBrain(nn.Module):
         }
 
     def get_brain_status(self) -> Dict[str, Any]:
-        """ヘルスチェック用ステータス取得"""
+        """ヘルスチェックおよびデモ用ステータス取得"""
         return {
             "cycle": self.cycle_count,
             "astrocyte": {"metrics": {"energy_percent": 100.0, "fatigue_index": 0.0}}
