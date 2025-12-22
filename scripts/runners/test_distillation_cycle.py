@@ -1,6 +1,6 @@
 # ファイルパス: scripts/runners/test_distillation_cycle.py
-# 日本語タイトル: 統合蒸留サイクル検証デモ (パス解決版)
-# 目的: インポートエラーを解消し、蒸留サイクルの動作を確認する。
+# 日本語タイトル: 統合蒸留サイクル検証デモ (引数修正版)
+# 目的: BitSpikeMamba の初期化引数不整合を解消し、蒸留ループを検証する。
 
 import os
 import sys
@@ -11,7 +11,7 @@ import asyncio
 # プロジェクトルートの設定
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if project_root not in sys.path:
-    sys.path.append(project_root)
+    sys.path.insert(0, project_root)
 
 from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
 from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
@@ -25,8 +25,18 @@ async def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # 1. コンポーネントの準備
-    config = {"d_model": 128, "n_layers": 2, "vocab_size": 1000}
-    system1 = BitSpikeMamba(config).to(device)
+    # [修正] BitSpikeMamba の __init__ が期待する位置引数を正しく渡す
+    # 引数順序: d_model, d_state, d_conv, expand, num_layers, time_steps, neuron_config, vocab_size
+    system1 = BitSpikeMamba(
+        d_model=128,
+        d_state=16,
+        d_conv=4,
+        expand=2,
+        num_layers=2,
+        time_steps=4,
+        neuron_config={"threshold": 1.0, "v_reset": 0.0},
+        vocab_size=1000
+    ).to(device)
     
     memory = Memory(rag_system=None)
     sleep_consolidator = SleepConsolidator(
@@ -50,7 +60,6 @@ async def main():
         "final_answer": torch.tensor([1]).to(device)
     }
     
-    # 修正版 SleepConsolidator の add_experience を使用
     if brain.sleep_manager:
         brain.sleep_manager.add_experience(thought_trace)
 
