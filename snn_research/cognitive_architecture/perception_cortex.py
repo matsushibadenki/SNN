@@ -3,6 +3,7 @@
 # Description:
 #   知覚野の基本クラス。
 #   スパイク入力から特徴量を抽出するインターフェースおよび簡易実装を提供する。
+#   多次元入力(Batch, Time, Neurons)に対応。
 
 import torch
 from typing import Dict
@@ -21,7 +22,6 @@ class PerceptionCortex:
         self.feature_dim = feature_dim
         # 特徴を抽出するための簡易的な線形層（重み）
         self.feature_projection = torch.randn((num_neurons, feature_dim))
-        # print("🧠 Perception Cortex initialized.") # ログ過多を防ぐためコメントアウト推奨
 
     def perceive(self, spike_pattern: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
@@ -29,25 +29,34 @@ class PerceptionCortex:
 
         Args:
             spike_pattern (torch.Tensor):
-                SpikeEncoderによって生成されたスパイクパターン (time_steps, num_neurons)。
+                スパイクパターン。形状は (..., num_neurons) を期待。
 
         Returns:
             Dict[str, torch.Tensor]:
                 抽出された特徴ベクトルを含む辞書。
-                例: {'features': tensor([...])}
         """
-        if spike_pattern.shape[1] != self.num_neurons:
-            # 簡易チェック: 次元が合わない場合はWarningを出してリサイズなどを試みるか、エラーにする
-            # ここでは厳密にチェック
-             raise ValueError(f"Input neuron count {spike_pattern.shape[1]} mismatch with cortex {self.num_neurons}")
+        # 最後の次元がニューロン数と一致するか確認
+        if spike_pattern.shape[-1] != self.num_neurons:
+             raise ValueError(f"Input neuron count {spike_pattern.shape[-1]} mismatch with cortex {self.num_neurons}")
 
-        # 1. 時間的プーリング: 時間全体のスパイク活動を集約
-        temporal_features = torch.sum(spike_pattern, dim=0).float()
+        # デバイス整合性の確保
+        device = spike_pattern.device
+        projection = self.feature_projection.to(device)
 
-        # 2. 特徴射影
-        feature_vector = torch.matmul(temporal_features, self.feature_projection)
+        # 1. 次元集約 (Neurons次元以外を統合して処理)
+        # 入力が (Batch, Time, Neurons) などの場合、Neurons以外の次元をまとめて float化
+        original_shape = spike_pattern.shape
+        flat_spikes = spike_pattern.view(-1, self.num_neurons).float()
+
+        # 2. 特徴射影 (matmul)
+        # (Total_Steps, Neurons) @ (Neurons, Feature_Dim) -> (Total_Steps, Feature_Dim)
+        feature_vector_flat = torch.matmul(flat_spikes, projection)
 
         # 3. 非線形性
-        feature_vector = torch.relu(feature_vector)
+        feature_vector_flat = torch.relu(feature_vector_flat)
+
+        # 4. 元の次元（Neurons以外）に戻す
+        new_shape = list(original_shape[:-1]) + [self.feature_dim]
+        feature_vector = feature_vector_flat.view(*new_shape)
 
         return {"features": feature_vector}
