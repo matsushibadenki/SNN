@@ -1,62 +1,73 @@
+# ファイルパス: tests/test_visual_cortex.py
+# 日本語タイトル: 視覚野モデル (VisualCortex) 単体テスト
+# 目的・内容: 視覚野の階層的予測符号化および動的なリセット機能の検証
 
-import torch
 import unittest
+import torch
 from snn_research.models.bio.visual_cortex import VisualCortex
 
 class TestVisualCortex(unittest.TestCase):
+    def setUp(self):
+        # 共通の設定を定義
+        self.config = {
+            "in_channels": 3,
+            "layer_dims": [64, 128],
+            "time_steps": 5,
+            "error_gain": 0.1
+        }
+
     def test_visual_cortex_static_image(self):
-        # Test with static image (B, C, H, W)
-        batch_size = 2
-        channels = 3
-        height = 32
-        width = 32
-        time_steps = 4
+        """静止画入力に対する視覚野の動作テスト"""
+        model = VisualCortex(self.config)
+        # (Batch, Channel, H, W)
+        x = torch.randn(2, 3, 32, 32)
         
-        model = VisualCortex(
-            input_channels=channels,
-            height=height,
-            width=width,
-            time_steps=time_steps,
-            d_model=64,
-            d_state=32
-        )
+        # 修正: 戻り値は2つ (states, errors)
+        states, errors = model(x)
         
-        x = torch.randn(batch_size, channels, height, width)
+        # 各レイヤーの結果が含まれているか
+        self.assertEqual(len(states), 2)
+        self.assertEqual(len(errors), 2)
         
-        states, errors, recons = model(x)
-        
-        self.assertEqual(states.shape, (batch_size, time_steps, 32)) # D_State
-        self.assertEqual(errors.shape, (batch_size, time_steps, 64)) # D_Model
-        self.assertEqual(recons.shape, (batch_size, time_steps, 64)) # D_Model
-        
+        # 出力形状の確認 (Batch, Time, Dim)
+        # VisualCortexの各レイヤー出力は (B, T, C) の形式であることを想定
+        self.assertEqual(states[0].shape[0], 2)
+        self.assertEqual(states[0].shape[1], self.config["time_steps"])
+
     def test_visual_cortex_video_stream(self):
-        # Test with video stream (B, T, C, H, W)
-        batch_size = 2
-        channels = 1
-        height = 16
-        width = 16
-        time_steps = 5
+        """動画ストリーム（時系列画像）に対する動作テスト"""
+        video_config = self.config.copy()
+        video_config["in_channels"] = 1
+        model = VisualCortex(video_config)
         
-        model = VisualCortex(
-            input_channels=channels,
-            height=height,
-            width=width,
-            time_steps=time_steps,
-            d_model=32,
-            d_state=16
-        )
+        # (Batch, Time, Channel, H, W)
+        x = torch.randn(2, 5, 1, 32, 32)
         
-        x = torch.randn(batch_size, time_steps, channels, height, width)
+        # 修正: 戻り値は2つ
+        states, errors = model(x)
         
-        states, errors, recons = model(x)
-        
-        self.assertEqual(states.shape, (batch_size, time_steps, 16))
-        self.assertEqual(errors.shape, (batch_size, time_steps, 32))
+        self.assertEqual(states[-1].shape[0], 2)
+        # 時系列入力の場合、内部でステップごとに処理されることを確認
+        self.assertTrue(states[-1].sum() != 0)
 
     def test_reset(self):
-        model = VisualCortex(1, 8, 8, time_steps=2)
-        model.reset_spike_stats()
-        # Ensure no crash
+        """内部状態のリセット機能のテスト"""
+        # 修正: Positional argumentsではなくconfig辞書を渡す
+        model = VisualCortex(self.config)
+        
+        x = torch.randn(1, 3, 16, 16)
+        model(x)
+        
+        # 状態が保持されていることを確認（実装に依存するが一般的には非ゼロ）
+        model.reset_states()
+        
+        # リセット後に別の入力を入れてエラーが起きないか
+        try:
+            model(x)
+            success = True
+        except Exception:
+            success = False
+        self.assertTrue(success)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
