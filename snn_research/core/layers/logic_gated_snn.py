@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (段階的蒸留・活動保証版)
-# 目的: Acc 80%に達するまでは結合を維持し、成功した後にのみ贅肉を削ぎ落とす「知能の彫刻」を完遂する。
+# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (リバース・アニーリング版)
+# 目的: 学習初期の過剰なプルーニングを抑制し、高精度(80%超)を達成した後に洗練フェーズへ移行する。
 
 import torch
 import torch.nn as nn
@@ -14,12 +14,15 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 修正1: 最初は全結合からスタートし、徐々に彫り出す
-        self.register_buffer('synapse_states', torch.full((out_features, in_features), float(self.threshold + 5)))
+        # 修正1: 閾値直上に配置。最初はすべての配線が「生きている」状態でスタート
+        self.register_buffer('synapse_states', torch.full((out_features, in_features), float(self.threshold + 2)))
         self.register_buffer('membrane_potential', torch.zeros(out_features))
-        self.register_buffer('adaptive_threshold', torch.full((out_features,), 2.0))
+        self.register_buffer('adaptive_threshold', torch.full((out_features,), 3.0))
         self.register_buffer('eligibility_trace', torch.zeros(out_features, in_features))
-        self.register_buffer('success_memory', torch.zeros(1)) # 過去の成功率
+        
+        # 知識の習熟度 (0.0: 未熟 -> 1.0: 熟練)
+        self.register_buffer('proficiency', torch.zeros(1))
+        self.target_conn_rate = 0.15 
 
     @property
     def states(self) -> torch.Tensor:
@@ -34,10 +37,6 @@ class LogicGatedSNN(nn.Module):
         
         current = torch.matmul(x, w.t()).view(-1)
         
-        # 修正2: 活動駆動 (ニューロンが黙り込まないよう、低活動時にノイズ注入)
-        if current.max() < 0.1:
-            current = current + torch.randn_like(current).abs() * 0.5
-            
         v_mem = cast(torch.Tensor, self.membrane_potential)
         v_mem.mul_(0.8).add_(current)
         
@@ -45,43 +44,44 @@ class LogicGatedSNN(nn.Module):
         spikes = (v_mem >= v_th).to(torch.float32)
         
         with torch.no_grad():
-            self.eligibility_trace.mul_(0.85).add_(torch.outer(spikes, x.view(-1)))
+            self.eligibility_trace.mul_(0.9).add_(torch.outer(spikes, x.view(-1)))
             self.eligibility_trace.clamp_(0, 5.0)
             
-            # 発火率ホメオスタシス (沈黙を破るために閾値を下限0.1まで許容)
-            self.adaptive_threshold.add_((spikes - 0.1) * 0.1)
-            self.adaptive_threshold.clamp_(0.1, 10.0)
+            # 発火ホメオスタシス
+            self.adaptive_threshold.add_((spikes - 0.05) * 0.1)
+            self.adaptive_threshold.clamp_(0.5, 10.0)
         
         self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.2)
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
-        """ 成功を記憶し、段階的にスパース化する学習則 """
+        """ 習熟度に応じて『彫刻の鋭さ』を変える学習則 """
         with torch.no_grad():
-            self.success_memory.copy_(self.success_memory * 0.99 + (1.0 if reward > 0 else 0.0) * 0.01)
+            # 成功時に習熟度を上げ、失敗時に少し下げる
+            prof_delta = 0.01 if reward > 1.0 else -0.005
+            self.proficiency.add_(prof_delta).clamp_(0.0, 1.0)
             
             conn_rate = float(self.get_ternary_weights().mean().item())
             trace = cast(torch.Tensor, self.eligibility_trace)
             modulation = torch.tanh(torch.tensor(reward)).item()
             
-            # 修正3: 成功率に応じたプルーニング圧
-            # 成功率(success_memory)が低い間は、結合を維持する。成功し始めたら削る。
-            pruning_gate = torch.clamp(self.success_memory * 2.0, 0.1, 1.0).item()
+            # 修正2: 習熟度が低い(0.3以下)間はプルーニング(削り)を物理的に禁止する
+            # これにより、初期の 80% 密度を維持して確実に知識を捕獲する
+            pruning_enable = 1.0 if self.proficiency.item() > 0.3 else 0.0
             
             if modulation > 0:
-                # 成功時: トレース箇所を強力に固定
-                self.states.add_(trace * modulation * 10.0)
+                # 成功時: 強く固定
+                self.states.add_(trace * modulation * 15.0)
             else:
-                # 失敗時: 痕跡箇所を削除
-                self.states.sub_(trace * abs(modulation) * 5.0)
+                # 失敗時: プルーニングが有効なら削る
+                self.states.sub_(trace * abs(modulation) * 10.0 * pruning_enable)
             
-            # 修正4: 段階的な密度調整
-            target_rate = 0.15
-            if conn_rate > target_rate:
-                # 成功ゲートが開いている時のみ、積極的に削る
-                self.states.sub_(0.1 * pruning_gate * (conn_rate / target_rate))
+            # 修正3: 密度調整も習熟度に従う
+            if pruning_enable > 0 and conn_rate > self.target_conn_rate:
+                # 賢くなった後だけ、贅肉を削ぎ落とす
+                self.states.sub_(0.2 * (conn_rate / self.target_conn_rate))
             elif conn_rate < 0.05:
-                # 密度が低すぎる場合は緊急浮上
+                # 生命維持
                 self.states.add_(0.5)
 
             self.states.clamp_(1, self.max_states)
