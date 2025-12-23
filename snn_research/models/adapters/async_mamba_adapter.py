@@ -1,6 +1,6 @@
 # /snn_research/models/adapters/async_mamba_adapter.py
-# 日本語タイトル: AsyncBitSpikeMamba アダプター (完全整合版)
-# 目的: テストコードおよび統合環境でのインポートエラーを解消し、重みの安全なロードを保証する。
+# 日本語タイトル: AsyncBitSpikeMamba アダプター (最終整合版)
+# 目的: テストコードからの 'device' 引数による初期化に対応し、統合テストのエラーを解消する。
 
 import torch
 import torch.nn as nn
@@ -11,20 +11,25 @@ logger = logging.getLogger(__name__)
 
 class AsyncBitSpikeMambaAdapter(nn.Module):
     """
-    [Fix] クラス名をテストコードの期待値 'AsyncBitSpikeMambaAdapter' に修正。
     非同期実行環境とBitSpikeMambaモデルを橋渡しするアダプター。
+    [Fix] テストコード(test_brain_integration.py)が期待する 'device' 引数に対応。
     """
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], device: str = "cpu"):
         super().__init__()
         self.config = config
+        self.device = device
         
         # モデル本体の構築 (BitSpikeMamba)
         from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
         self.model = BitSpikeMamba(config)
+        
+        # 指定されたデバイスへ転送
+        self.to(device)
+        logger.info(f"🚀 AsyncBitSpikeMambaAdapter initialized on device: {device}")
 
     def load_state_dict_safe(self, state_dict: Dict[str, torch.Tensor]):
         """
-        形状が一致する重みのみをロードする堅牢なメソッド。
+        形状が一致する重みのみをロードする。不一致がある場合はログを出力してスキップ。
         """
         model_dict = self.state_dict()
         filtered_dict = {}
@@ -38,15 +43,17 @@ class AsyncBitSpikeMambaAdapter(nn.Module):
                     mismatch_keys.append(f"{k} (Checkpoint:{v.shape} vs Model:{model_dict[k].shape})")
         
         if mismatch_keys:
-            logger.warning(f"⚠️ Weight shape mismatch detected in {len(mismatch_keys)} keys. Skipping.")
+            logger.warning(f"⚠️ Weight shape mismatch detected in {len(mismatch_keys)} keys. Consistent weights will be loaded.")
 
-        # strict=False で安全にロード
+        # 一致した重みのみ適用
         self.load_state_dict(filtered_dict, strict=False)
-        logger.info(f"✅ Safe load completed. Consistent keys: {len(filtered_dict)}")
+        logger.info(f"✅ Safe load completed. Consistent weight tensors: {len(filtered_dict)}")
 
     def forward(self, x: torch.Tensor, **kwargs: Any) -> torch.Tensor:
-        """モデルの推論。"""
+        """モデルの推論実行。"""
+        # 入力をモデルと同じデバイスへ転送
+        x = x.to(self.device)
         return self.model(x, **kwargs)
 
-# エイリアスの設定（他のモジュールでの参照用）
+# エイリアスの設定（後方互換性用）
 AsyncMambaAdapter = AsyncBitSpikeMambaAdapter
