@@ -1,8 +1,8 @@
 # ファイルパス: snn_research/cognitive_architecture/hdc_engine.py
-# 日本語タイトル: HDC Engine v2.0 (Neuro-Symbolic Bridge)
+# 日本語タイトル: HDC Engine v2.1 (Full Suite)
 # 機能説明: 
-#   HDC演算に加え、SNNのスパイク活動とハイパーベクトルを相互変換する
-#   「Neuro-Symbolic Bridge」機能を追加。これによりシンボル接地を実現する。
+#   HDC演算エンジン、Neuro-Symbolic Bridge、および HDCReasoningAgent を統合。
+#   シンボル接地と推論機能を提供する。
 
 import torch
 import torch.nn as nn
@@ -120,3 +120,42 @@ class NeuroSymbolicBridge(nn.Module):
         # 時間ステップ分生成
         spike_train = (torch.rand(steps, self.snn_features, device=self.device) < probs).float()
         return spike_train
+
+class HDCReasoningAgent:
+    """
+    HDCを用いた簡易推論エージェント。
+    """
+    def __init__(self, engine: HDCEngine):
+        self.hdc = engine
+        
+    def learn_concept(self, subject: str, relation: str, obj: str):
+        """
+        知識を結合して記憶する。
+        Memory = Memory + (Subject * Relation * Object)
+        """
+        # 例: (Japan * Capital * Tokyo)
+        h_sub = self.hdc.get_hypervector(subject)
+        h_rel = self.hdc.get_hypervector(relation)
+        h_obj = self.hdc.get_hypervector(obj)
+        
+        fact = self.hdc.bind(self.hdc.bind(h_sub, h_rel), h_obj)
+        
+        # "Global Knowledge" という概念に束ねていく（簡易実装）
+        global_mem = self.hdc.get_hypervector("GLOBAL_KNOWLEDGE")
+        new_mem = self.hdc.bundle([global_mem, fact])
+        self.hdc.item_memory["GLOBAL_KNOWLEDGE"] = new_mem
+        
+    def query(self, subject: str, relation: str) -> List[Tuple[str, float]]:
+        """
+        推論を行う。
+        Query: Japan * Capital * ? = Tokyo
+        """
+        global_mem = self.hdc.get_hypervector("GLOBAL_KNOWLEDGE")
+        h_sub = self.hdc.get_hypervector(subject)
+        h_rel = self.hdc.get_hypervector(relation)
+        
+        # Query = Memory * Subject * Relation
+        query_res = self.hdc.bind(self.hdc.bind(global_mem, h_sub), h_rel)
+        
+        # ノイズの中から最も近い概念を探す
+        return self.hdc.query_memory(query_res, top_k=3)
