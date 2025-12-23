@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (強制探索報酬版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (高精度認識モード)
 
 import torch
 import torch.nn as nn
@@ -30,10 +30,9 @@ class HybridNeuromorphicCore(nn.Module):
                 t_f = target.view(-1)
                 o_f = out.view(-1)
                 
-                # 修正5: 報酬関数の設計
-                # 沈黙には大きな罰、不一致には小さな罰、一致には大きな報酬
+                # 復元: 沈黙への罰と、一致への高い報酬
                 if out.sum() == 0:
-                    reward = -5.0 
+                    reward = -5.0
                 else:
                     hits = torch.sum(t_f * o_f)
                     misses = torch.sum((1 - t_f) * o_f)
