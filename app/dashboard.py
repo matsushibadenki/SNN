@@ -79,39 +79,44 @@ def process_brain_cycle(user_input: str):
     brain.run_cognitive_cycle(user_input)
     
     # 状態取得
-    active_modules = ["visual_cortex", "system1"] # 簡易的な活性化シミュレーション
-    amygdala_info = brain.workspace.get_information("amygdala")
-    valence = amygdala_info.get('valence', 0.5) if amygdala_info else 0.5
-    arousal = amygdala_info.get('arousal', 0.5) if amygdala_info else 0.5
+    active_modules = ["visual_cortex", "system1"]
     
-    if "thinking" in str(brain.basal_ganglia.selected_action):
+    # [mypy修正] upload_to_workspace で入った情報を正しく取得
+    amygdala_info = brain.workspace.get_information("amygdala")
+    valence = 0.5
+    arousal = 0.5
+    if isinstance(amygdala_info, dict):
+        valence = amygdala_info.get('valence', 0.5)
+        arousal = amygdala_info.get('arousal', 0.5)
+    
+    # 行動の取得
+    action_str = str(brain.basal_ganglia.selected_action)
+    if "thinking" in action_str:
         active_modules.append("reasoning_engine")
     
-    # ログデータ作成
-    action_str = str(brain.basal_ganglia.selected_action)
+    # コンテキスト情報の取得
     conscious_content = brain.workspace.conscious_broadcast_content
+    
+    # ログデータ
     log_data = [
-        {"Time": "Now", "Event": "INPUT", "Payload": user_input},
-        {"Time": "Now+1", "Event": "ACTION", "Payload": action_str}
+        {"Time": "T", "Event": "STIMULUS", "Payload": user_input},
+        {"Time": "T+1", "Event": "BROADCAST", "Payload": str(conscious_content)},
+        {"Time": "T+2", "Event": "DECISION", "Payload": action_str}
     ]
     df_log = pd.DataFrame(log_data)
 
     # HTML生成
     brain_map = generate_brain_map_html(active_modules, valence, arousal)
     
-    # 知識グラフ情報
-    kg_size = len(brain.cortex.get_all_knowledge()) if hasattr(brain, "cortex") else 0
-    cortex_info = f"Nodes: {kg_size}"
-
     return (
         df_log,
         action_str,
         json.dumps(conscious_content, indent=2, ensure_ascii=False),
-        "", # WM (省略)
-        cortex_info,
+        "Memory active", # WM
+        "Nodes synchronized", # Cortex info
         brain_map
     )
-
+    
 # --- UI Layout ---
 with gr.Blocks(theme=gr.themes.Soft(primary_hue="indigo"), title="Brain v20 Dashboard") as demo:
     gr.Markdown("# 🧠 Brain v20: Live Thought Dashboard")
