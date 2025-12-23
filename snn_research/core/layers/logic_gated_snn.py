@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (シナプス固定・安定化版)
-# 目的: 成功した配線構造を「長期記憶」として固定し、Accの持続的な上昇を実現する。
+# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (慣性・固化版)
+# 目的: 結合率の激しい振動(2-100%)を抑え、Acc 20%超の知能を恒久的なスパース構造として定着させる。
 
 import torch
 import torch.nn as nn
@@ -14,17 +14,18 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 状態の初期化
+        # 初期状態
         self.register_buffer('synapse_states', torch.randint(
-            self.threshold - 5, self.threshold + 5, (out_features, in_features)
+            self.threshold - 10, self.threshold + 2, (out_features, in_features)
         ).float())
         
         self.register_buffer('membrane_potential', torch.zeros(out_features))
         self.register_buffer('adaptive_threshold', torch.full((out_features,), 3.0))
         self.register_buffer('eligibility_trace', torch.zeros(out_features, in_features))
         
-        # ターゲット密度の下限を底上げ
-        self.target_conn_rate = 0.12 
+        # 修正1: 結合の「固さ」を管理するバッファ (Consolidation)
+        self.register_buffer('synaptic_firmness', torch.zeros(out_features, in_features))
+        self.target_conn_rate = 0.12 # 目標 12%
 
     @property
     def states(self) -> torch.Tensor:
@@ -37,48 +38,59 @@ class LogicGatedSNN(nn.Module):
         w = self.get_ternary_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # 電流計算
         current = torch.matmul(x, w.t()).view(-1)
         
         v_mem = cast(torch.Tensor, self.membrane_potential)
-        v_mem.mul_(0.8).add_(current)
+        # 修正2: 入力依存の抑制を加え、過剰発火を物理的に防ぐ
+        v_mem.mul_(0.7).add_(current / (current.mean() + 1.0))
         
         v_th = cast(torch.Tensor, self.adaptive_threshold)
         spikes = (v_mem >= v_th).to(torch.float32)
         
-        # トレース更新
         with torch.no_grad():
-            self.eligibility_trace.mul_(0.85).add_(torch.outer(spikes, x.view(-1)))
-            self.eligibility_trace.clamp_(0, 5.0)
+            # トレース更新
+            self.eligibility_trace.mul_(0.8).add_(torch.outer(spikes, x.view(-1)))
+            self.eligibility_trace.clamp_(0, 4.0)
             
-            # 恒常性: 発火しすぎを抑制
-            self.adaptive_threshold.add_((spikes - 0.05) * 0.1)
+            # 恒常性
+            self.adaptive_threshold.add_((spikes - 0.05) * 0.2)
             self.adaptive_threshold.clamp_(1.0, 10.0)
         
-        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.3)
+        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.2)
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
-        """ 長期増強(LTP)を構造的に固定する学習則 """
+        """ 慣性と固化を伴う自己組織化ルール """
         with torch.no_grad():
             conn_rate = float(self.get_ternary_weights().mean().item())
             trace = cast(torch.Tensor, self.eligibility_trace)
             
-            # 修正1: 報酬のゲインをさらに拡大 (20倍)
-            if reward > 0:
-                # 成功した経路を強力に「彫り込む」
-                self.states.add_(trace * reward * 20.0)
+            # 修正3: 摩擦係数の導入 (結合率が高いほど、増える方向の動きにブレーキ)
+            friction = torch.exp(torch.tensor(conn_rate / self.target_conn_rate)).item()
+            
+            modulation = torch.tanh(torch.tensor(reward)).item()
+            
+            if modulation > 0:
+                # 成功時: トレース箇所を強化し、同時に「固さ」を増す
+                update = (trace * modulation * 10.0) / friction
+                self.states.add_(update)
+                self.synaptic_firmness.add_(trace * 0.1)
             else:
-                # 失敗した経路を「削る」
-                self.states.sub_(trace * abs(reward) * 2.0)
-            
-            # 修正2: 密度に応じた「忘却の適応」
-            # 密度が低い時は忘却を止め、高い時(飽和時)だけ削る
-            if conn_rate > self.target_conn_rate:
-                decay = 0.5 * (conn_rate / self.target_conn_rate)
+                # 失敗時: 「固まっていない」配線を優先的に削る
+                decay = (trace * abs(modulation) * 5.0) * (1.0 - torch.tanh(self.synaptic_firmness))
                 self.states.sub_(decay)
-            elif conn_rate < 0.05:
-                # 5%を切ったら成長を促す
-                self.states.add_(0.2)
             
+            # 修正4: 基礎代謝の適応化 (固まった配線は削れにくい)
+            metabolic_decay = 0.1 * (1.0 - torch.tanh(self.synaptic_firmness))
+            self.states.sub_(metabolic_decay)
+            
+            # 過密時の緊急剪定
+            if conn_rate > 0.30:
+                self.states.sub_(2.0)
+            
+            # 死滅防止
+            if conn_rate < 0.03:
+                self.states.add_(0.5)
+
             self.states.clamp_(1, self.max_states)
+            self.synaptic_firmness.mul_(0.99) # 時間とともに少しずつ柔らかくなる
