@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (成功体験固定版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (表現拡大報酬版)
 
 import torch
 import torch.nn as nn
@@ -30,14 +30,15 @@ class HybridNeuromorphicCore(nn.Module):
                 t_f = target.view(-1)
                 o_f = out.view(-1)
                 
+                # 正解一致(Hit)をさらに強調 (5.0 -> 15.0)
                 hits = torch.sum(t_f * o_f)
                 misses = torch.sum((1 - t_f) * o_f)
                 
-                # 修正: 発火さえすれば、わずかでも一致があれば報酬を与える(探索の奨励)
-                if hits > 0:
-                    reward = float(hits.item() * 10.0 - misses.item() * 2.0)
+                if out.sum() == 0:
+                    reward = -1.0 # 沈黙は罰
                 else:
-                    reward = -1.0
+                    # 当たった時の喜びを大きくし、多少の外れ（misses）は許容する
+                    reward = float(hits.item() * 15.0 - misses.item() * 3.0)
             
             self.fast_process.update_plasticity(x_input.view(-1), f.view(-1), reward=reward)
             self.output_gate.update_plasticity(r.view(-1), out.view(-1), reward=reward)
