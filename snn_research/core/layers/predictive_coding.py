@@ -17,14 +17,16 @@ try:
         BistableIFNeuron, EvolutionaryLeakLIF
     )
 except ImportError:
-    AdaptiveLIFNeuron = Any 
-    IzhikevichNeuron = Any 
-    GLIFNeuron = Any 
-    TC_LIF = Any 
-    DualThresholdNeuron = Any 
-    ScaleAndFireNeuron = Any 
-    BistableIFNeuron = Any 
-    EvolutionaryLeakLIF = Any 
+    # 開発環境等でニューロン定義がない場合のフォールバック
+    # mypyが「型への代入」としてエラーを出すため、type: ignoreを追加
+    AdaptiveLIFNeuron = Any # type: ignore
+    IzhikevichNeuron = Any # type: ignore
+    GLIFNeuron = Any # type: ignore
+    TC_LIF = Any # type: ignore
+    DualThresholdNeuron = Any # type: ignore
+    ScaleAndFireNeuron = Any # type: ignore
+    BistableIFNeuron = Any # type: ignore
+    EvolutionaryLeakLIF = Any # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +78,28 @@ class PredictiveCodingLayer(nn.Module):
         self.feedback_strength = nn.Parameter(torch.tensor(1.0))
 
     def _filter_params(self, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any]) -> Dict[str, Any]:
-        # (Parameter filtering logic remains same)
+        """指定されたニューロンクラスが受け入れるパラメータのみを抽出する"""
         valid_params: List[str] = []
+        
         if neuron_class == AdaptiveLIFNeuron:
             valid_params = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step', 'v_reset']
+        elif neuron_class == IzhikevichNeuron:
+            valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
+        elif neuron_class == GLIFNeuron:
+            valid_params = ['features', 'base_threshold', 'gate_input_features']
+        elif neuron_class == TC_LIF:
+            valid_params = ['features', 'tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']
+        elif neuron_class == DualThresholdNeuron:
+            valid_params = ['features', 'tau_mem', 'threshold_high_init', 'threshold_low_init', 'v_reset']
+        elif neuron_class == ScaleAndFireNeuron:
+            valid_params = ['features', 'num_levels', 'base_threshold']
+        elif neuron_class == BistableIFNeuron:
+            valid_params = ['features', 'v_threshold_high', 'v_reset', 'tau_mem', 'bistable_strength', 'v_rest', 'unstable_equilibrium_offset']
+        elif neuron_class == EvolutionaryLeakLIF:
+            valid_params = ['features', 'initial_tau', 'v_threshold', 'v_reset', 'detach_reset', 'learn_threshold']
         else:
              valid_params = ['features', 'tau_mem', 'base_threshold', 'v_reset']
+        
         return {k: v for k, v in neuron_params.items() if k in valid_params}
 
     def _apply_lateral_inhibition(self, x: torch.Tensor) -> torch.Tensor:
