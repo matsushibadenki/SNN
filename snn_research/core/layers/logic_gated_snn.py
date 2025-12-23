@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (自己組織化・最終安定版)
-# 目的: 成長と剪定を活動レベルに応じて自動調整し、飽和を物理的に回避する。
+# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (適格性トレース実装版)
+# 目的: 報酬が遅れてやってくる場合でも、直前の成功体験を正確に配線に刻み込む。
 
 import torch
 import torch.nn as nn
@@ -14,17 +14,17 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 初期状態: 完全にランダムにし、特定のパターンに偏らないようにする
+        # 初期状態
         self.register_buffer('synapse_states', torch.randint(
             self.threshold - 5, self.threshold + 5, (out_features, in_features)
         ).float())
         
         self.register_buffer('membrane_potential', torch.zeros(out_features))
         self.register_buffer('adaptive_threshold', torch.full((out_features,), 1.0))
-        self.register_buffer('firing_history', torch.zeros(out_features))
         
-        # 目標結合密度 (生物の脳に近い 5% 〜 10% を目指す)
-        self.target_conn_rate = 0.10
+        # 適格性トレース (Eligibility Trace): どの配線が「最近」使われたかを記録
+        self.register_buffer('eligibility_trace', torch.zeros(out_features, in_features))
+        self.trace_decay = 0.8 # トレースの減衰率
 
     @property
     def states(self) -> torch.Tensor:
@@ -41,53 +41,43 @@ class LogicGatedSNN(nn.Module):
         # 電流計算
         current = torch.matmul(x, w.t()).view(-1)
         
-        # 膜電位更新 (リークを強め、古い情報を捨てる)
+        # 膜電位更新
         v_mem = cast(torch.Tensor, self.membrane_potential)
-        v_mem.copy_(v_mem * 0.5 + current) 
+        v_mem.copy_(v_mem * 0.7 + current) 
         
         # 判定
-        v_th = cast(torch.Tensor, self.adaptive_threshold)
-        spikes = (v_mem >= v_th).to(torch.float32)
+        spikes = (v_mem >= cast(torch.Tensor, self.adaptive_threshold)).to(torch.float32)
         
-        # 発火後の完全リセット (飽和防止)
-        self.membrane_potential.copy_(v_mem * (1.0 - spikes))
-        
-        # 恒常性の更新
+        # 修正1: 適格性トレースの更新 (プレとポストが同時に起きた場所をマーク)
+        # 行列演算を使わずに、活動があった場所のトレースを増やす
         with torch.no_grad():
-            self.firing_history.copy_(cast(torch.Tensor, self.firing_history) * 0.9 + spikes * 0.1)
-            # 発火が多すぎる個体の閾値を上げ、少なすぎる個体の閾値を下げる
-            self.adaptive_threshold.add_((spikes - 0.05) * 0.5)
-            self.adaptive_threshold.clamp_(0.5, 20.0)
+            current_trace = torch.outer(spikes, x.view(-1))
+            self.eligibility_trace.copy_(cast(torch.Tensor, self.eligibility_trace) * self.trace_decay + current_trace)
+        
+        # リセット
+        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.5)
         
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
-        """
-        自己組織化学習則: 
-        1. 報酬学習 (Reward-driven)
-        2. 密度抑制 (Density-driven Decay)
-        """
+        """適格性トレースに基づいた三因子学習"""
         with torch.no_grad():
-            correlation = torch.outer(post_spikes, pre_spikes)
+            # 修正2: 報酬とトレースの掛け合わせ
+            # 直近で「活躍した」配線に対してのみ、報酬（または罰）を与える
+            trace = cast(torch.Tensor, self.eligibility_trace)
             
-            # 現在の結合率
-            conn_rate = float(self.get_ternary_weights().mean().item())
-            
-            # 修正1: 報酬に基づく更新をより「鋭く」する
-            # 報酬が正なら強く固定、負なら即座に切断
             if reward > 0:
-                self.states.add_(correlation * 10.0)
+                # 成功した時、その要因となったトレースを永続的な状態へ反映
+                self.states.add_(trace * reward * 30.0)
             else:
-                self.states.sub_(correlation * 15.0)
+                # 失敗した時、関与した配線を削る
+                self.states.sub_(trace * abs(reward) * 5.0)
             
-            # 修正2: ダイナミックな密度制御 (100%飽和を数学的に殺す)
-            # 密度が目標を超えた瞬間に、指数関数的に忘却（decay）を強める
-            if conn_rate > self.target_conn_rate:
-                # 飽和状態へのペナルティ (Conn=1.0 なら 10.0 以上の減衰)
-                decay = 0.5 * (conn_rate / self.target_conn_rate) ** 2
-                self.states.sub_(decay)
+            # 修正3: 自然なプルーニングと自律的成長のバランス
+            conn_rate = float(self.get_ternary_weights().mean().item())
+            if conn_rate < 0.05: # 目標密度5%
+                self.states.add_(0.1) # 成長
             else:
-                # 密度が低いときは、活動に関連した部分だけを微増させる (底上げの局所化)
-                self.states.add_(0.1)
+                self.states.sub_(0.2) # 剪定
 
             self.states.clamp_(1, self.max_states)
