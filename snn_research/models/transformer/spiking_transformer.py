@@ -1,10 +1,8 @@
 # ファイルパス: snn_research/models/transformer/spiking_transformer.py
-# Title: Spiking Transformer v2 (SDSA統合版・修正済み)
+# Title: Spiking Transformer V2 (BitNet & SDSA Enhanced)
 # Description:
-#   SDSAを使用したTransformerモデル。
-#   修正点:
-#   - SDSAEncoderLayer: 不要な input_spike_converter を削除。
-#   - forwardメソッド内で、get_total_spikes() を set_stateful(False) の前に移動 (重大バグ修正)。
+#   SDSAとBitNet(1.58bit)を統合した高効率Transformer。
+#   FFN層にBitSpikeLinearを採用し、演算コストを削減。
 
 import torch
 import torch.nn as nn
@@ -12,19 +10,21 @@ from typing import List, Tuple, Dict, Any, Optional, Union, cast
 import math
 import logging
 
-# 必要なコアコンポーネントをインポート
 from snn_research.core.base import BaseModel, SNNLayerNorm
 from snn_research.core.neurons import AdaptiveLIFNeuron
-# core.attention から SDSA をインポート
 from snn_research.core.attention import SpikeDrivenSelfAttention
-from spikingjelly.activation_based import base as sj_base # type: ignore[import-untyped]
-from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
+# BitNetのインポート
+try:
+    from snn_research.core.layers.bit_spike_layer import BitSpikeLinear
+except ImportError:
+    BitSpikeLinear = nn.Linear # type: ignore
+
+from spikingjelly.activation_based import base as sj_base 
+from spikingjelly.activation_based import functional as SJ_F 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- PatchEmbedding クラス ---
 class PatchEmbedding(nn.Module):
-    """ 画像をパッチに分割し、線形射影する (ViTの入力層) """
     def __init__(self, img_size: int, patch_size: int, in_channels: int, embed_dim: int):
         super().__init__()
         self.img_size = img_size
@@ -43,28 +43,25 @@ class PatchEmbedding(nn.Module):
         x = x.transpose(1, 2)
         return x
 
-# --- SDSAEncoderLayer クラス (修正版) ---
 class SDSAEncoderLayer(sj_base.MemoryModule):
     """
-    SDSAを使用したTransformerエンコーダーレイヤー。
+    BitNet FFN + SDSA Encoder Layer.
     """
     neuron_ff: AdaptiveLIFNeuron
     neuron_ff2: AdaptiveLIFNeuron
     sdsa: SpikeDrivenSelfAttention
-    linear1: nn.Linear
-    linear2: nn.Linear
-
+    
     def __init__(self, d_model: int, nhead: int, dim_feedforward: int, time_steps: int, neuron_config: dict):
         super().__init__()
-        # SDSAの初期化
         self.sdsa = SpikeDrivenSelfAttention(d_model, nhead, time_steps, neuron_config)
         
-        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        # FFNにBitSpikeLinearを使用 (Multiplication Free)
+        self.linear1 = BitSpikeLinear(d_model, dim_feedforward)
         
         lif_params = {k: v for k, v in neuron_config.items() if k in ['tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']}
         self.neuron_ff = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=dim_feedforward, **lif_params))
 
-        self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.linear2 = BitSpikeLinear(dim_feedforward, d_model)
         self.neuron_ff2 = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=d_model, **lif_params))
 
         self.norm1 = SNNLayerNorm(d_model)
@@ -83,19 +80,19 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
         self.neuron_ff2.reset()
 
     def forward(self, src: torch.Tensor) -> torch.Tensor:
-        # 1. SDSAによる自己注意
+        # 1. SDSA
         attn_output = self.sdsa(src)
 
-        # 2. Residual Connection 1 + Norm 1
+        # 2. Add & Norm
         x = src + attn_output 
         x = self.norm1(x)
 
-        # 3. Feedforward Network
+        # 3. BitNet FFN (Accumulation based)
         ff_spikes, _ = self.neuron_ff(self.linear1(x))
         ff_output_analog = self.linear2(ff_spikes)
         ff_output_spikes, _ = self.neuron_ff2(ff_output_analog)
 
-        # 4. Residual Connection 2 + Norm 2
+        # 4. Add & Norm
         x = x + ff_output_spikes
         x = self.norm2(x)
 
@@ -136,7 +133,7 @@ class SpikingTransformerV2(BaseModel):
         self.output_projection = nn.Linear(d_model, vocab_size)
 
         self._init_weights()
-        logging.info(f"✅ SpikingTransformerV2 (SDSA, ViT, Cross-Modal) initialized.")
+        logging.info(f"✅ SpikingTransformerV2 (SDSA, ViT, Cross-Modal, BitNet) initialized.")
 
     def forward(self, 
                 input_ids: Optional[torch.Tensor] = None, 
@@ -153,7 +150,6 @@ class SpikingTransformerV2(BaseModel):
         
         SJ_F.reset_net(self)
 
-        # 1. ベース入力の埋め込み
         if input_ids is not None:
             B, N = input_ids.shape
             device = input_ids.device
@@ -172,23 +168,17 @@ class SpikingTransformerV2(BaseModel):
         else:
             raise ValueError("Either input_ids or input_images must be provided.")
 
-        # 2. Cross-Modal Injection
         if context_embeds is not None:
             if context_embeds.shape[0] != B:
                  if context_embeds.shape[0] == 1:
                       context_embeds = context_embeds.expand(B, -1, -1)
                  else:
-                      logging.warning(f"Context batch size {context_embeds.shape[0]} != Input batch size {B}. Skipping injection.")
                       context_embeds = None
-
             if context_embeds is not None:
                 x = torch.cat([context_embeds, x], dim=1) 
                 N = x.shape[1] 
 
-        # --- 時間ステップループ ---
         outputs_over_time = []
-
-        # 各レイヤーをStatefulに設定
         for layer_module in self.layers:
              layer = cast(SDSAEncoderLayer, layer_module)
              layer.set_stateful(True)
@@ -202,13 +192,10 @@ class SpikingTransformerV2(BaseModel):
 
         x_final = torch.stack(outputs_over_time).mean(dim=0)
 
-        # --- 修正: リセット前にスパイクを集計 ---
         avg_spikes_val = 0.0
         if return_spikes:
             avg_spikes_val = self.get_total_spikes() / (B * N * self.time_steps)
-        # ------------------------------------
 
-        # Stateful解除 (リセット)
         for layer_module in self.layers:
              layer = cast(SDSAEncoderLayer, layer_module)
              layer.set_stateful(False)
