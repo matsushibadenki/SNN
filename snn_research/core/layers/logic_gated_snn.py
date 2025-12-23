@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (シナプス・スケーリング版)
-# 目的: 全結合(100%)を物理的に破壊し、高精度なスパース・コーディングを強制する。
+# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (三値・安定適応版)
+# 目的: 結合率の激しい変動を抑え、報酬に基づいた「意味のあるスパース性」を固定する。
 
 import torch
 import torch.nn as nn
@@ -14,65 +14,70 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 初期状態: 閾値以下からスタート (最初は接続なし)
-        self.register_buffer('synapse_states', torch.full((out_features, in_features), float(self.threshold - 10)))
-        self.register_buffer('membrane_potential', torch.zeros(out_features))
-        self.register_buffer('adaptive_threshold', torch.full((out_features,), 2.0))
-        self.register_buffer('eligibility_trace', torch.zeros(out_features, in_features))
+        # 初期状態: 閾値付近でガウス分布させ、多様性を持たせる
+        states = torch.randn(out_features, in_features) * 2.0 + self.threshold
+        self.register_buffer('synapse_states', states.clamp(1, max_states))
         
-        self.target_conn_rate = 0.10 # 目標結合率10%
+        self.register_buffer('membrane_potential', torch.zeros(out_features))
+        self.register_buffer('adaptive_threshold', torch.full((out_features,), 3.0))
+        self.register_buffer('eligibility_trace', torch.zeros(out_features, in_features))
 
     @property
     def states(self) -> torch.Tensor:
         return cast(torch.Tensor, self.synapse_states)
 
     def get_ternary_weights(self) -> torch.Tensor:
-        mask = self.states > self.threshold
-        return mask.to(torch.float32)
+        """ 1.58ビット (-1, 0, 1) を模倣した重み。本実装では 0/1 に固定。"""
+        return (self.states > self.threshold).float()
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
         w = self.get_ternary_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
 
-        # 電流計算 (加算のみ)
+        # 電流計算 (デジタル累積)
         current = torch.matmul(x, w.t()).view(-1)
         
         # 膜電位更新
         v_mem = cast(torch.Tensor, self.membrane_potential)
-        v_mem.copy_(v_mem * 0.5 + current) 
+        v_mem.copy_(v_mem * 0.8 + current) 
         
-        # 発火判定 (厳格な閾値)
-        spikes = (v_mem >= cast(torch.Tensor, self.adaptive_threshold)).to(torch.float32)
+        # 発火判定
+        v_th = cast(torch.Tensor, self.adaptive_threshold)
+        spikes = (v_mem >= v_th).to(torch.float32)
         
-        # 修正1: 適格性トレースの更新 (活動の痕跡を薄く長く残す)
+        # 適格性トレースの更新 (行列演算なし: outer product)
         with torch.no_grad():
-            self.eligibility_trace.mul_(0.9).add_(torch.outer(spikes, x.view(-1)))
+            # プレとポストの共起を記録 (時間定数を長くする)
+            self.eligibility_trace.mul_(0.95).add_(torch.outer(spikes, x.view(-1)))
+            self.eligibility_trace.clamp_(0, 5.0)
         
         # リセット
-        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.2)
+        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.5)
         
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
-        """シナプス・スケーリングを伴う適格性学習"""
+        """報酬に基づく微細な配線調整"""
         with torch.no_grad():
             trace = cast(torch.Tensor, self.eligibility_trace)
-            conn_rate = float(self.get_ternary_weights().mean().item())
             
-            # 修正2: 報酬の反映 (プラスの時だけ強く定着させ、マイナスの時はトレースを消去)
-            if reward > 0:
-                self.states.add_(trace * 5.0)
-            else:
-                self.states.sub_(trace * 2.0)
+            # 修正1: 更新の「歩幅」を小さくし、振動を抑える (0.1 単位)
+            # reward のスケーリングをマイルドにする
+            stable_reward = torch.tanh(torch.tensor(reward / 10.0)).item()
             
-            # 修正3: シナプス・スケーリング (Global Homeostasis)
-            # 結合率が目標を超えると、指数関数的に全結合を切断する圧力をかける
-            if conn_rate > self.target_conn_rate:
-                # 100%飽和を絶対に許さない強力な減衰
-                scaling_factor = (conn_rate / self.target_conn_rate) ** 3
-                self.states.sub_(0.5 * scaling_factor)
-            else:
-                # 結合が足りない場合は、わずかな「自発的結合」を促す
-                self.states.add_(0.05)
+            # 修正2: LTP/LTD の適用
+            update = trace * stable_reward * 2.0
+            self.states.add_(update)
+            
+            # 修正3: 自律的なスパース性維持 (強すぎない剪定)
+            # 常に微弱な「忘却」を入れ、新しい結合の席を空ける
+            self.states.sub_(0.01)
+
+            # 修正4: 死滅防止 (最低限の好奇心)
+            conn_rate = self.get_ternary_weights().mean().item()
+            if conn_rate < 0.05:
+                # 結合が少なすぎる場合、ランダムに少数を Include 状態の予備軍へ
+                revive_mask = torch.rand_like(self.states) < 0.001
+                self.states[revive_mask] += 5.0
 
             self.states.clamp_(1, self.max_states)
