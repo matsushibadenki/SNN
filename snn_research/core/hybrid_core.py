@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (探索促進報酬版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (スパース性優先報酬版)
 
 import torch
 import torch.nn as nn
@@ -30,21 +30,22 @@ class HybridNeuromorphicCore(nn.Module):
                 t_f = target.view(-1)
                 o_f = out.view(-1)
                 
-                # スパイク一致でプラス、不一致または「沈黙」にペナルティ
+                # 修正: 一致(Hit)の加点を抑え、誤発火(False Positive)を極めて厳しく罰する
                 hits = torch.sum(t_f * o_f)
-                if hits > 0:
-                    reward = float(hits.item() * 5.0)
-                elif out.sum() == 0:
-                    reward = -1.0 # 沈黙に対する明確な罰
+                misses = torch.sum((1 - t_f) * o_f)
+                
+                # スパース性を促すため、何も出さない(Silence)は「微罰」程度に留める
+                if out.sum() == 0:
+                    reward = -0.1
                 else:
-                    reward = -0.5 # 誤発火に対する罰
+                    reward = float(hits.item() * 5.0 - misses.item() * 15.0)
             
             self.fast_process.update_plasticity(x_input.view(-1), f.view(-1), reward=reward)
             self.output_gate.update_plasticity(r.view(-1), out.view(-1), reward=reward)
             
             surprise = 0.0
             if self.deep_process.last_error is not None:
-                surprise = float(self.deep_process.last_error.pow(2).mean().item())
+                surprise = float(self.deep_process.last_error.abs().mean().item())
             
         return {
             "prediction_error": surprise,
