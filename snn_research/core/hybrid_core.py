@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (代謝報酬版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (効率最適化報酬版)
 
 import torch
 import torch.nn as nn
@@ -30,13 +30,14 @@ class HybridNeuromorphicCore(nn.Module):
                 t_f = target.view(-1)
                 o_f = out.view(-1)
                 
-                # 沈黙は許容しないが、過激な罰も避ける
                 if out.sum() == 0:
-                    reward = -1.0
+                    reward = -2.0 # 沈黙への罰
                 else:
                     hits = torch.sum(t_f * o_f)
                     misses = torch.sum((1 - t_f) * o_f)
-                    reward = float(hits.item() * 5.0 - misses.item() * 2.0)
+                    # 修正5: 精度を重視しつつ、発火コスト(スパース性)も考慮
+                    reward = float(hits.item() * 15.0 - misses.item() * 3.0)
+                    reward -= (out.sum().item() * 0.1) # 発火コスト
             
             self.fast_process.update_plasticity(x_input.view(-1), f.view(-1), reward=reward)
             self.output_gate.update_plasticity(r.view(-1), out.view(-1), reward=reward)
