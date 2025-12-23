@@ -1,17 +1,17 @@
-# ファイルパス: snn_research/core/layers/lif_layer.py
-# タイトル: LIF SNNレイヤー (物理モデル実装・mypy修正版)
-# 目的: 正しいLeaky Integrate-and-Fireダイナミクスを実装し、Buffer演算エラーを解消する。
+# /snn_research/core/layers/lif_layer.py
+# 日本語タイトル: LIF SNNレイヤー (物理ダイナミクス安定版)
+# 目的: 正しいLIFモデルの実装と、計算グラフの勾配不連続性を解消する。
 
 import torch
 import torch.nn as nn
 from torch import Tensor
+import math
 from typing import Dict, Any, Optional, Tuple, cast
 from snn_research.core.layers.abstract_snn_layer import AbstractSNNLayer
 
 class SurrogateHeaviside(torch.autograd.Function):
     """
-    発火関数のための代理勾配（Surrogate Gradient）。
-    順伝播ではHeaviside関数、逆伝播ではSigmoid導関数などを使用。
+    ステップ関数の不連続性を解消するための代理勾配（Surrogate Gradient）。
     """
     @staticmethod
     def forward(ctx: Any, input: Tensor, alpha: float = 2.0) -> Tensor:
@@ -23,96 +23,88 @@ class SurrogateHeaviside(torch.autograd.Function):
     def backward(ctx: Any, grad_output: Tensor) -> Tuple[Tensor, None]:
         input, = ctx.saved_tensors
         alpha = ctx.alpha
-        # sigmoidの導関数近似: alpha * sigmoid(x) * (1 - sigmoid(x))
-        # ここでは簡易的に矩形近似またはアークタンジェント系を使用可能だが、
-        # 安定性の高いsigmoidベースを採用
-        sgax = (input * alpha).sigmoid_()
-        grad_input = grad_output * (1 - sgax) * sgax * alpha
+        # 高精度なSigmoid導関数近似
+        sgax = (input * alpha).sigmoid()
+        grad_input = grad_output * (1.0 - sgax) * sgax * alpha
         return grad_input, None
 
 class LIFLayer(AbstractSNNLayer):
     """
-    LIFレイヤーの具象クラス。
-    物理的に正しい膜電位ダイナミクスを実装。
-    mypyエラー [operator] "Tensor" not callable を防ぐため、Buffer操作を最適化。
+    LIF（Leaky Integrate-and-Fire）ニューロンレイヤー。
+    バッファ演算の最適化により、分散学習時や型チェック時の安定性を確保。
     """
     def __init__(self, input_features: int, neurons: int, **kwargs: Any) -> None:
         learning_config = kwargs.get('learning_config', {})
         name = kwargs.get('name', 'LIFLayer')
-        # AbstractLayer の初期化
         super().__init__((input_features,), (neurons,), learning_config, name)
         
         self._input_features = input_features
         self._neurons = neurons
         
-        # パラメータ: 減衰率(decay)と閾値(threshold)
-        # configから取得、なければデフォルト値
-        self.decay = kwargs.get('decay', 0.5)
+        # LIFパラメータ
+        self.decay = kwargs.get('decay', 0.9)  # 減衰率（時定数に依存）
         self.threshold = kwargs.get('threshold', 1.0)
         self.v_reset = kwargs.get('v_reset', 0.0)
         
-        self.W = nn.Parameter(torch.empty(neurons, input_features), requires_grad=True) # 重みは学習可能に修正
-        self.b = nn.Parameter(torch.empty(neurons), requires_grad=True)
+        # 重みとバイアス
+        self.W = nn.Parameter(torch.empty(neurons, input_features))
+        self.b = nn.Parameter(torch.empty(neurons))
         
         self.membrane_potential: Optional[Tensor] = None
         self.surrogate_function = SurrogateHeaviside.apply
         
-        # 集計用のバッファを登録
+        # 統計用バッファ（モデル保存・同期対象）
         self.register_buffer('total_spikes', torch.tensor(0.0))
         self.build()
 
     def build(self) -> None:
-        """パラメータの初期化。"""
-        nn.init.kaiming_uniform_(self.W, a=math.sqrt(5) if hasattr(math, 'sqrt') else 2.23) 
-        if self.b is not None:
-            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.W)
-            bound = 1 / (fan_in ** 0.5) if fan_in > 0 else 0
-            nn.init.uniform_(self.b, -bound, bound)
+        """重みのKaiming初期化。"""
+        nn.init.kaiming_uniform_(self.W, a=math.sqrt(5))
+        fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.W)
+        bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+        nn.init.uniform_(self.b, -bound, bound)
         self.built = True
 
     def reset_state(self) -> None:
-        """膜電位の状態リセット。"""
+        """膜電位の状態を完全にクリア。"""
         self.membrane_potential = None
 
     def forward(self, inputs: Tensor, model_state: Optional[Dict[str, Tensor]] = None) -> Dict[str, Tensor]:
         """
-        順伝播: Leaky Integrate-and-Fire Dynamics
-        V[t] = V[t-1] * decay + X[t] * W + b
-        Spike = 1 if V[t] >= threshold else 0
-        V[t] = V_reset if Spike else V[t]
+        物理ダイナミクスの計算ステップ。
+        1. 入力積分 2. 減衰 3. 発火判定 4. リセット
         """
         if not self.built:
             self.build()
 
-        # 入力の線形変換 I[t] = X[t]W^T + b
-        # inputs shape: [Batch, Input_Features]
-        current_input = torch.nn.functional.linear(inputs, self.W, self.b)
+        # 線形変換（シナプス入力）
+        synaptic_input = torch.nn.functional.linear(inputs, self.W, self.b)
 
-        # 膜電位の初期化
-        if self.membrane_potential is None or self.membrane_potential.shape != current_input.shape:
-            self.membrane_potential = torch.zeros_like(current_input, device=inputs.device)
+        # 膜電位の状態管理
+        if self.membrane_potential is None or self.membrane_potential.shape != synaptic_input.shape:
+            self.membrane_potential = torch.zeros_like(synaptic_input)
             
-        # LIF ダイナミクス
-        # 1. 積分 (Decay & Integrate)
-        self.membrane_potential = self.membrane_potential * self.decay + current_input
+        # --- LIFダイナミクス ---
+        # 1. 積分と減衰 (Leaky Integration)
+        self.membrane_potential = self.membrane_potential * self.decay + synaptic_input
         
-        # 2. 発火判定 (Surrogate Gradient適用)
-        # thresholdを引いて0基準にする
-        spike_input = self.membrane_potential - self.threshold
-        spikes = self.surrogate_function(spike_input)
+        # 2. 発火判定 (Fire)
+        # 閾値を超えた場合にスパイクを生成。代理勾配により誤差逆伝播が可能。
+        v_shifted = self.membrane_potential - self.threshold
+        spikes = self.surrogate_function(v_shifted)
         
-        # 3. リセット (Hard Reset or Soft Reset)
-        # ここではHard Reset (V = v_reset) を採用
+        # 3. リセット (Hard Reset)
+        # スパイクが発生した場所の膜電位を v_reset に戻す
         mask = (spikes > 0.0).float()
-        self.membrane_potential = self.membrane_potential * (1 - mask) + self.v_reset * mask
+        self.membrane_potential = self.membrane_potential * (1.0 - mask) + self.v_reset * mask
         
-        # --- mypyエラー [operator] 修正 ---
-        # Bufferテンソルを直接参照して add_ メソッドを呼び出す
+        # 4. 統計更新 (mypy対応: Bufferへの安全な加算)
         current_spikes_sum = spikes.sum().detach()
-        # self.total_spikes は Tensor であることを明示して演算
+        # Tensor型であることを明示してインプレース加算
         target_buffer = cast(Tensor, self.total_spikes)
         target_buffer.add_(current_spikes_sum)
         
-        return {'activity': spikes, 'membrane_potential': self.membrane_potential}
-
-import math
+        return {
+            'activity': spikes, 
+            'membrane_potential': self.membrane_potential
+        }
