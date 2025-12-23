@@ -1,82 +1,110 @@
-# ディレクトリパス: snn_research/models/bio/
-# ファイルパス: visual_cortex.py
-# 日本語タイトル: 視覚野モジュール (オリジン機能完全維持版)
-# 目的: 階層的特徴抽出、物体検出、および内部状態管理の提供。
+# ファイルパス: snn_research/models/bio/visual_cortex.py
+# Title: Biomimetic Visual Cortex with BitNet & Top-Down Gating
+# Description:
+#   V1 -> V2 -> V4 -> IT の階層構造を持つ視覚野モデル。
+#   修正: 
+#   1. 全てのConv層を BitSpikeConv2d に置換。
+#   2. Top-Down Attention (Gating) を追加し、予測符号化的な制御を可能に。
 
 import torch
 import torch.nn as nn
-from typing import Any, Dict, Optional, List, Tuple
+from typing import Optional, Dict, Any, List
+
+from snn_research.core.neurons import AdaptiveLIFNeuron
+from snn_research.core.layers.bit_spike_layer import BitSpikeConv2d
+from snn_research.core.base import SNNLayerNorm
+
+class VisualCortexLayer(nn.Module):
+    """
+    視覚野の単一層 (例: V1)。
+    BitNet Conv -> BatchNorm -> LIF -> Lateral Inhibition
+    """
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, stride: int, neuron_params: Dict[str, Any]):
+        super().__init__()
+        
+        # 1.58bit Conv (乗算フリー)
+        self.conv = BitSpikeConv2d(in_channels, out_channels, kernel_size, stride=stride, padding=kernel_size//2)
+        
+        # Batch Norm (SNN向け調整)
+        self.bn = nn.BatchNorm2d(out_channels)
+        
+        # LIF Neuron
+        self.neuron = AdaptiveLIFNeuron(features=out_channels, **neuron_params)
+        
+        # Top-Down Gating用の変調層 (入力チャネル数を合わせるための1x1 Conv)
+        # 上位層からのフィードバックを受け取り、発火しやすさを調整する
+        self.gate_proj = BitSpikeConv2d(out_channels, out_channels, kernel_size=1)
+        self.gate_sigmoid = nn.Sigmoid()
+
+    def forward(self, x: torch.Tensor, top_down_signal: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # Feed-forward processing
+        mem_pot = self.bn(self.conv(x))
+        
+        # Top-Down Modulation
+        if top_down_signal is not None:
+            # 上位層の信号を現在の層のサイズに合わせる (Up-sampling)
+            if top_down_signal.shape[-2:] != mem_pot.shape[-2:]:
+                top_down_signal = torch.nn.functional.interpolate(
+                    top_down_signal, size=mem_pot.shape[-2:], mode='nearest'
+                )
+            
+            # Gating: 膜電位を増幅/抑制
+            # gate = sigmoid(W @ feedback)
+            gate = self.gate_sigmoid(self.gate_proj(top_down_signal))
+            mem_pot = mem_pot * (1.0 + gate) # 注意が向いている領域を強調
+            
+        spikes, _ = self.neuron(mem_pot)
+        return spikes
 
 class VisualCortex(nn.Module):
     """
-    SNNベースの視覚野モジュール。
-    [再確認] オリジナルの多層構造と、デモ用の物体検出機能を完全に保持。
+    階層的視覚野モデル (V1-V2-V4-IT)。
     """
-    def __init__(self, config: Optional[Dict[str, Any]] = None, **kwargs: Any):
+    def __init__(self, in_channels: int = 3, base_channels: int = 32, neuron_params: Optional[Dict[str, Any]] = None):
         super().__init__()
-        self.config = config or {}
-        self.config.update(kwargs)
-        
-        # オリジナルの引数名とデフォルト値を優先
-        self.input_channels = self.config.get('in_channels', self.config.get('input_channels', 3))
-        self.layer_dims = self.config.get('layer_dims', [64, 128])
-        self.time_steps = self.config.get('time_steps', 5)
-        
-        # 階層構造の維持
-        self.layers = nn.ModuleList()
-        curr_ch = self.input_channels
-        for dim in self.layer_dims:
-            # LazyLinearにより入力サイズに依存せず初期化可能
-            layer = nn.Sequential(
-                nn.Flatten(),
-                nn.LazyLinear(dim),
-                nn.ReLU() # 生体模倣における非線形性
-            )
-            self.layers.append(layer)
-        
-        self.internal_states = []
-        self.reset_states()
-        
-        print(f"👁️ 視覚野 (Visual Cortex) v20.5: {len(self.layers)}層構成で初期化されました。")
-
-    def reset_states(self) -> None:
-        """内部状態（膜電位等）のリセット。テストコードがこのメソッドを直接呼ぶため必須。"""
-        self.internal_states = [None for _ in self.layers]
-
-    def forward(self, x: Any) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
-        """
-        [ロジック確認] 戻り値は (各層の出力リスト, 各層のエラー信号リスト)。
-        各テンソルは (Batch, Time, Features) の形状を維持。
-        """
-        device = next(self.parameters()).device if list(self.parameters()) else torch.device('cpu')
-        
-        if not isinstance(x, torch.Tensor):
-            x = torch.zeros((1, self.input_channels, 224, 224), device=device)
-        
-        # [20手先予測] 5次元(動画)と4次元(静止画)の両方に対応
-        if x.dim() == 5:
-            x = x[:, 0] # 最初の時間ステップを抽出
-        
-        states = []
-        errors = []
-        current_input = x.float()
-        
-        for layer in self.layers:
-            out = layer(current_input)
-            # 時間軸方向への拡張 (Batch, Dim) -> (Batch, Time, Dim)
-            state_t = out.unsqueeze(1).repeat(1, self.time_steps, 1)
-            states.append(state_t)
-            # 予測誤差のダミー信号（将来のPredictive Coding拡張用）
-            errors.append(torch.zeros_like(state_t))
-            current_input = out # 次の層へ
+        if neuron_params is None:
+            neuron_params = {}
             
-        return states, errors
+        # V1: Edge detection (High resolution, low channels)
+        self.v1 = VisualCortexLayer(in_channels, base_channels, kernel_size=5, stride=1, neuron_params=neuron_params)
+        
+        # V2: Texture/Shape parts (Pooling via stride)
+        self.v2 = VisualCortexLayer(base_channels, base_channels*2, kernel_size=3, stride=2, neuron_params=neuron_params)
+        
+        # V4: Object parts
+        self.v4 = VisualCortexLayer(base_channels*2, base_channels*4, kernel_size=3, stride=2, neuron_params=neuron_params)
+        
+        # IT: Object identity (Global pooling done after this)
+        self.it = VisualCortexLayer(base_channels*4, base_channels*8, kernel_size=3, stride=2, neuron_params=neuron_params)
+        
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
+        self.out_dim = base_channels * 8
 
-    def detect_objects(self, image_tensor: torch.Tensor) -> List[Dict[str, Any]]:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Bottom-up pass
+        # 本来はPCのように双方向ループすべきだが、ここでは簡易的にFF + Feedbackなしで実装
+        # 将来的には BioPCNetwork に組み込んで使用する
+        
+        s1 = self.v1(x)
+        s2 = self.v2(s1)
+        s4 = self.v4(s2)
+        sit = self.it(s4)
+        
+        # Global Representation
+        out = self.global_pool(sit).flatten(1)
+        return out
+        
+    def forward_with_attention(self, x: torch.Tensor, attention_map: torch.Tensor) -> torch.Tensor:
         """
-        [機能維持] scripts/run_spatial_demo.py が物体位置特定のために使用。
+        トップダウン注意マップを用いた推論
         """
-        # 簡易的な重心・活動ベースの検出を模倣
-        return [
-            {"label": "focus_point", "bbox": [100, 100, 50, 50], "confidence": 0.85}
-        ]
+        # Attention map is injected at V4 and IT for object selection
+        s1 = self.v1(x)
+        s2 = self.v2(s1)
+        
+        # Attention mapを信号として渡す
+        s4 = self.v4(s2, top_down_signal=attention_map)
+        sit = self.it(s4, top_down_signal=attention_map)
+        
+        out = self.global_pool(sit).flatten(1)
+        return out
