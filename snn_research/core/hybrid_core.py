@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (拮抗学習版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (報酬安定版)
 
 import torch
 import torch.nn as nn
@@ -25,14 +25,14 @@ class HybridNeuromorphicCore(nn.Module):
             r = self.deep_process(f)
             out = self.output_gate(r)
             
-            # 報酬の再定義: 一致していなければマイナスを大きく出す
-            reward = -0.5
+            # 報酬の滑らかな計算
+            reward = 0.0
             if target is not None:
-                match = torch.dot(target.view(-1), out.view(-1))
-                # 正解と一致していれば正、そうでなければ負
-                reward = float(match.item()) - 0.2
+                # ターゲットとの一致度を 0.0 〜 1.0 で算出
+                match_score = torch.sum(target.view(-1) * out.view(-1))
+                # 期待値との差分
+                reward = float(match_score.item()) - 0.1
             
-            # 負の報酬による剪定を駆動
             self.fast_process.update_plasticity(x_input.view(-1), f.view(-1), reward=reward)
             self.output_gate.update_plasticity(r.view(-1), out.view(-1), reward=reward)
             
