@@ -1,6 +1,6 @@
 # /snn_research/models/adapters/async_mamba_adapter.py
-# 日本語タイトル: AsyncBitSpikeMamba アダプター (パラメータ展開修正版)
-# 目的: BitSpikeMambaモデルの引数要件を満たし、統合テストの初期化エラーを完全に解消する。
+# 日本語タイトル: AsyncBitSpikeMamba アダプター (シグネチャ完全整合版)
+# 目的: BitSpikeMambaが要求する vocab_size を含む全引数を網羅し、統合テストのエラーを解消する。
 
 import torch
 import torch.nn as nn
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class AsyncBitSpikeMambaAdapter(nn.Module):
     """
     非同期実行環境とBitSpikeMambaモデルを橋渡しするアダプター。
-    [Fix] モデル初期化時の引数ミスマッチを解消。
+    [Fix] BitSpikeMambaの初期化に必要な 'vocab_size' 引数不足を解消。
     """
     def __init__(
         self, 
@@ -30,11 +30,12 @@ class AsyncBitSpikeMambaAdapter(nn.Module):
             
         self.device = device
         
-        # ◾️ 修正箇所: BitSpikeMambaが個別の引数を要求するため、辞書を展開して渡す
+        # モデル構築用のパラメータ抽出
         from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
         
-        # 必須パラメータの抽出 (不足時はデフォルト値を設定)
+        # ◾️ 修正箇所: 必須引数 'vocab_size' を追加 (テスト環境の期待値に適合)
         model_params = {
+            "vocab_size": self.config_dict.get("vocab_size", 50257), # GPT-2デフォルト値をフォールバックに設定
             "d_model": self.config_dict.get("d_model", 128),
             "d_state": self.config_dict.get("d_state", 16),
             "d_conv": self.config_dict.get("d_conv", 4),
@@ -44,35 +45,44 @@ class AsyncBitSpikeMambaAdapter(nn.Module):
             "neuron_config": self.config_dict.get("neuron_config", {"type": "lif"})
         }
         
-        # キーワード引数として展開してモデルを構築
-        self.model = BitSpikeMamba(**model_params)
+        # キーワード引数として一括展開してモデルを初期化
+        try:
+            self.model = BitSpikeMamba(**model_params)
+            logger.info(f"🧠 BitSpikeMamba model initialized with vocab_size={model_params['vocab_size']}")
+        except TypeError as e:
+            logger.error(f"❌ Initialization failed. Argument mismatch: {e}")
+            raise e
         
         # 指定されたデバイスへ転送
         self.to(device)
         
-        # チェックポイントの自動ロード
+        # チェックポイントの自動ロード (以前の修正を継承)
         if checkpoint_path and os.path.exists(checkpoint_path):
             try:
+                # 形状不一致を許容する安全なロード
                 state_dict = torch.load(checkpoint_path, map_location=device)
                 self.load_state_dict_safe(state_dict)
-                logger.info(f"✅ Loaded checkpoint: {checkpoint_path}")
             except Exception as e:
-                logger.error(f"❌ Failed to load checkpoint: {e}")
+                logger.error(f"⚠️ Checkpoint load failed: {e}")
 
     def load_state_dict_safe(self, state_dict: Dict[str, torch.Tensor]):
-        """形状が一致する重みのみをロードする。"""
+        """形状が一致する重みのみを適用する。"""
         model_dict = self.state_dict()
-        filtered_dict = {}
-        for k, v in state_dict.items():
-            if k in model_dict and v.shape == model_dict[k].shape:
-                filtered_dict[k] = v
-        
+        filtered_dict = {
+            k: v for k, v in state_dict.items() 
+            if k in model_dict and v.shape == model_dict[k].shape
+        }
         self.load_state_dict(filtered_dict, strict=False)
+        logger.info(f"✅ Safe load: {len(filtered_dict)} consistent keys applied.")
 
     def forward(self, x: torch.Tensor, **kwargs: Any) -> torch.Tensor:
-        # 入力を適切な形状とデバイスに調整
-        if x.dim() == 2: # (Batch, Features) -> (Batch, Time, Features)
-            x = x.unsqueeze(1).repeat(1, self.config_dict.get("time_steps", 16), 1)
+        """SNNの期待する3D形状への変換と推論。"""
+        if x.dim() == 2:
+            # (Batch, SeqLen) -> トークンID入力の場合はそのまま、特徴量なら次元拡張
+            if x.dtype == torch.long:
+                pass # モデル内部のEmbedding層で処理
+            else:
+                x = x.unsqueeze(1).repeat(1, self.config_dict.get("time_steps", 16), 1)
         
         x = x.to(self.device)
         return self.model(x, **kwargs)
