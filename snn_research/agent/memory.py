@@ -1,8 +1,8 @@
 # /snn_research/agent/memory.py
-# 日本語タイトル: エージェント・メモリ管理 (API完全整合版)
-# 目的: SelfEvolvingAgentMaster および RAGSystem とのインターフェース不整合を解消し、型安全な記憶管理を実現する。
+# 日本語タイトル: エージェント・メモリ管理 (型安全性強化版)
+# 目的: 報酬値の計算における型不一致エラーを解消し、堅牢な経験検索を実現する。
 
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from typing import List, Dict, Any, Optional, TYPE_CHECKING, Union
 import time
 import json
 import logging
@@ -21,7 +21,6 @@ class Memory:
     def __init__(self, rag_system: Optional['RAGSystem'] = None, capacity: int = 100, memory_path: str = "runs/agent_memory.jsonl"):
         self.short_term_memory: List[Dict[str, Any]] = []
         self.capacity = capacity
-        # rag_systemが注入されない場合は、後続の型エラーを防ぐためNoneを許容し、操作時にチェック
         self.rag_system = rag_system
         self.long_term_storage: List[Dict[str, Any]] = [] 
         self.memory_path = memory_path
@@ -55,15 +54,12 @@ class Memory:
         state: Dict[str, Any],
         action: str,
         result: Any,
-        reward: Dict[str, Any],
+        reward: Union[Dict[str, Any], float, int],
         expert_used: List[str],
         decision_context: Dict[str, Any],
         causal_snapshot: Optional[str] = None
     ):
-        """
-        [Fix] 経験を詳細に記録する。
-        SelfEvolvingAgentMaster からの呼び出し引数に完全準拠。
-        """
+        """経験を詳細に記録する。"""
         entry = {
             "state": state,
             "action": action,
@@ -83,17 +79,17 @@ class Memory:
             logger.error(f"Failed to write experience to file: {e}")
 
     def _consolidate(self, entry: Dict[str, Any]):
-        """[Fix] 短期記憶の項目を RAGSystem (長期記憶) へ転送する。"""
+        """短期記憶の項目を RAGSystem (長期記憶) へ転送する。"""
         if self.rag_system:
             text_content = json.dumps(entry, ensure_ascii=False)
             
-            # ◾️ 修正: RAGSystem.add_knowledge を使用
+            # RAGSystem.add_knowledge を使用
             self.rag_system.add_knowledge(
                 text=text_content, 
                 metadata={"source": "memory_consolidation", "action": entry.get("action", "unknown")}
             )
             
-            # ◾️ 修正: RAGSystem.add_triple を使用して因果・関係性を保存
+            # RAGSystem.add_triple を使用して関係性を保存
             if "action" in entry and "result" in entry:
                 self.rag_system.add_triple(
                     subj=f"Action:{entry['action']}",
@@ -107,14 +103,12 @@ class Memory:
     def retrieve(self, query: str, top_k: int = 3) -> List[str]:
         """短期および長期記憶から検索を行う。"""
         results: List[str] = []
-        # 短期記憶からの簡易検索
         for item in reversed(self.short_term_memory):
             if query in str(item):
                 results.append(json.dumps(item, ensure_ascii=False))
                 if len(results) >= top_k:
                     return results
         
-        # 長期記憶（RAG）からのベクトル検索
         if self.rag_system:
             rag_results = self.rag_system.search(query, k=top_k - len(results))
             results.extend(rag_results)
@@ -122,17 +116,33 @@ class Memory:
         return results
     
     def retrieve_successful_experiences(self, top_k: int = 5) -> List[Dict[str, Any]]:
-        """報酬が高い成功体験を優先的に取得する。"""
+        """
+        [Fix] 報酬が高い成功体験を優先的に取得する。
+        mypy [arg-type] エラーを解消するため、数値抽出ロジックを堅牢化。
+        """
         candidates = self.long_term_storage + self.short_term_memory
         
         def get_reward_value(item: Dict[str, Any]) -> float:
-            r = item.get('reward', 0)
+            r = item.get('reward', 0.0)
+            
+            # 報酬が辞書形式の場合（外部報酬と内部報酬がある場合）
             if isinstance(r, dict):
-                return float(r.get('external', r.get('internal', 0.0)))
+                # 明示的に型チェックを行い、Noneを排除して float に変換
+                ext_r = r.get('external')
+                int_r = r.get('internal')
+                
+                if ext_r is not None:
+                    return float(ext_r)
+                if int_r is not None:
+                    return float(int_r)
+                return 0.0
+            
+            # 報酬が数値または文字列の場合
             try:
-                return float(r)
+                return float(r) if r is not None else 0.0
             except (ValueError, TypeError):
                 return 0.0
 
+        # 計算された数値に基づいてソート
         candidates.sort(key=get_reward_value, reverse=True)
         return candidates[:top_k]
