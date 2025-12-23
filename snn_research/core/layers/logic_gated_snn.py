@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (構造的覚醒・適応利得版)
-# 目的: 学習初期に爆発的な結合試行を行い、正解パターンを捕獲した後にスパース化へ移行する。
+# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (情報の定着・粘性版)
+# 目的: 急激なプルーニングによる情報の消失を防ぎ、Acc 10% 以上の回路を「骨組み」として維持する。
 
 import torch
 import torch.nn as nn
@@ -14,13 +14,14 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 修正1: 初期状態を閾値の「直上」に設定し、最初は全結合に近い状態から探索を始める
-        self.register_buffer('synapse_states', torch.full((out_features, in_features), float(self.threshold + 2)))
+        # 修正1: 閾値周辺に固め、わずかな報酬で Include/Exclude が切り替わる「感受性」を確保
+        self.register_buffer('synapse_states', torch.full((out_features, in_features), float(self.threshold - 1)))
         self.register_buffer('membrane_potential', torch.zeros(out_features))
-        self.register_buffer('adaptive_threshold', torch.full((out_features,), 1.0)) # 閾値を下げて反応性を高める
+        self.register_buffer('adaptive_threshold', torch.full((out_features,), 2.0))
         self.register_buffer('eligibility_trace', torch.zeros(out_features, in_features))
         
-        self.target_conn_rate = 0.15 # 最終的な目標密度
+        # 修正2: 認識に必要な最小限の「情報の太さ」を確保 (15% - 25%)
+        self.target_conn_rate = 0.20
 
     @property
     def states(self) -> torch.Tensor:
@@ -33,48 +34,51 @@ class LogicGatedSNN(nn.Module):
         w = self.get_ternary_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        current = torch.matmul(x, w.t()).view(-1)
+        # 修正3: 非線形増幅の強化 (特定の経路が一致した時だけ爆発的に電位を上げる)
+        raw_current = torch.matmul(x, w.t()).view(-1)
+        current = torch.pow(raw_current, 1.5) # 重畳の一致を強調
         
         v_mem = cast(torch.Tensor, self.membrane_potential)
-        v_mem.mul_(0.6).add_(current)
+        v_mem.mul_(0.7).add_(current)
         
         v_th = cast(torch.Tensor, self.adaptive_threshold)
         spikes = (v_mem >= v_th).to(torch.float32)
         
         with torch.no_grad():
-            # 修正2: トレースの感度を極限まで上げる
-            self.eligibility_trace.mul_(0.7).add_(torch.outer(spikes, x.view(-1)) * 5.0)
-            self.eligibility_trace.clamp_(0, 10.0)
+            # トレース更新 (活動の記憶)
+            self.eligibility_trace.mul_(0.9).add_(torch.outer(spikes, x.view(-1)))
+            self.eligibility_trace.clamp_(0, 5.0)
             
-            # 発火が少なすぎる個体の閾値を急速に下げて「無理やり」発火させる
-            self.adaptive_threshold.add_((spikes - 0.1) * 0.1)
-            self.adaptive_threshold.clamp_(0.2, 5.0)
+            # ホメオスタシス: 発火率の適正化
+            self.adaptive_threshold.add_((spikes - 0.1) * 0.05)
+            self.adaptive_threshold.clamp_(0.5, 10.0)
         
         self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.2)
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
-        """ 激しい探索から洗練へ移行する可塑性ルール """
+        """ 粘性を持たせた『彫刻』学習則 """
         with torch.no_grad():
             conn_rate = float(self.get_ternary_weights().mean().item())
             trace = cast(torch.Tensor, self.eligibility_trace)
-            
-            # 報酬の反映
             modulation = torch.tanh(torch.tensor(reward)).item()
             
+            # 修正4: 更新の歩幅を小さくし、情報の「蒸発」を防ぐ
             if modulation > 0:
-                # 成功時: 強く固定
-                self.states.add_(trace * modulation * 25.0)
+                # 成功時: 確実な定着
+                self.states.add_(trace * modulation * 5.0)
             else:
-                # 失敗時: 痕跡箇所を大幅に削除
-                self.states.sub_(trace * abs(modulation) * 15.0)
+                # 失敗時: 痕跡箇所を削るが、一気にゼロにはしない
+                self.states.sub_(trace * abs(modulation) * 2.0)
             
-            # 修正3: 密度の動的平衡 (15% を目指してゆっくり削る)
+            # 修正5: 構造的リザーバ (密度の安定化)
+            # 20% を目指して「極めてゆっくり」と調整する
             if conn_rate > self.target_conn_rate:
-                # 密度過多の場合、報酬に関わらず全体を少しずつ削る
-                self.states.sub_(0.5)
-            elif conn_rate < 0.05:
-                # 5% を切った場合は、探索のために一律で浮上させる
-                self.states.add_(1.0)
+                # 密度過多の場合のみ、微弱な剪定圧をかける
+                self.states.sub_(0.02)
+            elif conn_rate < 0.10:
+                # 密度が低すぎる場合は、ランダムに小規模な「発芽」を促す
+                revive_mask = torch.rand_like(self.states) < 0.005
+                self.states[revive_mask] += 5.0
 
             self.states.clamp_(1, self.max_states)
