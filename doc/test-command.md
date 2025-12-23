@@ -40,17 +40,17 @@ python snn-cli.py health-check
 python snn-cli.py train \--config configs/models/medium.yaml
 
 \# ベンチマークの実行  
-# 標準ベンチマーク実行 (Benchmark Suite)
-# 総合的なパフォーマンス測定を行います。
-# 注意: --experiment オプションで実験IDの指定が必須です (例: all, cifar10)
+標準ベンチマーク実行 (Benchmark Suite)
+総合的なパフォーマンス測定を行います。
+注意: --experiment オプションで実験IDの指定が必須です (例: all, cifar10)
 python snn-cli.py benchmark run --experiment all
 
-# 精度評価 (Evaluate Accuracy)
-# 現在のモデルの認識精度のみを重点的に評価します。
+精度評価 (Evaluate Accuracy)
+現在のモデルの認識精度のみを重点的に評価します。
 python snn-cli.py benchmark evaluate-accuracy
 
-# 継続学習実験 (Continual Learning)
-# 逐次的なタスク学習における忘却率などを測定します。
+継続学習実験 (Continual Learning)
+逐次的なタスク学習における忘却率などを測定します。
 python snn-cli.py benchmark continual
 
 
