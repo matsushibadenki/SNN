@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (自己組織化報酬版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (厳格スパース評価版)
 
 import torch
 import torch.nn as nn
@@ -25,15 +25,19 @@ class HybridNeuromorphicCore(nn.Module):
             r = self.deep_process(f)
             out = self.output_gate(r)
             
-            reward = -0.1 # 沈黙に対する微小な罰
+            reward = 0.0
             if target is not None:
                 t_f = target.view(-1)
                 o_f = out.view(-1)
                 
-                # 一致(Hit)を大きく評価し、誤発火(Miss)を罰する
+                # 修正: 正解一致の報酬を抑え、誤発火のペナルティを巨大にする
                 hits = torch.sum(t_f * o_f)
                 misses = torch.sum((1 - t_f) * o_f)
-                reward = float(hits.item() * 10.0 - misses.item() * 2.0)
+                reward = float(hits.item() * 2.0 - misses.item() * 10.0)
+                
+                # 沈黙は許容する（飽和よりマシ）
+                if out.sum() == 0:
+                    reward = 0.0
             
             self.fast_process.update_plasticity(x_input.view(-1), f.view(-1), reward=reward)
             self.output_gate.update_plasticity(r.view(-1), out.view(-1), reward=reward)
