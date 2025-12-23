@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (時間的因果学習版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (スパース報酬版)
 
 import torch
 import torch.nn as nn
@@ -21,20 +21,20 @@ class HybridNeuromorphicCore(nn.Module):
 
     def autonomous_step(self, x_input: torch.Tensor, target: Optional[torch.Tensor] = None) -> Dict[str, float]:
         with torch.no_grad():
-            # 順伝播
             f = self.fast_process(x_input)
             r = self.deep_process(f)
             out = self.output_gate(r)
             
-            # 報酬の算出 (より高い精度を要求)
-            reward = -0.5 # デフォルトの罰
+            # 報酬計算の改善: 
+            # 「正解の場所で発火」をプラス、「不正解の場所で発火」を強いマイナスに。
+            reward = -0.1 # 基礎コスト
             if target is not None:
-                # ターゲットのスパイク位置と一致しているかを評価
-                correct = torch.sum(target.view(-1) * out.view(-1))
-                if correct > 0:
-                    reward = float(correct.item()) * 5.0 # 成功を強調
+                t_f = target.view(-1)
+                o_f = out.view(-1)
+                correct_hits = torch.sum(t_f * o_f)
+                false_alarms = torch.sum((1 - t_f) * o_f)
+                reward = float(correct_hits.item() * 10.0 - false_alarms.item() * 5.0)
             
-            # プラスの報酬があった時だけ、積極的にトレースを反映
             self.fast_process.update_plasticity(x_input.view(-1), f.view(-1), reward=reward)
             self.output_gate.update_plasticity(r.view(-1), out.view(-1), reward=reward)
             
