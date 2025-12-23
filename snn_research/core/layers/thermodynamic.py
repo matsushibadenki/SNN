@@ -3,12 +3,12 @@
 # 機能説明: 
 #   ドキュメントにある「熱力学的コンピューティング」を実装するレイヤー。
 #   決定論的な演算ではなく、エネルギー障壁と熱ノイズを用いた確率的サンプリングを行う。
-#   生成モデルの潜在空間探索や、不確実性の表現に使用される。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from typing import Optional # 修正: 追加
 
 class ThermodynamicSamplingLayer(nn.Module):
     """
@@ -72,13 +72,6 @@ class ThermodynamicSamplingLayer(nn.Module):
         """
         x = x_init.clone()
         
-        # 外部磁場（入力）がある場合、一時的にバイアスを修正
-        current_bias = self.bias
-        if external_field is not None:
-            # 入力をエネルギー地形へのバイアスとして扱う
-            # x_initは探索の開始点、external_fieldは地形の傾き
-            pass 
-
         # Langevin Sampling Loop
         for _ in range(self.steps):
             # 1. 決定論的ドリフト (Gradient Descent on Energy)
