@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (覚醒・再起動版)
-# 修正内容: 沈黙状態を強制的に打破する「自発発火メカニズム」を導入。
+# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (三因子学習・報酬連動版)
+# 修正内容: プレ・ポスト・報酬（誤差）の三因子による学習則を導入し、ターゲットへの収束を導く。
 
 import torch
 import torch.nn as nn
@@ -15,7 +15,7 @@ class LogicGatedSNN(nn.Module):
         self.threshold = max_states // 2
         
         self.register_buffer('synapse_states', torch.randint(
-            self.threshold + 5, self.threshold + 15, (out_features, in_features)
+            self.threshold - 5, self.threshold + 15, (out_features, in_features)
         ).float())
         
         self.register_buffer('membrane_potential', torch.zeros(out_features))
@@ -25,14 +25,6 @@ class LogicGatedSNN(nn.Module):
     @property
     def states(self) -> torch.Tensor:
         return cast(torch.Tensor, self.synapse_states)
-
-    @property
-    def v_mem(self) -> torch.Tensor:
-        return cast(torch.Tensor, self.membrane_potential)
-
-    @property
-    def v_th(self) -> torch.Tensor:
-        return cast(torch.Tensor, self.adaptive_threshold)
 
     def get_ternary_weights(self) -> torch.Tensor:
         mask = self.states > self.threshold
@@ -45,49 +37,41 @@ class LogicGatedSNN(nn.Module):
         # 電流計算
         current = torch.matmul(x, w.t()).view(-1)
         
-        # 修正1: 膜電位の蓄積率を向上 (0.3 -> 0.8) し、情報を貯めやすくする
-        self.v_mem.add_(current)
-        
-        # 修正2: 「沈黙」を許さない強力なランダム・バイアス
-        # 全く発火していないニューロンには強い興奮性ノイズを乗せる
-        silent_mask = (self.firing_history < 0.01).float()
-        spontaneous_noise = torch.randn_like(self.v_mem) * 1.5 * silent_mask
-        
-        potential = self.v_mem + spontaneous_noise
+        # 膜電位の蓄積とノイズ
+        potential = cast(torch.Tensor, self.membrane_potential) + current + torch.randn(self.out_features) * 0.2
         
         # 発火判定
-        spikes = (potential >= self.v_th).to(torch.float32)
+        spikes = (potential >= cast(torch.Tensor, self.adaptive_threshold)).to(torch.float32)
         
         # リセット処理
-        # 発火した場合は電位を引くが、完全0にはせず「余韻」を残す
-        self.v_mem.copy_(potential * (1.0 - spikes) * 0.9)
-        
-        # 履歴の更新 (時定数を少し長くする)
-        self.firing_history.copy_(self.firing_history * 0.95 + spikes * 0.05)
+        self.membrane_potential.copy_(potential * (1.0 - spikes) * 0.5)
+        self.firing_history.copy_(cast(torch.Tensor, self.firing_history) * 0.9 + spikes * 0.1)
         
         return spikes
 
-    def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, surprise: float = 1.0) -> None:
+    def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
+        """
+        三因子学習則: ΔW = Reward * (Pre * Post)
+        Rewardは誤差の減少度合い、またはターゲットとの一致度。
+        """
         with torch.no_grad():
-            # 修正3: 誤差が固定されている場合、より広範囲に配線を組み換える
-            # surprise が一定値（0.09など）に固着していることを想定
-            if surprise > 0.05:
-                # 誤差が大きいほど、既存の結合をランダムに「揺らす」
-                perturbation = (torch.rand_like(self.states) < 0.2).float() * surprise * 10.0
-                self.states.add_(torch.randn_like(self.states) * perturbation)
-
+            # 相関 (Eligibility Traceに相当)
             correlation = torch.outer(post_spikes, pre_spikes)
-            # 強化 (LTP) を大幅に強化
-            self.states.add_(correlation * 5.0)
             
-            # 抑制 (LTD)
-            depression_mask = (post_spikes.unsqueeze(1) > 0) & (pre_spikes.unsqueeze(0) == 0)
-            self.states[depression_mask] -= 2.0
+            # 修正1: 報酬（reward）に基づいて強化・抑圧を切り替える
+            # 正解に近い（reward > 0）なら現在の結合を強く固定
+            # 不正解（reward < 0）なら現在の結合を弱体化
+            update = correlation * reward * 10.0
+            self.states.add_(update)
+            
+            # 修正2: 恒常的な探索 (ランダムな微増)
+            # これがないと一度結合が切れた時に二度と繋がらなくなる
+            self.states.add_(torch.randn_like(self.states) * 0.1)
 
-            # 死んでいるニューロンを強制的に Include 状態へ
-            dead_neurons = self.firing_history < 0.005
-            if dead_neurons.any():
-                self.states[dead_neurons] += 2.0
-                self.v_th[dead_neurons] = 0.5 # 閾値を下げて「門戸を開く」
+            # 修正3: ターゲットに基づいた直接的な状態誘導 (Supervisor Signal)
+            # 全く発火していないのに正解が1の箇所を無理やり Include へ
+            # 本来は局所学習に反するが、学習の「種」を蒔くために必要
+            dead_mask = (self.firing_history < 0.01)
+            self.states[dead_mask] += 0.5
 
             self.states.clamp_(1, self.max_states)
