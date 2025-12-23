@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (高効率知能版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (活動強制・知能蒸留版)
 
 import torch
 import torch.nn as nn
@@ -29,12 +29,14 @@ class HybridNeuromorphicCore(nn.Module):
             if target is not None:
                 t_f = target.view(-1)
                 o_f = out.view(-1)
-                hits = torch.sum(t_f * o_f)
-                misses = torch.sum((1 - t_f) * o_f)
                 
-                # 精度ボーナス + 効率ボーナス(発火が少ないほど良い)
-                reward = float(hits.item() * 10.0 - misses.item() * 5.0)
-                reward -= (out.sum().item() * 0.5) # 節約へのインセンティブ
+                # 修正5: 沈黙は「最悪の事態」として扱う
+                if out.sum() == 0:
+                    reward = -5.0 
+                else:
+                    hits = torch.sum(t_f * o_f)
+                    misses = torch.sum((1 - t_f) * o_f)
+                    reward = float(hits.item() * 10.0 - misses.item() * 4.0)
             
             self.fast_process.update_plasticity(x_input.view(-1), f.view(-1), reward=reward)
             self.output_gate.update_plasticity(r.view(-1), out.view(-1), reward=reward)
