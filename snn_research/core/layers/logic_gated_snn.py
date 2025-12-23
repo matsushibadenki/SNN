@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (密度強制適応版)
-# 目的: Conn: 100% の飽和を物理的に回避し、情報の差別化を可能にするスパース性を維持する。
+# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (適応的成長版)
+# 目的: 結合密度を 5-10% まで意図的に引き上げ、認識に必要な情報伝達容量を確保する。
 
 import torch
 import torch.nn as nn
@@ -14,17 +14,15 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 初期状態を閾値以下にし、最初は「接続なし」から始める
-        self.register_buffer('synapse_states', torch.randint(
-            self.threshold - 10, self.threshold - 2, (out_features, in_features)
-        ).float())
+        # 初期状態: 閾値のすぐ下に設定し、学習による「浮上」を待つ
+        self.register_buffer('synapse_states', torch.full((out_features, in_features), float(self.threshold - 5)))
         
         self.register_buffer('membrane_potential', torch.zeros(out_features))
         self.register_buffer('adaptive_threshold', torch.full((out_features,), 1.0))
         self.register_buffer('firing_history', torch.zeros(out_features))
         
-        # 目標結合率をさらに厳格化 (5% 〜 15% を維持)
-        self.target_conn_rate = 0.10
+        # 目標結合率を確実に維持する設定
+        self.target_conn_rate = 0.08 
 
     @property
     def states(self) -> torch.Tensor:
@@ -41,49 +39,49 @@ class LogicGatedSNN(nn.Module):
         # 電流計算
         current = torch.matmul(x, w.t()).view(-1)
         
-        # 膜電位更新
+        # 膜電位の更新
         v_mem = cast(torch.Tensor, self.membrane_potential)
-        v_mem.copy_(v_mem * 0.6 + current) 
+        v_mem.copy_(v_mem * 0.8 + current) 
         
-        # 適応的閾値
+        # 判定 (ノイズを減らし、決定論的な寄与を強める)
         v_th = cast(torch.Tensor, self.adaptive_threshold)
         spikes = (v_mem >= v_th).to(torch.float32)
         
         # リセット
-        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.4)
+        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.5)
         
-        # 恒常性の更新
+        # 履歴更新
         with torch.no_grad():
             self.firing_history.copy_(cast(torch.Tensor, self.firing_history) * 0.9 + spikes * 0.1)
-            # 発火しすぎている場合は閾値を上げ、しなさすぎなら下げる
-            self.adaptive_threshold.add_((spikes - 0.05) * 0.5)
-            self.adaptive_threshold.clamp_(0.8, 20.0)
+            # 発火の平準化
+            self.adaptive_threshold.add_((spikes - 0.05) * 0.2)
+            self.adaptive_threshold.clamp_(0.5, 10.0)
         
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
-        """密度依存型の強力な剪定ルール"""
+        """成長と剪定のダイナミックな均衡"""
         with torch.no_grad():
             correlation = torch.outer(post_spikes, pre_spikes)
             
-            # 結合率の計算
+            # 現在の結合率
             current_conn = float(self.get_ternary_weights().mean().item())
             
-            # 修正1: 飽和に対する指数的な忘却圧力 (Connが100%に近いほど激しく削る)
-            decay_factor = 0.1 * (2.0 ** (current_conn / self.target_conn_rate))
-            
-            # 修正2: 報酬に基づく更新 (LTPを慎重にし、LTDを鋭くする)
+            # 1. 報酬学習則
             if reward > 0:
-                self.states.add_(correlation * reward * 2.0)
+                # 正解時: 結合を強力に強化し、閾値を突破させる
+                self.states.add_(correlation * 20.0)
             else:
-                self.states.sub_(correlation * abs(reward) * 10.0)
+                # 不正解時: 関係した配線をマイルドに削る
+                self.states.sub_(correlation * 5.0)
             
-            # 恒常的な状態の減衰 (密度制御)
-            self.states.sub_(decay_factor)
-            
-            # 全消滅の回避 (1%以下になった場合のみランダムに再接続)
-            if current_conn < 0.01:
-                revive_mask = torch.rand_like(self.states) < 0.02
-                self.states[revive_mask] += 10.0
+            # 2. 恒常的成長圧力 (Structural Growth)
+            # 目標密度に達するまで、全シナプスを「底上げ」する
+            if current_conn < self.target_conn_rate:
+                # 結合が足りない時、ランダムではなく全体を押し上げて「候補」を作る
+                self.states.add_(0.5)
+            else:
+                # 密度を超えたら、活動していない結合から順に削る
+                self.states.sub_(0.2)
 
             self.states.clamp_(1, self.max_states)
