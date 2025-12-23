@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (樹状突起ブースト版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (自己組織化報酬版)
 
 import torch
 import torch.nn as nn
@@ -25,17 +25,15 @@ class HybridNeuromorphicCore(nn.Module):
             r = self.deep_process(f)
             out = self.output_gate(r)
             
-            # 報酬計算: 精度を高めるための正解強調
-            reward = -0.2
+            reward = -0.1 # 沈黙に対する微小な罰
             if target is not None:
-                t = target.view(-1)
-                o = out.view(-1)
-                if torch.sum(t * o) > 0:
-                    # 正解位置にスパイクがあれば大きな報酬
-                    reward = 5.0 
-                elif torch.sum(o) > 0:
-                    # 間違った場所で発火した場合は罰
-                    reward = -1.0
+                t_f = target.view(-1)
+                o_f = out.view(-1)
+                
+                # 一致(Hit)を大きく評価し、誤発火(Miss)を罰する
+                hits = torch.sum(t_f * o_f)
+                misses = torch.sum((1 - t_f) * o_f)
+                reward = float(hits.item() * 10.0 - misses.item() * 2.0)
             
             self.fast_process.update_plasticity(x_input.view(-1), f.view(-1), reward=reward)
             self.output_gate.update_plasticity(r.view(-1), out.view(-1), reward=reward)
