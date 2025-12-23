@@ -1,6 +1,6 @@
 # /snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: 人工脳コア・アーキテクチャ (完全整合版)
-# 目的: 全脳モジュールのインターフェースを統合し、mypyエラーを解消した認知サイクルを実現。
+# 日本語タイトル: 人工脳コア・アーキテクチャ (バッチ処理・整合版)
+# 目的: 全脳モジュールのインターフェースを統合し、バッチ次元を維持した認知サイクルを実現。
 
 import torch
 import torch.nn as nn
@@ -31,7 +31,7 @@ class ArtificialBrain(nn.Module):
         self.workspace = GlobalWorkspace()
         self.motivation_system = IntrinsicMotivationSystem()
         
-        # 2. 各脳領域の初期化 (PerceptionCortexは 784 neuronsを期待)
+        # 2. 各脳領域の初期化 (MNIST/等価入力を想定して784ニューロン)
         self.perception = PerceptionCortex(num_neurons=784, feature_dim=256)
         self.amygdala = Amygdala()
         self.hippocampus = Hippocampus()
@@ -54,8 +54,9 @@ class ArtificialBrain(nn.Module):
         self.cycle_count += 1
         device = self.get_device()
         
-        # 入力の Tensor 化と次元正規化
+        # 入力の Tensor 化とバッチ次元の正規化
         if isinstance(sensory_input, str):
+            # 文字列入力の場合はダミーのノイズベクトルを作成
             sensory_tensor = torch.randn(1, 784, device=device) 
         else:
             sensory_tensor = sensory_input.to(device)
@@ -75,13 +76,13 @@ class ArtificialBrain(nn.Module):
             else:
                 sensory_tensor = sensory_tensor[..., :target_n]
 
-        # 1. 知覚処理
+        # 1. 知覚処理 (Batch, Features)
         perception_result = self.perception.perceive(sensory_tensor)
-        raw_features = perception_result.get("features")
-        if raw_features is not None:
-            perceptual_info = raw_features
-            while perceptual_info.ndim > 1:
-                perceptual_info = torch.mean(perceptual_info.float(), dim=0)
+        perceptual_features = perception_result.get("features")
+        
+        if perceptual_features is not None:
+            # バッチの平均をとって代表的な知覚情報を抽出 (後の処理が単体入力を期待している場合)
+            perceptual_info = perceptual_features.mean(dim=0) if perceptual_features.ndim > 1 else perceptual_features
         else:
             perceptual_info = torch.zeros(256, device=device)
 
@@ -89,24 +90,13 @@ class ArtificialBrain(nn.Module):
         emotional_val = self.amygdala.process(perceptual_info)
         knowledge = self.cortex.retrieve(perceptual_info)
         
-        # 3. ワークスペース集約 (mypyエラー箇所: メソッドの存在を確認して呼び出し)
-        # GlobalWorkspace が add_content を持たない場合のフォールバックを含める
-        if hasattr(self.workspace, 'add_content'):
-            self.workspace.add_content("sensory", perceptual_info)
-            self.workspace.add_content("emotion", emotional_val)
-        elif hasattr(self.workspace, 'update'):
-            # 既存の update メソッドへのマッピング
-            self.workspace.update("sensory", perceptual_info)
-            self.workspace.update("emotion", emotional_val)
+        # 3. ワークスペース集約
+        self._update_workspace("sensory", perceptual_info)
+        self._update_workspace("emotion", emotional_val)
+        self._update_workspace("knowledge", knowledge)
         
         # サマリーの取得
-        summary: List[Dict[str, Any]] = []
-        if hasattr(self.workspace, 'get_summary'):
-            summary_raw = self.workspace.get_summary()
-            summary = cast(List[Dict[str, Any]], summary_raw if isinstance(summary_raw, list) else [summary_raw])
-        elif hasattr(self.workspace, 'contents'):
-            # 直接属性を参照する場合のフォールバック
-            summary = [{"content": v} for v in getattr(self.workspace, 'contents', {}).values()]
+        summary = self._get_workspace_summary()
         
         # 4. 行動選択と実行
         selected_action = self.basal_ganglia.select_action(summary)
@@ -119,13 +109,29 @@ class ArtificialBrain(nn.Module):
             "cycle": self.cycle_count,
             "action": str(selected_action),
             "motor_output": motor_output,
+            "knowledge_retrieved": knowledge is not None,
             "broadcasted": True
         }
+
+    def _update_workspace(self, key: str, value: Any) -> None:
+        """ワークスペースへの安全な書き込み"""
+        if hasattr(self.workspace, 'add_content'):
+            self.workspace.add_content(key, value)
+        elif hasattr(self.workspace, 'update'):
+            self.workspace.update(key, value)
+
+    def _get_workspace_summary(self) -> List[Dict[str, Any]]:
+        """ワークスペースからのサマリー取得"""
+        if hasattr(self.workspace, 'get_summary'):
+            res = self.workspace.get_summary()
+            return cast(List[Dict[str, Any]], res if isinstance(res, list) else [res])
+        return []
 
     def get_brain_status(self) -> Dict[str, Any]:
         """ヘルスチェック用ステータス取得"""
         return {
             "cycle": self.cycle_count,
+            "status": "active",
             "astrocyte": {"metrics": {"energy_percent": 100.0, "fatigue_index": 0.0}}
         }
 
