@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (再生・安定版)
-# 目的: Conn: 0.0% の全消滅を回避し、疎な結合を維持しながら学習を継続させる。
+# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (拮抗抑制・剪定特化版)
+# 目的: Conn: 100% の飽和状態を強制的に破壊し、ターゲットに適応したスパースな結合を形成する。
 
 import torch
 import torch.nn as nn
@@ -14,9 +14,9 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 初期状態: 閾値付近でランダムに
+        # 初期状態を低めに設定し、最初は結合が少ない状態から始める
         self.register_buffer('synapse_states', torch.randint(
-            self.threshold - 2, self.threshold + 8, (out_features, in_features)
+            self.threshold - 10, self.threshold + 2, (out_features, in_features)
         ).float())
         
         self.register_buffer('membrane_potential', torch.zeros(out_features))
@@ -38,50 +38,51 @@ class LogicGatedSNN(nn.Module):
         # 電流計算
         current = torch.matmul(x, w.t()).view(-1)
         
-        # 1. 膜電位の更新 (リーキーな特性を強める)
+        # 1. 膜電位の更新 (減衰を速めて飽和を防ぐ)
         v_mem = cast(torch.Tensor, self.membrane_potential)
-        v_mem.copy_(v_mem * 0.9 + current) # 積分特性
+        v_mem.copy_(v_mem * 0.5 + current) 
         
-        # 2. 確率的要素
+        # 2. 強力な抑制ノイズ
         v_th = cast(torch.Tensor, self.adaptive_threshold)
-        spikes = (v_mem + torch.randn_like(v_mem) * 0.1 >= v_th).to(torch.float32)
+        spikes = (v_mem >= v_th).to(torch.float32)
         
-        # 3. リセット
-        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.5)
+        # 3. 発火後の急峻なリセット
+        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.2)
         
-        # 4. 履歴と恒常性
+        # 4. 履歴と閾値の急進的な調整
         with torch.no_grad():
-            self.firing_history.copy_(cast(torch.Tensor, self.firing_history) * 0.99 + spikes * 0.01)
-            # 発火しなさすぎを検知して閾値を下げる
-            self.adaptive_threshold.add_((spikes - 0.05) * 0.1)
-            self.adaptive_threshold.clamp_(0.5, 5.0)
+            self.firing_history.copy_(cast(torch.Tensor, self.firing_history) * 0.9 + spikes * 0.1)
+            # 発火しすぎている場合は閾値を一気に上げる
+            self.adaptive_threshold.add_((spikes - 0.05) * 1.0) 
+            self.adaptive_threshold.clamp_(1.0, 50.0)
         
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
-        """全消滅を防ぐ適応的学習則"""
+        """報酬に基づく強力な剪定"""
         with torch.no_grad():
             correlation = torch.outer(post_spikes, pre_spikes)
             
-            # 修正1: 報酬による更新の安定化 (極端な値を避ける)
-            # reward の影響を tanh で制限
-            clamped_reward = torch.tanh(torch.tensor(reward))
+            # 現在の結合率
+            conn_rate = self.get_ternary_weights().mean().item()
             
-            # 強化と剪定のバランスを調整
-            if clamped_reward >= 0:
-                self.states.add_(correlation * clamped_reward * 2.0)
+            # 修正1: 飽和(Conn: 100%)に対する指数的な忘却圧力
+            saturation_pressure = 2.0 ** (conn_rate * 10.0) if conn_rate > 0.5 else 1.0
+            
+            # 修正2: 負の報酬(間違い)時の強力な剪定
+            if reward < 0:
+                # 間違ったパターンの寄与を物理的に焼き切る
+                self.states.sub_(correlation * abs(reward) * 50.0)
             else:
-                self.states.sub_(correlation * abs(clamped_reward) * 1.0)
+                # 正解に近い時のみ、慎重に強化
+                self.states.add_(correlation * reward * 2.0)
             
-            # 修正2: 恒常的な微弱な忘却 (過剰結合の防止)
-            self.states.sub_(0.05)
+            # 基礎代謝（忘却）: 飽和しているほど強くなる
+            self.states.sub_(0.5 * saturation_pressure)
             
-            # 修正3: 全消滅回避ロジック (Min Connectivity)
-            # 結合率が 5% を切ったらランダムに結合を復活させる
-            conn_mask = self.states > self.threshold
-            if conn_mask.float().mean() < 0.05:
-                # 死んでいるシナプスの中からランダムに選び、Include 状態へ戻す
-                revive_mask = (torch.rand_like(self.states) < 0.01) & (~conn_mask)
-                self.states[revive_mask] = float(self.threshold + 5)
+            # 最小結合の維持 (全消滅回避)
+            if conn_rate < 0.02:
+                revive_mask = torch.rand_like(self.states) < 0.05
+                self.states[revive_mask] += 10.0
 
             self.states.clamp_(1, self.max_states)
