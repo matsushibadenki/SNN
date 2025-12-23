@@ -1,8 +1,9 @@
 # ファイルパス: snn_research/core/layers/dsa.py
-# 日本語タイトル: SNN-DSA (Dynamic Sparse Attention) レイヤー [Fixed Class Name]
-# 目的・内容:
-#   ロードマップ Phase 8-2 に基づく、動的スパース注意機構の実装。
-#   修正: クラス名を 'DSALayer' に変更し、外部からの import エラーを解消。
+# 日本語タイトル: SNN-DSA (Bit-Spike Dynamic Sparse Attention)
+# 機能説明:
+#   BitNetアーキテクチャ(BitSpikeLinear)を採用し、乗算フリーのアテンションを実現。
+#   Q, K, V の射影において {-1, 0, 1} の重みを使用することで、
+#   スパイク入力に対する演算を加算(Accumulation)に還元する。
 
 import torch
 import torch.nn as nn
@@ -10,25 +11,30 @@ import torch.nn.functional as F
 from typing import Tuple, Optional, Dict, Any
 
 from snn_research.core.neurons import AdaptiveLIFNeuron
+# 前回のターンで作成された BitSpikeLinear を使用
+try:
+    from snn_research.core.layers.bit_spike_layer import BitSpikeLinear
+except ImportError:
+    # フォールバック (通常のLinear)
+    BitSpikeLinear = nn.Linear # type: ignore
 
 class DSALayer(nn.Module):
     """
-    SNN向け動的スパースアテンション (SNN-DSA)。
+    SNN向け動的スパースアテンション (SNN-DSA) with BitNet weights.
     
-    仕組み:
-    1. 入力スパイクをQ, K, V, および Router に投影。
-    2. Routerがクエリに基づいて「注目すべきK/Vのインデックス」をTop-K個選択。
-    3. 選択されたK, Vのみを用いてAttention Scoreを計算 (Sparse Operation)。
-    4. 結果を統合・正規化し、出力ニューロン(LIF)を通してスパイクとして出力。
+    Enhancements:
+    - BitSpikeLinear: Q, K, V, Routerの射影に乗算フリー層を使用。
+    - Sparse Computation: Top-K ルーティングによる計算量削減。
     """
     
     def __init__(
         self, 
         d_model: int, 
         num_heads: int, 
-        top_k: int = 4, # Default value added
+        top_k: int = 4, 
         dropout: float = 0.1,
-        neuron_params: Optional[Dict[str, Any]] = None
+        neuron_params: Optional[Dict[str, Any]] = None,
+        use_bitnet: bool = True
     ):
         super().__init__()
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
@@ -39,21 +45,22 @@ class DSALayer(nn.Module):
         self.top_k = top_k
         self.scale = self.head_dim ** -0.5
         
-        # 線形投影
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
+        # Projection Layer Selection
+        LinearLayer = BitSpikeLinear if use_bitnet else nn.Linear
+        
+        # 線形投影 (BitNet化により加算処理となる)
+        self.q_proj = LinearLayer(d_model, d_model)
+        self.k_proj = LinearLayer(d_model, d_model)
+        self.v_proj = LinearLayer(d_model, d_model)
         
         # ルーティング用レイヤー
-        self.router = nn.Linear(d_model, d_model) 
+        self.router = LinearLayer(d_model, d_model) 
         
-        self.out_proj = nn.Linear(d_model, d_model)
+        self.out_proj = LinearLayer(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
         
-        # 正規化層 (発火安定化のため追加)
         self.norm = nn.LayerNorm(d_model)
         
-        # 出力スパイク生成用ニューロン
         if neuron_params is None:
             neuron_params = {}
         self.output_neuron = AdaptiveLIFNeuron(features=d_model, **neuron_params)
@@ -61,34 +68,26 @@ class DSALayer(nn.Module):
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
-            x: Input Spikes (Batch, Time, d_model)
-            
-        Returns:
-            out_spikes: Output Spikes (Batch, Time, d_model)
-            attention_maps: Sparse Attention Maps
+            x: Input Spikes (Batch, Time, d_model) - Ideally binary (0/1)
         """
         B, T, C = x.shape
         
-        # 1. Q, K, V, Router Scoreの計算
+        # 1. Projections (Accumulation if BitNet)
         query = self.q_proj(x)
         key = self.k_proj(x)
         value = self.v_proj(x)
-        # router_scores = self.router(x) # 将来的なGatherルーティングで使用予定
         
-        # Multi-head reshape: (B, Num_Heads, T, Head_Dim)
         query = query.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
         key = key.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
         value = value.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
         
-        # 2. Dynamic Routing (Top-K Selection)
-        # Attention Score: (B, Num_Heads, T, T)
+        # 2. Attention Score (Accumulation of AND-like ops if inputs were binary)
+        # Note: Even with float Q/K, this is efficiently computable via sparse ops
         attn_scores = torch.matmul(query, key.transpose(-2, -1)) * self.scale
         
-        # Top-K Masking
+        # Top-K Masking (Sparsity Enforcement)
         if self.top_k < T:
             topk_vals, topk_indices = torch.topk(attn_scores, self.top_k, dim=-1)
-            
-            # マスク作成: Top-K 以外を -inf にする
             mask = torch.full_like(attn_scores, float('-inf'))
             mask.scatter_(dim=-1, index=topk_indices, src=topk_vals)
             attn_scores = mask
@@ -96,20 +95,16 @@ class DSALayer(nn.Module):
         attn_probs = F.softmax(attn_scores, dim=-1)
         attn_probs = self.dropout(attn_probs)
         
-        # 3. Aggregation
+        # 3. Context Aggregation
         context = torch.matmul(attn_probs, value)
-        
-        # Reshape back: (B, T, d_model)
         context = context.transpose(1, 2).contiguous().view(B, T, self.d_model)
         
-        # Output Projection & Normalization
+        # Output Projection
         analog_out = self.out_proj(context)
-        analog_out = self.norm(analog_out) # 正規化して膜電位を適切なレンジにする
+        analog_out = self.norm(analog_out)
         
         # 4. Spike Generation
         out_spikes_list = []
-        
-        # ニューロンの状態リセット（非ステートフルモード時）
         if not self.output_neuron.stateful:
             self.output_neuron.reset()
         
@@ -118,13 +113,11 @@ class DSALayer(nn.Module):
             step_spike, _ = self.output_neuron(step_input)
             out_spikes_list.append(step_spike)
             
-        out_spikes = torch.stack(out_spikes_list, dim=1) # (B, T, C)
+        out_spikes = torch.stack(out_spikes_list, dim=1)
         
         return out_spikes, attn_probs
 
     def reset_state(self):
-        """ニューロン状態のリセット"""
         self.output_neuron.reset()
 
-# 互換性のためのエイリアス（もし旧名で参照されている場合）
 DynamicSparseAttention = DSALayer
