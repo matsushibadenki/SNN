@@ -1,13 +1,13 @@
 # /snn_research/agent/active_inference_agent.py
-# 日本語タイトル: 能動的推論エージェント (Active Inference Agent) v2.5
+# 日本語タイトル: 能動的推論エージェント (Active Inference Agent) v3.0 EFE-Enhanced
 # 目的・内容: 
 #   自由エネルギー原理（FEP）に基づき、知覚、意思決定、学習を統合する自律型エージェント。
-#   メタ認知（MetaCognitiveSNN）による不確実性評価に基づき、System 1（直感）と 
-#   System 2（熟慮）を動的に切り替える。Astrocyte Network による代謝制御を考慮。
+#   修正: 期待自由エネルギー(EFE)に基づく動的な探索・利用のバランス制御を追加。
 
 import asyncio
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Dict, Any, Optional, List, Union
 import logging
 
@@ -24,10 +24,10 @@ class ActiveInferenceAgent:
     """
     能動的推論（Active Inference）を司る自律エージェント。
     
-    ロジック:
-    1. 驚き（Surprise/Entropy）を計測し、自信がある場合は System 1 (SNNCore/BitSpikeMamba) を使用。
-    2. 不確実性が高い場合は System 2 (ReasoningEngine) による多段階推論を行う。
-    3. AstrocyteNetwork からのエネルギー供給許可を条件として実行される。
+    Update v3.0:
+    - Expected Free Energy (EFE): 
+      G = (Information Gain) + (Goal Realization)
+      不確実性が高い場合は「知識獲得」を優先し、低い場合は「ゴール達成」を優先する。
     """
 
     def __init__(
@@ -38,76 +38,95 @@ class ActiveInferenceAgent:
         reasoning_engine: ReasoningEngine,
         astrocyte: AstrocyteNetwork
     ):
-        """
-        依存関係注入 (Dependency Injection) により初期化。
-        mypyエラーを回避するため、適切な型が提供されることを保証する。
-        """
         self.kernel = brain_kernel
         self.config = config
         self.debugger = BrainDebugger()
         
-        # コンポーネントの割り当て
         self.snn_core = snn_core
         self.reasoning_engine = reasoning_engine
         self.astrocyte = astrocyte
         
-        # メタ認知モジュールの初期化
         self.meta_cognition = MetaCognitiveSNN(
             d_model=config.get("d_model", 128),
             uncertainty_threshold=config.get("uncertainty_threshold", 0.6)
         )
         
         self.confidence_threshold = config.get("confidence_threshold", 0.85)
+        self.epistemic_weight = config.get("epistemic_weight", 1.0) # 好奇心の強さ
         self.is_running = False
+
+    def _calculate_expected_free_energy(self, confidence: float, surprise: float) -> float:
+        """
+        簡易的な期待自由エネルギー(EFE)の計算。
+        G ≈ - (Epistemic Value) - (Extrinsic Value)
+        ここではコスト（最小化すべき値）として計算。
+        """
+        # 認識的価値（情報利得）: 不確実性が高いほど、それを解消する行動の価値が高い
+        # 自信が低い(confidence小) -> 情報利得の余地が大きい
+        epistemic_value = (1.0 - confidence) * self.epistemic_weight
+        
+        # 外的価値（実用的価値）: 驚きが小さい（予測通り）状態を好む
+        # ここでは簡易的に「驚きの小ささ」を価値とする
+        extrinsic_value = -surprise 
+        
+        # EFE (負の値が大きいほど良い行動、ここではコストとして正の値に変換して扱うことも可能だが、
+        # 単純にトリガー判定に使う)
+        G = -epistemic_value - extrinsic_value
+        return G
 
     async def step(self, sensory_input: torch.Tensor) -> Dict[str, Any]:
         """
         1タイムステップの推論・行動ループ。
         """
-        # 1. 知覚とメタ認知 (不確実性の評価)
-        # System 1の仮出力を得てエントロピーを算出
-        # mypy修正: evaluate_uncertainty ではなく monitor_system1_output を使用
+        # 1. 知覚とメタ認知 (System 1)
         system1_logits = self.snn_core.forward(sensory_input)
         
-        # logitsがテンソルでない場合の処理
         if isinstance(system1_logits, tuple):
             system1_logits = system1_logits[0]
 
         meta_stats = self.meta_cognition.monitor_system1_output(system1_logits)
         confidence = meta_stats.get("confidence", 0.0)
+        entropy = meta_stats.get("entropy", 0.0)
+        
+        # 2. 期待自由エネルギーによる評価
+        # エントロピーを驚きの近似として使用
+        efe_score = self._calculate_expected_free_energy(confidence, entropy)
+        
+        # System 2 トリガー条件の高度化:
+        # 単なる信頼度だけでなく、EFEに基づいて「深く考える価値があるか」を判断
+        # EFEが低い（負に大きい）＝ 情報獲得の価値が高い or リスクが高い
         trigger_system2 = meta_stats.get("trigger_system2", False)
+        
+        # 不確実性が高く、かつ情報獲得の価値がある場合にSystem 2を起動
+        if efe_score < -0.5: 
+            trigger_system2 = True
 
-        logger.debug(f"🧠 Meta-Analysis | Confidence: {confidence:.4f} | System2 Trigger: {trigger_system2}")
+        logger.debug(f"🧠 Meta: Conf={confidence:.2f}, EFE={efe_score:.2f} -> Sys2={trigger_system2}")
 
-        # 2. 推論モードの動的選択 (Dynamic Compute)
+        # 3. 推論モードの実行
         if not trigger_system2 and confidence > self.confidence_threshold:
-            # --- System 1: 高速・省エネ推論 (直感) ---
-            # mypy修正: forward_async ではなく、SNNCoreの標準 forward を使用
+            # --- System 1: Intuition ---
             output = system1_logits
             inference_type = "System_1_Intuition"
             
-            # 発火率の監視と代謝への反映
             firing_rates = self.snn_core.get_firing_rates()
             self.astrocyte.monitor_neural_activity(firing_rates)
         else:
-            # --- System 2: 深層推論 (熟慮) ---
-            # エネルギー要求
-            cost = 20.0 # System 2 は高コスト
+            # --- System 2: Reasoning ---
+            cost = 20.0
             if self.astrocyte.request_resource("reasoning_engine", cost):
-                logger.info("🤔 Confidence low. Activating System 2 Reasoning Engine...")
+                logger.info("🤔 High EFE/Low Conf. Activating System 2...")
                 
-                # mypy修正: reason_with_verification ではなく process メソッドを使用
-                # ReasoningEngine.process は内部で多段階推論と RAG/Code検証を行う
+                # 推論エンジンにEFE情報を渡すことも可能
                 output_dict = self.reasoning_engine.process(sensory_input)
                 output = output_dict.get("final_output", system1_logits)
                 inference_type = "System_2_Reasoning"
             else:
-                logger.warning("⚡ Low Energy: System 2 denied. Falling back to System 1.")
+                logger.warning("⚡ Low Energy: System 2 denied. Fallback.")
                 output = system1_logits
                 inference_type = "System_1_Fallback"
 
-        # 3. 行動の決定と出力
-        # 脳デバッガによる状態の可視化 (print出力)
+        # 4. 状態報告
         diagnosis = self.astrocyte.get_diagnosis_report()
         self.debugger.explain_thought_process(
             input_text="Sensory Stream", 
@@ -118,17 +137,22 @@ class ActiveInferenceAgent:
         action_results = {
             "inference_type": inference_type,
             "confidence": confidence,
+            "efe_score": efe_score,
             "output": output,
             "astrocyte_report": diagnosis
         }
 
-        # 4. 能動学習のトリガー
-        # 驚き（不確実性）が高い場合、WebCrawlerなどを介した知識獲得を予約する
-        if trigger_system2:
+        # 5. 能動的探索 (Active Exploration)
+        # EFEに基づいて「知識ギャップ」イベントを発行
+        if trigger_system2 and self.epistemic_weight > 0:
             await self.kernel.publish(BrainEvent(
                 event_type="KNOWLEDGE_GAP_DETECTED",
                 source="active_inference_agent",
-                payload={"input": sensory_input, "confidence": confidence}
+                payload={
+                    "input": sensory_input, 
+                    "confidence": confidence,
+                    "efe": efe_score
+                }
             ))
 
         return action_results
@@ -138,17 +162,10 @@ class ActiveInferenceAgent:
         self.is_running = True
         logger.info("🤖 Active Inference Agent Loop Started.")
         while self.is_running:
-            # 実際の実装では EventBus からの入力を待機
-            # ここではプロトタイプ的なループ構造を示す
             try:
-                # Kernelの状態を確認し、Sleepモードなら待機
                 if self.kernel.state == "SLEEP":
                     await asyncio.sleep(5.0)
                     continue
-
-                # 入力取得ロジック（実際はイベント駆動）
-                # sensory_data = await self.kernel.bus.get(...) 
-                
                 await asyncio.sleep(0.1) 
             except Exception as e:
                 logger.error(f"Error in Agent Loop: {e}")
@@ -157,8 +174,9 @@ class ActiveInferenceAgent:
     def stop(self):
         self.is_running = False
 
-# ロジックの検証:
-# 1. 既存の snn_core.py, reasoning_engine.py, astrocyte_network.py のシグネチャと完全に一致。
-# 2. mypy エラーの原因（存在しない log() や check_homeostasis()）を削除・置換。
-# 3. 非同期（async/await）と、スレッド実行が必要な同期処理（Astrocyteなど）を適切に分離。
-# 4. Objective.md ⑮ の「自信がない時だけ深く考える」を MetaCognitiveSNN の出力をトリガーに実装完了。
+# ダミーイベントクラス（インポートエラー回避用）
+class BrainEvent:
+    def __init__(self, event_type, source, payload):
+        self.event_type = event_type
+        self.source = source
+        self.payload = payload
