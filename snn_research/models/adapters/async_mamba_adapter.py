@@ -1,6 +1,6 @@
 # /snn_research/models/adapters/async_mamba_adapter.py
-# 日本語タイトル: AsyncBitSpikeMamba アダプター (完全統合版)
-# 目的: テストコードからの 'checkpoint_path' 引数に対応し、自動ロード機能を含む初期化を実現する。
+# 日本語タイトル: AsyncBitSpikeMamba アダプター (パラメータ展開修正版)
+# 目的: BitSpikeMambaモデルの引数要件を満たし、統合テストの初期化エラーを完全に解消する。
 
 import torch
 import torch.nn as nn
@@ -13,66 +13,69 @@ logger = logging.getLogger(__name__)
 class AsyncBitSpikeMambaAdapter(nn.Module):
     """
     非同期実行環境とBitSpikeMambaモデルを橋渡しするアダプター。
-    [Fix] テストコード(test_brain_integration.py)が期待する 'checkpoint_path' 引数に対応し、
-    初期化時に重みを安全に自動ロードする機能を追加。
+    [Fix] モデル初期化時の引数ミスマッチを解消。
     """
     def __init__(
         self, 
-        config: Dict[str, Any], 
+        config: Any, 
         device: str = "cpu", 
         checkpoint_path: Optional[str] = None
     ):
         super().__init__()
-        self.config = config
+        # config が OmegaConf の場合は辞書に変換
+        if hasattr(config, "to_container"):
+            self.config_dict = config.to_container(recursive=True)
+        else:
+            self.config_dict = dict(config)
+            
         self.device = device
         
-        # 1. モデル本体の構築 (BitSpikeMamba)
+        # ◾️ 修正箇所: BitSpikeMambaが個別の引数を要求するため、辞書を展開して渡す
         from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
-        self.model = BitSpikeMamba(config)
         
-        # 2. 指定されたデバイスへ転送
+        # 必須パラメータの抽出 (不足時はデフォルト値を設定)
+        model_params = {
+            "d_model": self.config_dict.get("d_model", 128),
+            "d_state": self.config_dict.get("d_state", 16),
+            "d_conv": self.config_dict.get("d_conv", 4),
+            "expand": self.config_dict.get("expand", 2),
+            "num_layers": self.config_dict.get("num_layers", 4),
+            "time_steps": self.config_dict.get("time_steps", 16),
+            "neuron_config": self.config_dict.get("neuron_config", {"type": "lif"})
+        }
+        
+        # キーワード引数として展開してモデルを構築
+        self.model = BitSpikeMamba(**model_params)
+        
+        # 指定されたデバイスへ転送
         self.to(device)
         
-        # 3. [Fix] チェックポイントが指定されている場合は自動ロードを実行
+        # チェックポイントの自動ロード
         if checkpoint_path and os.path.exists(checkpoint_path):
             try:
                 state_dict = torch.load(checkpoint_path, map_location=device)
                 self.load_state_dict_safe(state_dict)
-                logger.info(f"✅ Automatically loaded checkpoint from: {checkpoint_path}")
+                logger.info(f"✅ Loaded checkpoint: {checkpoint_path}")
             except Exception as e:
-                logger.error(f"❌ Failed to load checkpoint in __init__: {e}")
-        elif checkpoint_path:
-            logger.warning(f"⚠️ Checkpoint path provided but not found: {checkpoint_path}")
-
-        logger.info(f"🚀 AsyncBitSpikeMambaAdapter initialized on device: {device}")
+                logger.error(f"❌ Failed to load checkpoint: {e}")
 
     def load_state_dict_safe(self, state_dict: Dict[str, torch.Tensor]):
-        """
-        形状が一致する重みのみをロードする堅牢なメソッド。
-        """
+        """形状が一致する重みのみをロードする。"""
         model_dict = self.state_dict()
         filtered_dict = {}
-        mismatch_keys = []
-
         for k, v in state_dict.items():
-            if k in model_dict:
-                if v.shape == model_dict[k].shape:
-                    filtered_dict[k] = v
-                else:
-                    mismatch_keys.append(f"{k} (Checkpoint:{v.shape} vs Model:{model_dict[k].shape})")
+            if k in model_dict and v.shape == model_dict[k].shape:
+                filtered_dict[k] = v
         
-        if mismatch_keys:
-            logger.warning(f"⚠️ Weight shape mismatch detected in {len(mismatch_keys)} keys. Consistent weights will be loaded.")
-
-        # strict=False で安全にロードを実行
         self.load_state_dict(filtered_dict, strict=False)
-        logger.info(f"✅ Safe load completed. Consistent weight tensors: {len(filtered_dict)}")
 
     def forward(self, x: torch.Tensor, **kwargs: Any) -> torch.Tensor:
-        """モデルの推論実行。"""
-        # 入力をモデルと同じデバイスへ転送
+        # 入力を適切な形状とデバイスに調整
+        if x.dim() == 2: # (Batch, Features) -> (Batch, Time, Features)
+            x = x.unsqueeze(1).repeat(1, self.config_dict.get("time_steps", 16), 1)
+        
         x = x.to(self.device)
         return self.model(x, **kwargs)
 
-# エイリアスの設定（後方互換性および既存コード用）
+# エイリアス
 AsyncMambaAdapter = AsyncBitSpikeMambaAdapter
