@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (報酬安定版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (厳格報酬版)
 
 import torch
 import torch.nn as nn
@@ -25,13 +25,12 @@ class HybridNeuromorphicCore(nn.Module):
             r = self.deep_process(f)
             out = self.output_gate(r)
             
-            # 報酬の滑らかな計算
-            reward = 0.0
+            # 報酬の厳格化: 全く同じでない限りペナルティを課す
+            reward = -1.0
             if target is not None:
-                # ターゲットとの一致度を 0.0 〜 1.0 で算出
-                match_score = torch.sum(target.view(-1) * out.view(-1))
-                # 期待値との差分
-                reward = float(match_score.item()) - 0.1
+                match = torch.sum(target.view(-1) * out.view(-1))
+                # 正解スパイクが1つでも重なれば報酬、それ以外は厳しい罰
+                reward = float(match.item()) * 2.0 - 1.0
             
             self.fast_process.update_plasticity(x_input.view(-1), f.view(-1), reward=reward)
             self.output_gate.update_plasticity(r.view(-1), out.view(-1), reward=reward)
