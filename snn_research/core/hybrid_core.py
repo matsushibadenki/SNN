@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (高精度安定報酬版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (生命力維持報酬版)
 
 import torch
 import torch.nn as nn
@@ -25,23 +25,27 @@ class HybridNeuromorphicCore(nn.Module):
             r = self.deep_process(f)
             out = self.output_gate(r)
             
-            # 報酬の再設計: 
-            # 1であるべき場所で1なら +1, 0であるべき場所で1なら -1
             reward = 0.0
             if target is not None:
-                t = target.view(-1)
-                o = out.view(-1)
-                hits = torch.sum(t * o)           # 正解
-                misses = torch.sum((1 - t) * o)   # お手つき
-                # お手つきの罰を重くしつつ、全体のスケールを抑える
-                reward = float(hits.item() * 2.0 - misses.item() * 3.0)
+                t_f = target.view(-1)
+                o_f = out.view(-1)
+                
+                # スパイクが一致すれば +1.0, 余計なスパイクは -0.2
+                match = torch.sum(t_f * o_f)
+                excess = torch.sum((1-t_f) * o_f)
+                reward = float(match.item() - 0.2 * excess.item())
+                
+                # ネットワークが沈黙している(outが全0)場合、学習を促すための小さな負の報酬
+                if out.sum() == 0:
+                    reward = -0.1
             
             self.fast_process.update_plasticity(x_input.view(-1), f.view(-1), reward=reward)
             self.output_gate.update_plasticity(r.view(-1), out.view(-1), reward=reward)
             
             surprise = 0.0
             if self.deep_process.last_error is not None:
-                surprise = float(self.deep_process.last_error.pow(2).mean().item())
+                # Surpriseを正規化して監視
+                surprise = float(self.deep_process.last_error.abs().mean().item())
             
         return {
             "prediction_error": surprise,
