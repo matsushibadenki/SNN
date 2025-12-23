@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (能動探索報酬版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (高効率知能版)
 
 import torch
 import torch.nn as nn
@@ -32,19 +32,14 @@ class HybridNeuromorphicCore(nn.Module):
                 hits = torch.sum(t_f * o_f)
                 misses = torch.sum((1 - t_f) * o_f)
                 
-                # 修正: 沈黙（全ゼロ）は「最大の罰」
-                if out.sum() == 0:
-                    reward = -5.0
-                else:
-                    # わずかな成功でも大きな報酬、失敗は最小限に
-                    reward = float(hits.item() * 10.0 - misses.item() * 1.0)
+                # 精度ボーナス + 効率ボーナス(発火が少ないほど良い)
+                reward = float(hits.item() * 10.0 - misses.item() * 5.0)
+                reward -= (out.sum().item() * 0.5) # 節約へのインセンティブ
             
             self.fast_process.update_plasticity(x_input.view(-1), f.view(-1), reward=reward)
             self.output_gate.update_plasticity(r.view(-1), out.view(-1), reward=reward)
             
-            surprise = 0.0
-            if self.deep_process.last_error is not None:
-                surprise = float(self.deep_process.last_error.abs().mean().item())
+            surprise = float(self.deep_process.last_error.abs().mean().item()) if self.deep_process.last_error is not None else 0.0
             
         return {
             "prediction_error": surprise,
