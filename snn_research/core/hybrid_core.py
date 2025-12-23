@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (報酬連動学習版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (拮抗学習版)
 
 import torch
 import torch.nn as nn
@@ -21,27 +21,21 @@ class HybridNeuromorphicCore(nn.Module):
 
     def autonomous_step(self, x_input: torch.Tensor, target: Optional[torch.Tensor] = None) -> Dict[str, float]:
         with torch.no_grad():
-            # 1. 順伝播
             f = self.fast_process(x_input)
             r = self.deep_process(f)
             out = self.output_gate(r)
             
-            # 2. 報酬（Reward）の計算
-            # 出力がターゲットにどれだけ「近かったか」をスカラー報酬とする
-            reward = 0.0
+            # 報酬の再定義: 一致していなければマイナスを大きく出す
+            reward = -0.5
             if target is not None:
-                # 一致度を報酬、不一致を罰とする (-1.0 〜 1.0)
-                # コサイン類似度やドット積を利用
-                t_flat = target.view(-1)
-                o_flat = out.view(-1)
-                reward = float(torch.dot(t_flat, o_flat).item()) - 0.5
+                match = torch.dot(target.view(-1), out.view(-1))
+                # 正解と一致していれば正、そうでなければ負
+                reward = float(match.item()) - 0.2
             
-            # 3. 三因子学習の適用
-            # 報酬信号を全レイヤーへブロードキャスト
+            # 負の報酬による剪定を駆動
             self.fast_process.update_plasticity(x_input.view(-1), f.view(-1), reward=reward)
             self.output_gate.update_plasticity(r.view(-1), out.view(-1), reward=reward)
             
-            # 4. 予測符号化の誤差
             surprise = 0.0
             if self.deep_process.last_error is not None:
                 surprise = float(self.deep_process.last_error.abs().mean().item())
