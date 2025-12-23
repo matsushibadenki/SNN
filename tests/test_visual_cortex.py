@@ -1,6 +1,8 @@
 # ファイルパス: tests/test_visual_cortex.py
-# 日本語タイトル: 視覚野モデル (VisualCortex) 単体テスト
-# 目的・内容: 視覚野の階層的予測符号化および動的なリセット機能の検証
+# 日本語タイトル: 視覚野モデル (VisualCortex) 単体テスト v2.0
+# 目的・内容: 
+#   視覚野のBitNet動作および時系列処理の検証。
+#   修正: コンストラクタ引数と戻り値のアンパックを現在の実装に合わせる。
 
 import unittest
 import torch
@@ -8,66 +10,77 @@ from snn_research.models.bio.visual_cortex import VisualCortex
 
 class TestVisualCortex(unittest.TestCase):
     def setUp(self):
-        # 共通の設定を定義
-        self.config = {
-            "in_channels": 3,
-            "layer_dims": [64, 128],
-            "time_steps": 5,
-            "error_gain": 0.1
-        }
+        # テスト用の設定
+        self.in_channels = 3
+        self.base_channels = 16 # テスト用に小さく設定
+        self.time_steps = 5
+        self.neuron_params = {"tau_mem": 20.0, "base_threshold": 1.0}
 
     def test_visual_cortex_static_image(self):
         """静止画入力に対する視覚野の動作テスト"""
-        model = VisualCortex(self.config)
+        # 正しい引数でインスタンス化
+        model = VisualCortex(
+            in_channels=self.in_channels,
+            base_channels=self.base_channels,
+            time_steps=self.time_steps,
+            neuron_params=self.neuron_params
+        )
+        
         # (Batch, Channel, H, W)
         x = torch.randn(2, 3, 32, 32)
         
-        # 修正: 戻り値は2つ (states, errors)
-        states, errors = model(x)
+        # モデルは (B, T, Features) を返す
+        output = model(x)
         
-        # 各レイヤーの結果が含まれているか
-        self.assertEqual(len(states), 2)
-        self.assertEqual(len(errors), 2)
-        
-        # 出力形状の確認 (Batch, Time, Dim)
-        # VisualCortexの各レイヤー出力は (B, T, C) の形式であることを想定
-        self.assertEqual(states[0].shape[0], 2)
-        self.assertEqual(states[0].shape[1], self.config["time_steps"])
+        # 出力形状の確認
+        self.assertEqual(output.dim(), 3)
+        self.assertEqual(output.shape[0], 2) # Batch
+        self.assertEqual(output.shape[1], self.time_steps) # Time
+        # Output Dim = base_channels * 8 (IT layer)
+        self.assertEqual(output.shape[2], self.base_channels * 8)
 
     def test_visual_cortex_video_stream(self):
         """動画ストリーム（時系列画像）に対する動作テスト"""
-        video_config = self.config.copy()
-        video_config["in_channels"] = 1
-        model = VisualCortex(video_config)
+        model = VisualCortex(
+            in_channels=1, # モノクロ動画
+            base_channels=self.base_channels,
+            time_steps=self.time_steps, # 動画の長さが優先されるが、デフォルト値として渡す
+            neuron_params=self.neuron_params
+        )
         
         # (Batch, Time, Channel, H, W)
-        x = torch.randn(2, 5, 1, 32, 32)
+        # Time=8 (モデルのデフォルト5より長い入力)
+        x = torch.randn(2, 8, 1, 32, 32)
         
-        # 修正: 戻り値は2つ
-        states, errors = model(x)
+        output = model(x)
         
-        self.assertEqual(states[-1].shape[0], 2)
-        # 時系列入力の場合、内部でステップごとに処理されることを確認
-        self.assertTrue(states[-1].sum() != 0)
+        # 出力の時間次元が入力と一致することを確認
+        self.assertEqual(output.shape[1], 8)
+        self.assertEqual(output.shape[0], 2)
 
     def test_reset(self):
         """内部状態のリセット機能のテスト"""
-        # 修正: Positional argumentsではなくconfig辞書を渡す
-        model = VisualCortex(self.config)
+        model = VisualCortex(
+            in_channels=self.in_channels,
+            base_channels=self.base_channels,
+            time_steps=self.time_steps,
+            neuron_params=self.neuron_params
+        )
         
         x = torch.randn(1, 3, 16, 16)
-        model(x)
         
-        # 状態が保持されていることを確認（実装に依存するが一般的には非ゼロ）
-        model.reset_states()
+        # 1回目の実行
+        out1 = model(x)
         
-        # リセット後に別の入力を入れてエラーが起きないか
-        try:
-            model(x)
-            success = True
-        except Exception:
-            success = False
-        self.assertTrue(success)
+        # リセットを手動で呼ぶ（forward内でも呼ばれるが、明示的な呼び出しを確認）
+        model.reset_state()
+        
+        # 2回目の実行（同じ入力なら、決定論的SNNは同じ出力を返すはず）
+        # ※ ノイズやドロップアウトがない場合
+        out2 = model(x)
+        
+        # 出力が一致することを確認 (リセットが効いていれば初期状態から同じ計算になる)
+        self.assertTrue(torch.allclose(out1, out2))
 
 if __name__ == "__main__":
     unittest.main()
