@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (競合・剪定強化版)
-# 目的: 全結合飽和(Conn: 100%)を解消し、誤差に基づく配線剪定を駆動させる。
+# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (再生・安定版)
+# 目的: Conn: 0.0% の全消滅を回避し、疎な結合を維持しながら学習を継続させる。
 
 import torch
 import torch.nn as nn
@@ -14,13 +14,13 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 初期状態を閾値付近に下げ、飽和を防ぐ
+        # 初期状態: 閾値付近でランダムに
         self.register_buffer('synapse_states', torch.randint(
-            self.threshold - 5, self.threshold + 5, (out_features, in_features)
+            self.threshold - 2, self.threshold + 8, (out_features, in_features)
         ).float())
         
         self.register_buffer('membrane_potential', torch.zeros(out_features))
-        self.register_buffer('adaptive_threshold', torch.full((out_features,), 1.5))
+        self.register_buffer('adaptive_threshold', torch.full((out_features,), 1.0))
         self.register_buffer('firing_history', torch.zeros(out_features))
 
     @property
@@ -38,44 +38,50 @@ class LogicGatedSNN(nn.Module):
         # 電流計算
         current = torch.matmul(x, w.t()).view(-1)
         
-        # 1. 膜電位の更新
+        # 1. 膜電位の更新 (リーキーな特性を強める)
         v_mem = cast(torch.Tensor, self.membrane_potential)
-        v_mem.add_(current)
+        v_mem.copy_(v_mem * 0.9 + current) # 積分特性
         
-        # 2. 強力な側方抑制 (Winner-Take-All 的な挙動)
-        # 最も電位が高いもの以外を抑制
-        if v_mem.max() > 0:
-            v_mem.sub_(v_mem.mean() * 0.5)
-        
-        # 3. 発火判定
+        # 2. 確率的要素
         v_th = cast(torch.Tensor, self.adaptive_threshold)
-        spikes = (v_mem >= v_th).to(torch.float32)
+        spikes = (v_mem + torch.randn_like(v_mem) * 0.1 >= v_th).to(torch.float32)
         
-        # 4. リセット (発火したら完全リセット、そうでなければ少し減衰)
-        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.7)
+        # 3. リセット
+        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.5)
         
-        # 5. 恒常性 (発火しすぎを抑制)
+        # 4. 履歴と恒常性
         with torch.no_grad():
-            self.firing_history.copy_(cast(torch.Tensor, self.firing_history) * 0.9 + spikes * 0.1)
-            # 発火率が高いほど閾値を急激に上げ、Conn: 100% を阻止
-            self.adaptive_threshold.add_((spikes - 0.05) * 0.2)
-            self.adaptive_threshold.clamp_(1.0, 20.0)
+            self.firing_history.copy_(cast(torch.Tensor, self.firing_history) * 0.99 + spikes * 0.01)
+            # 発火しなさすぎを検知して閾値を下げる
+            self.adaptive_threshold.add_((spikes - 0.05) * 0.1)
+            self.adaptive_threshold.clamp_(0.5, 5.0)
         
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
-        """三因子学習則による配線剪定"""
+        """全消滅を防ぐ適応的学習則"""
         with torch.no_grad():
             correlation = torch.outer(post_spikes, pre_spikes)
             
-            # 修正: 報酬(reward)が負（間違い）のとき、その結合を強力に剪定
-            if reward < 0:
-                # 間違った発火に寄与した配線を切る
-                self.states.sub_(correlation * abs(reward) * 20.0)
-            else:
-                # 正解に近い場合は結合を強化
-                self.states.add_(correlation * reward * 5.0)
+            # 修正1: 報酬による更新の安定化 (極端な値を避ける)
+            # reward の影響を tanh で制限
+            clamped_reward = torch.tanh(torch.tensor(reward))
             
-            # 自然な忘却（スパース性の維持）
-            self.states.sub_(0.2)
+            # 強化と剪定のバランスを調整
+            if clamped_reward >= 0:
+                self.states.add_(correlation * clamped_reward * 2.0)
+            else:
+                self.states.sub_(correlation * abs(clamped_reward) * 1.0)
+            
+            # 修正2: 恒常的な微弱な忘却 (過剰結合の防止)
+            self.states.sub_(0.05)
+            
+            # 修正3: 全消滅回避ロジック (Min Connectivity)
+            # 結合率が 5% を切ったらランダムに結合を復活させる
+            conn_mask = self.states > self.threshold
+            if conn_mask.float().mean() < 0.05:
+                # 死んでいるシナプスの中からランダムに選び、Include 状態へ戻す
+                revive_mask = (torch.rand_like(self.states) < 0.01) & (~conn_mask)
+                self.states[revive_mask] = float(self.threshold + 5)
+
             self.states.clamp_(1, self.max_states)
