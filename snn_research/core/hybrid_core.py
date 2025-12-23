@@ -1,9 +1,9 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (予測誤差連動学習版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (報酬連動学習版)
 
 import torch
 import torch.nn as nn
-from typing import Dict, Optional, cast
+from typing import Dict, Optional
 from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
 from snn_research.core.layers.active_predictive_layer import ActivePredictiveLayer
 
@@ -26,25 +26,28 @@ class HybridNeuromorphicCore(nn.Module):
             r = self.deep_process(f)
             out = self.output_gate(r)
             
-            # 2. 「驚き (Surprise)」の算出
-            # 予測誤差が大きいほど Surprise が高くなる
+            # 2. 報酬（Reward）の計算
+            # 出力がターゲットにどれだけ「近かったか」をスカラー報酬とする
+            reward = 0.0
+            if target is not None:
+                # 一致度を報酬、不一致を罰とする (-1.0 〜 1.0)
+                # コサイン類似度やドット積を利用
+                t_flat = target.view(-1)
+                o_flat = out.view(-1)
+                reward = float(torch.dot(t_flat, o_flat).item()) - 0.5
+            
+            # 3. 三因子学習の適用
+            # 報酬信号を全レイヤーへブロードキャスト
+            self.fast_process.update_plasticity(x_input.view(-1), f.view(-1), reward=reward)
+            self.output_gate.update_plasticity(r.view(-1), out.view(-1), reward=reward)
+            
+            # 4. 予測符号化の誤差
             surprise = 0.0
             if self.deep_process.last_error is not None:
                 surprise = float(self.deep_process.last_error.abs().mean().item())
             
-            # 3. 局所学習則への Surprise フィードバック
-            self.fast_process.update_plasticity(x_input.view(-1), f.view(-1), surprise=surprise)
-            
-            # 4. 出力層の学習 (targetとの差異を Surprise として扱う)
-            output_surprise = 0.0
-            if target is not None:
-                output_surprise = float((target.view(-1) - out).abs().mean().item())
-            
-            feedback = target.view(-1) if target is not None else r.view(-1)
-            self.output_gate.update_plasticity(r.view(-1), feedback, surprise=output_surprise)
-            
         return {
             "prediction_error": surprise,
-            "fast_layer_states_avg": float(self.fast_process.states.mean().item()),
+            "reward": reward,
             "output_spike_count": float(out.sum().item())
         }
