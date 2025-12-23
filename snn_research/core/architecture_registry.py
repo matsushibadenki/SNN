@@ -1,8 +1,7 @@
 # ファイルパス: snn_research/core/architecture_registry.py
-# Title: モデルアーキテクチャレジストリ (Fixed Vocabulary Size)
+# Title: モデルアーキテクチャレジストリ (Argument Fix)
 # Description:
-#   dsa_transformer の登録を追加し、ベンチマークスイートからの呼び出しに対応。
-#   修正: 'predictive_coding' ビルダーで vocab_size をモデルに渡すように修正。
+#   VisualCortex の引数不整合を修正。
 
 import torch.nn as nn
 from typing import Dict, Any, Callable, List, Optional, cast
@@ -18,9 +17,6 @@ class ArchitectureRegistry:
 
     @classmethod
     def register(cls, name: str):
-        """
-        ビルダー関数を登録するデコレータ。
-        """
         def decorator(builder_func: Callable[[Dict[str, Any], int], nn.Module]):
             if name in cls._registry:
                 logger.warning(f"Architecture '{name}' is already registered. Overwriting.")
@@ -30,9 +26,6 @@ class ArchitectureRegistry:
 
     @classmethod
     def build(cls, arch_type: str, config: Dict[str, Any], vocab_size: int) -> nn.Module:
-        """
-        指定されたアーキテクチャタイプのモデルを構築する。
-        """
         if arch_type not in cls._registry:
             available = list(cls._registry.keys())
             raise ValueError(f"Unknown architecture type '{arch_type}'. Available architectures: {available}")
@@ -45,33 +38,26 @@ class ArchitectureRegistry:
 @ArchitectureRegistry.register("spiking_cnn")
 def build_spiking_cnn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.cnn.spiking_cnn_model import SpikingCNN
-    
-    num_classes = config.get('num_classes', vocab_size)
-    time_steps = config.get('time_steps', 16)
-    neuron_config = config.get('neuron', {})
-    
     return SpikingCNN(
-        vocab_size=num_classes,
-        time_steps=time_steps,
-        neuron_config=neuron_config
+        vocab_size=config.get('num_classes', vocab_size),
+        time_steps=config.get('time_steps', 16),
+        neuron_config=config.get('neuron', {})
     )
 
 @ArchitectureRegistry.register("predictive_coding")
 def build_predictive_coding(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.experimental.predictive_coding_model import PredictiveCodingModel
-    
     return PredictiveCodingModel(
         input_dim=config.get('input_dim', 784),
         hidden_dims=config.get('hidden_dims', [128]),
-        output_dim=vocab_size, # 出力次元はvocab_size (クラス数)
+        output_dim=vocab_size,
         neuron_params=config.get('neuron', {}),
-        vocab_size=vocab_size  # 修正: ここで vocab_size を渡す
+        vocab_size=vocab_size
     )
 
 @ArchitectureRegistry.register("hybrid_cnn_snn")
 def build_hybrid_cnn_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.cnn.hybrid_cnn_snn_model import HybridCnnSnnModel
-    
     return HybridCnnSnnModel(
         vocab_size=vocab_size,
         time_steps=config.get('time_steps', 16),
@@ -83,7 +69,6 @@ def build_hybrid_cnn_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 @ArchitectureRegistry.register("spiking_mamba")
 def build_spiking_mamba(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.core.mamba_core import SpikingMamba
-    
     return SpikingMamba(
         vocab_size=vocab_size,
         d_model=config.get('d_model', 128),
@@ -98,10 +83,8 @@ def build_spiking_mamba(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 @ArchitectureRegistry.register("tskips_snn")
 def build_tskips_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.cnn.tskips_snn import TSkipsSNN
-    
     forward_delays = cast(List[Optional[List[int]]], config.get('forward_delays_per_layer', []))
     backward_delays = cast(List[Optional[List[int]]], config.get('backward_delays_per_layer', []))
-    
     return TSkipsSNN(
         input_features=config.get('input_features', 700),
         num_classes=vocab_size,
@@ -116,7 +99,6 @@ def build_tskips_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 @ArchitectureRegistry.register("franken_moe")
 def build_franken_moe(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.experimental.moe_model import SpikingFrankenMoE
-    
     return SpikingFrankenMoE(
         vocab_size=vocab_size,
         d_model=config.get('d_model', 128),
@@ -129,20 +111,18 @@ def build_franken_moe(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 @ArchitectureRegistry.register("bit_spiking_rwkv")
 def build_bit_spiking_rwkv(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.transformer.spiking_rwkv import BitSpikingRWKV
-    
     return BitSpikingRWKV(
         vocab_size=vocab_size,
         d_model=config.get('d_model', 128),
         num_layers=config.get('num_layers', 4),
         time_steps=config.get('time_steps', 16),
         neuron_config=config.get('neuron', {}),
-        config=config # BitNet設定のためにconfig全体を渡す
+        config=config
     )
 
 @ArchitectureRegistry.register("spiking_transformer")
 def build_spiking_transformer(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.transformer.spiking_transformer import SpikingTransformerV2
-    
     d_model = config.get('d_model', 256)
     return SpikingTransformerV2(
         vocab_size=vocab_size,
@@ -157,7 +137,6 @@ def build_spiking_transformer(config: Dict[str, Any], vocab_size: int) -> nn.Mod
 @ArchitectureRegistry.register("temporal_snn")
 def build_temporal_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.bio.temporal_snn import SimpleRSNN
-    
     return SimpleRSNN(
         input_dim=config.get('input_dim', 1),
         hidden_dim=config.get('hidden_dim', 64),
@@ -170,10 +149,8 @@ def build_temporal_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 @ArchitectureRegistry.register("sew_resnet")
 def build_sew_resnet(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.cnn.sew_resnet import SEWResNet
-    
-    num_classes = config.get('num_classes', vocab_size)
     return SEWResNet(
-        num_classes=num_classes,
+        num_classes=config.get('num_classes', vocab_size),
         time_steps=config.get('time_steps', 16),
         neuron_config=config.get('neuron', {})
     )
@@ -181,10 +158,8 @@ def build_sew_resnet(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 @ArchitectureRegistry.register("feel_snn")
 def build_feel_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.experimental.feel_snn import FEELSNN
-    
-    num_classes = config.get('num_classes', vocab_size)
     return FEELSNN(
-        num_classes=num_classes,
+        num_classes=config.get('num_classes', vocab_size),
         time_steps=config.get('time_steps', 16),
         in_channels=config.get('in_channels', 3),
         neuron_config=config.get('neuron', {})
@@ -193,7 +168,6 @@ def build_feel_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 @ArchitectureRegistry.register("sformer")
 def build_sformer(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.transformer.sformer import SFormer
-    
     return SFormer(
         vocab_size=vocab_size,
         d_model=config.get('d_model', 256),
@@ -207,7 +181,6 @@ def build_sformer(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 @ArchitectureRegistry.register("semm")
 def build_semm(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.experimental.semm_model import SEMMModel
-    
     return SEMMModel(
         vocab_size=vocab_size,
         d_model=config.get('d_model', 256),
@@ -220,21 +193,26 @@ def build_semm(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 @ArchitectureRegistry.register("visual_cortex")
 def build_visual_cortex(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.bio.visual_cortex import VisualCortex
+    # 修正: 引数名を VisualCortex.__init__ に合わせる
+    # input_channels -> in_channels
+    # height, width, d_state, time_steps はVisualCortexの現行__init__では受け取っていないか、
+    # 以前のバージョンとの不一致があるため、neuron_paramsにまとめるか、
+    # ここではin_channelsとbase_channelsのみを使用するよう修正。
+    # d_model等はVisualCortexがそれらを使用するように改修された場合にのみ渡す。
+    
+    in_channels = config.get('in_channels', 3)
+    base_channels = config.get('base_channels', 32)
+    neuron_params = config.get('neuron', {})
     
     return VisualCortex(
-        input_channels=config.get('in_channels', 2),
-        height=config.get('height', 32),
-        width=config.get('width', 32),
-        d_model=config.get('d_model', 128),
-        d_state=config.get('d_state', 64),
-        time_steps=config.get('time_steps', 16),
-        neuron_config=config.get('neuron', {})
+        in_channels=in_channels,
+        base_channels=base_channels,
+        neuron_params=neuron_params
     )
 
 @ArchitectureRegistry.register("spiking_vlm")
 def build_spiking_vlm(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.transformer.spiking_vlm import SpikingVLM
-    
     return SpikingVLM(
         vocab_size=vocab_size,
         vision_config=config.get('vision_config', {}),
@@ -245,7 +223,6 @@ def build_spiking_vlm(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 @ArchitectureRegistry.register("tiny_recursive_model")
 def build_tiny_recursive_model(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.core.trm_core import TinyRecursiveModel
-    
     return TinyRecursiveModel(
         vocab_size=vocab_size,
         d_model=config.get('d_model', 64),
@@ -259,7 +236,6 @@ def build_tiny_recursive_model(config: Dict[str, Any], vocab_size: int) -> nn.Mo
 @ArchitectureRegistry.register("spiking_ssm")
 def build_spiking_ssm(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.experimental.spiking_ssm import SpikingSSM
-
     return SpikingSSM(
         vocab_size=vocab_size,
         d_model=config.get('d_model', 512),
@@ -273,7 +249,6 @@ def build_spiking_ssm(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 @ArchitectureRegistry.register("dsa_transformer")
 def build_dsa_transformer(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.transformer.dsa_transformer import DSASpikingTransformer
-    
     return DSASpikingTransformer(
         vocab_size=vocab_size,
         output_dim=vocab_size,
@@ -289,10 +264,9 @@ def build_dsa_transformer(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 @ArchitectureRegistry.register("spiking_world_model")
 def build_spiking_world_model(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.experimental.world_model_snn import SpikingWorldModel
-    
     return SpikingWorldModel(
         vocab_size=vocab_size,
-        action_dim=config.get('action_dim', 4), # デフォルトアクション数
+        action_dim=config.get('action_dim', 4),
         d_model=config.get('d_model', 256),
         d_state=config.get('d_state', 128),
         num_layers=config.get('num_layers', 4),
