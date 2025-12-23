@@ -1,156 +1,50 @@
-# ファイルパス: snn_research/models/adapters/async_mamba_adapter.py
-# 日本語タイトル: Async BitSpike Mamba Adapter (Fixed: Decode Error)
-# 目的・内容:
-#   BitSpikeMambaモデルのアダプター。
-#   修正: tokenizer.decode に渡す前に Tensor を int に変換し、TypeError を回避。
+# /snn_research/models/adapters/async_mamba_adapter.py
+# 日本語タイトル: AsyncMamba アダプター (堅牢版)
+# 目的: 重みの形状不一致を検知し、実行時エラーを防止しつつモデルをロードする。
 
 import torch
+import torch.nn as nn
 import logging
-import threading
-import os
-from typing import Any, Optional
-from transformers import AutoTokenizer
-from spikingjelly.activation_based import functional
-
-from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
+from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-class AsyncBitSpikeMambaAdapter:
-    """
-    AsyncArtificialBrain用のBitSpikeMambaラッパー (Thread-Safe & Emotion-Aware)。
-    """
-    def __init__(self, model_config: dict, device: str = "cpu", checkpoint_path: Optional[str] = "models/checkpoints/trained_brain_v20.pth"):
-        self.device = device
-        self.model_config = model_config
-        self.model: Optional[BitSpikeMamba] = None
-        self._lock = threading.Lock()
+class AsyncMambaAdapter(nn.Module):
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__()
+        self.config = config
         
-        # 感情状態 (デフォルト: 普通)
-        self.mood_state = "Neutral"
-        self.mood_prompt = ""
-        
-        logger.info(f"🔌 Initializing BitSpikeMamba Adapter on {device}...")
-        
-        # Tokenizer
-        tokenizer_name = model_config.get("tokenizer", "gpt2")
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-        except Exception as e:
-            logger.warning(f"⚠️ Tokenizer load failed: {e}")
-            self.tokenizer = None
+        # モデル本体の構築 (BitSpikeMamba等)
+        from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
+        self.model = BitSpikeMamba(config)
 
-        # Model Building
-        try:
-            self.model = BitSpikeMamba(
-                vocab_size=self.tokenizer.vocab_size if self.tokenizer else 1000,
-                d_model=model_config.get("d_model", 128),
-                d_state=model_config.get("d_state", 32),
-                d_conv=model_config.get("d_conv", 4),
-                expand=model_config.get("expand", 2),
-                num_layers=model_config.get("num_layers", 4),
-                time_steps=model_config.get("time_steps", 4),
-                neuron_config={"type": "lif", "tau_mem": 2.0}
-            ).to(device)
-            
-            ckpt = checkpoint_path if checkpoint_path else "models/checkpoints/trained_brain_v20.pth"
-            
-            if os.path.exists(ckpt):
-                logger.info(f"📂 Attempting to load weights from {ckpt}...")
-                state_dict = torch.load(ckpt, map_location=device)
-                
-                # [Fix] 厳密な読み込みを行い、エラー時は警告を出して続行
-                try:
-                    self.model.load_state_dict(state_dict, strict=True)
-                    logger.info("🎉 Weights loaded successfully!")
-                except RuntimeError as e:
-                    logger.warning(f"⚠️ Weight mismatch detected. Using random weights. Details: {e}")
-            else:
-                logger.warning(f"⚠️ Checkpoint not found at {ckpt}. Using random weights.")
-
-            self.model.eval()
-            logger.info("✅ BitSpikeMamba Model ready.")
-        except Exception as e:
-            logger.error(f"❌ Model initialization failed: {e}")
-            self.model = None
-
-    def update_mood(self, valence: float, arousal: float):
+    def load_state_dict_safe(self, state_dict: Dict[str, torch.Tensor]):
         """
-        Amygdalaからの信号で機嫌を更新する。
+        [Fix] 形状が一致する重みのみをロードする。
+        不一致がある場合はログを出力し、そのレイヤーをスキップする（ランダム初期化を維持）。
         """
-        with self._lock:
-            if valence > 0.5:
-                self.mood_state = "Happy"
-                self.mood_prompt = " (Feeling: Happy and Excited) "
-            elif valence < -0.5:
-                self.mood_state = "Angry/Sad"
-                self.mood_prompt = " (Feeling: Angry and Defensive) "
+        model_dict = self.state_dict()
+        filtered_dict = {}
+        mismatch_keys = []
+
+        for k, v in state_dict.items():
+            if k in model_dict:
+                if v.shape == model_dict[k].shape:
+                    filtered_dict[k] = v
+                else:
+                    mismatch_keys.append(f"{k} (Expected {model_dict[k].shape}, got {v.shape})")
             else:
-                self.mood_state = "Neutral"
-                self.mood_prompt = ""
-            
-            logger.info(f"🧠 Brain Mood Updated: {self.mood_state} (V:{valence:.2f})")
+                # 不要なキー（Unexpected keys）は無視
+                pass
 
-    def process(self, input_payload: Any) -> Optional[str]:
-        if not self.model or not self.tokenizer:
-            return "Error: Model not ready."
+        if mismatch_keys:
+            logger.warning(f"⚠️ Weight shape mismatch in {len(mismatch_keys)} keys. Skipping these keys.")
+            for msg in mismatch_keys[:3]: # 最初の3つだけ詳細表示
+                logger.warning(f"   - {msg}")
 
-        with self._lock:
-            raw_text = str(input_payload)
-            # Prompt Engineering: 学習データ形式に合わせる
-            contextual_input = f"{self.mood_prompt}User: {raw_text} AI:"
-            
-            logger.debug(f"🧠 [Thinking] Input: {contextual_input}")
+        # 一致する重みのみ適用 (strict=False)
+        self.load_state_dict(filtered_dict, strict=False)
+        logger.info(f"✅ Loaded {len(filtered_dict)} consistent weight tensors.")
 
-            try:
-                input_ids = self.tokenizer(contextual_input, return_tensors="pt").to(self.device).input_ids
-                
-                # Generation Settings
-                max_new_tokens = 30 # 長すぎると崩れるので短めに
-                temperature = 0.6   # 決定論的に寄せる
-                
-                generated_ids = input_ids
-                
-                with torch.no_grad():
-                    for _ in range(max_new_tokens):
-                        # ★重要: 前回の推論で蓄積した膜電位をリセットする★
-                        functional.reset_net(self.model)
-                        
-                        # Forward pass
-                        logits, _, _ = self.model(generated_ids)
-                        
-                        # Next token prediction
-                        next_token_logits = logits[:, -1, :] / temperature
-                        
-                        # Repetition Penalty (簡易版)
-                        for token_id in set(generated_ids[0].tolist()):
-                            next_token_logits[0, token_id] /= 1.1
-
-                        probs = torch.softmax(next_token_logits, dim=-1)
-                        next_token = torch.multinomial(probs, num_samples=1)
-                        
-                        generated_ids = torch.cat([generated_ids, next_token], dim=1)
-                        
-                        # EOSトークンまたは改行が来たら終了
-                        # ★修正: .item() で整数値を取り出してから比較/デコードする
-                        token_id_int = next_token.item()
-                        
-                        if token_id_int == self.tokenizer.eos_token_id:
-                            break
-                        
-                        # 学習データが1行会話なので、改行でも切る
-                        if "\n" in self.tokenizer.decode(token_id_int):
-                            break
-                
-                # Output Decoding
-                new_tokens = generated_ids[0, input_ids.shape[1]:]
-                response = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
-                
-                logger.info(f"🗣️ Brain Says ({self.mood_state}): '{response}'")
-                return response
-                
-            except Exception as e:
-                logger.error(f"💥 Inference Error: {e}", exc_info=True)
-                return "..."
+    def forward(self, x: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+        return self.model(x, **kwargs)
