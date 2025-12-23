@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (適応的成長版)
-# 目的: 結合密度を 5-10% まで意図的に引き上げ、認識に必要な情報伝達容量を確保する。
+# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (自己組織化・最終安定版)
+# 目的: 成長と剪定を活動レベルに応じて自動調整し、飽和を物理的に回避する。
 
 import torch
 import torch.nn as nn
@@ -14,15 +14,17 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 初期状態: 閾値のすぐ下に設定し、学習による「浮上」を待つ
-        self.register_buffer('synapse_states', torch.full((out_features, in_features), float(self.threshold - 5)))
+        # 初期状態: 完全にランダムにし、特定のパターンに偏らないようにする
+        self.register_buffer('synapse_states', torch.randint(
+            self.threshold - 5, self.threshold + 5, (out_features, in_features)
+        ).float())
         
         self.register_buffer('membrane_potential', torch.zeros(out_features))
         self.register_buffer('adaptive_threshold', torch.full((out_features,), 1.0))
         self.register_buffer('firing_history', torch.zeros(out_features))
         
-        # 目標結合率を確実に維持する設定
-        self.target_conn_rate = 0.08 
+        # 目標結合密度 (生物の脳に近い 5% 〜 10% を目指す)
+        self.target_conn_rate = 0.10
 
     @property
     def states(self) -> torch.Tensor:
@@ -39,49 +41,53 @@ class LogicGatedSNN(nn.Module):
         # 電流計算
         current = torch.matmul(x, w.t()).view(-1)
         
-        # 膜電位の更新
+        # 膜電位更新 (リークを強め、古い情報を捨てる)
         v_mem = cast(torch.Tensor, self.membrane_potential)
-        v_mem.copy_(v_mem * 0.8 + current) 
+        v_mem.copy_(v_mem * 0.5 + current) 
         
-        # 判定 (ノイズを減らし、決定論的な寄与を強める)
+        # 判定
         v_th = cast(torch.Tensor, self.adaptive_threshold)
         spikes = (v_mem >= v_th).to(torch.float32)
         
-        # リセット
-        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.5)
+        # 発火後の完全リセット (飽和防止)
+        self.membrane_potential.copy_(v_mem * (1.0 - spikes))
         
-        # 履歴更新
+        # 恒常性の更新
         with torch.no_grad():
             self.firing_history.copy_(cast(torch.Tensor, self.firing_history) * 0.9 + spikes * 0.1)
-            # 発火の平準化
-            self.adaptive_threshold.add_((spikes - 0.05) * 0.2)
-            self.adaptive_threshold.clamp_(0.5, 10.0)
+            # 発火が多すぎる個体の閾値を上げ、少なすぎる個体の閾値を下げる
+            self.adaptive_threshold.add_((spikes - 0.05) * 0.5)
+            self.adaptive_threshold.clamp_(0.5, 20.0)
         
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
-        """成長と剪定のダイナミックな均衡"""
+        """
+        自己組織化学習則: 
+        1. 報酬学習 (Reward-driven)
+        2. 密度抑制 (Density-driven Decay)
+        """
         with torch.no_grad():
             correlation = torch.outer(post_spikes, pre_spikes)
             
             # 現在の結合率
-            current_conn = float(self.get_ternary_weights().mean().item())
+            conn_rate = float(self.get_ternary_weights().mean().item())
             
-            # 1. 報酬学習則
+            # 修正1: 報酬に基づく更新をより「鋭く」する
+            # 報酬が正なら強く固定、負なら即座に切断
             if reward > 0:
-                # 正解時: 結合を強力に強化し、閾値を突破させる
-                self.states.add_(correlation * 20.0)
+                self.states.add_(correlation * 10.0)
             else:
-                # 不正解時: 関係した配線をマイルドに削る
-                self.states.sub_(correlation * 5.0)
+                self.states.sub_(correlation * 15.0)
             
-            # 2. 恒常的成長圧力 (Structural Growth)
-            # 目標密度に達するまで、全シナプスを「底上げ」する
-            if current_conn < self.target_conn_rate:
-                # 結合が足りない時、ランダムではなく全体を押し上げて「候補」を作る
-                self.states.add_(0.5)
+            # 修正2: ダイナミックな密度制御 (100%飽和を数学的に殺す)
+            # 密度が目標を超えた瞬間に、指数関数的に忘却（decay）を強める
+            if conn_rate > self.target_conn_rate:
+                # 飽和状態へのペナルティ (Conn=1.0 なら 10.0 以上の減衰)
+                decay = 0.5 * (conn_rate / self.target_conn_rate) ** 2
+                self.states.sub_(decay)
             else:
-                # 密度を超えたら、活動していない結合から順に削る
-                self.states.sub_(0.2)
+                # 密度が低いときは、活動に関連した部分だけを微増させる (底上げの局所化)
+                self.states.add_(0.1)
 
             self.states.clamp_(1, self.max_states)
