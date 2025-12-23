@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (アニーリング・バースト版)
-# 目的: 安定性を維持しつつ、成功時に一時的な「密度の爆発」を許容し、Acc 50%超の回路を彫り出す。
+# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (構造的覚醒・適応利得版)
+# 目的: 学習初期に爆発的な結合試行を行い、正解パターンを捕獲した後にスパース化へ移行する。
 
 import torch
 import torch.nn as nn
@@ -14,13 +14,13 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 閾値より少し下に配置（最初は未結合からスタート）
-        self.register_buffer('synapse_states', torch.full((out_features, in_features), float(self.threshold - 5)))
+        # 修正1: 初期状態を閾値の「直上」に設定し、最初は全結合に近い状態から探索を始める
+        self.register_buffer('synapse_states', torch.full((out_features, in_features), float(self.threshold + 2)))
         self.register_buffer('membrane_potential', torch.zeros(out_features))
-        self.register_buffer('adaptive_threshold', torch.full((out_features,), 2.5))
+        self.register_buffer('adaptive_threshold', torch.full((out_features,), 1.0)) # 閾値を下げて反応性を高める
         self.register_buffer('eligibility_trace', torch.zeros(out_features, in_features))
         
-        self.target_conn_rate = 0.12 # 安定時のターゲット
+        self.target_conn_rate = 0.15 # 最終的な目標密度
 
     @property
     def states(self) -> torch.Tensor:
@@ -33,51 +33,48 @@ class LogicGatedSNN(nn.Module):
         w = self.get_ternary_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # 空間的抑制の緩和（情報の流入を増やす）
         current = torch.matmul(x, w.t()).view(-1)
         
         v_mem = cast(torch.Tensor, self.membrane_potential)
-        v_mem.mul_(0.7).add_(current)
+        v_mem.mul_(0.6).add_(current)
         
         v_th = cast(torch.Tensor, self.adaptive_threshold)
         spikes = (v_mem >= v_th).to(torch.float32)
         
         with torch.no_grad():
-            # トレース更新（より強く残す）
-            self.eligibility_trace.mul_(0.8).add_(torch.outer(spikes, x.view(-1)) * 2.0)
-            self.eligibility_trace.clamp_(0, 8.0)
+            # 修正2: トレースの感度を極限まで上げる
+            self.eligibility_trace.mul_(0.7).add_(torch.outer(spikes, x.view(-1)) * 5.0)
+            self.eligibility_trace.clamp_(0, 10.0)
             
-            # 発火のホメオスタシス
-            self.adaptive_threshold.add_((spikes - 0.05) * 0.1)
-            self.adaptive_threshold.clamp_(0.5, 10.0)
+            # 発火が少なすぎる個体の閾値を急速に下げて「無理やり」発火させる
+            self.adaptive_threshold.add_((spikes - 0.1) * 0.1)
+            self.adaptive_threshold.clamp_(0.2, 5.0)
         
         self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.2)
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
-        """ 成功時のバーストを許容する動的可塑性 """
+        """ 激しい探索から洗練へ移行する可塑性ルール """
         with torch.no_grad():
             conn_rate = float(self.get_ternary_weights().mean().item())
             trace = cast(torch.Tensor, self.eligibility_trace)
+            
+            # 報酬の反映
             modulation = torch.tanh(torch.tensor(reward)).item()
             
-            # 修正1: 成長抑制を「ソフト」に（Conn 30% までは成長を邪魔しない）
-            growth_brake = torch.exp(torch.tensor(max(0, conn_rate - 0.3) * 10)).item()
-            
             if modulation > 0:
-                # 成功時: 制限を気にせず一気に配線（バースト）
-                self.states.add_(trace * modulation * 20.0 / growth_brake)
+                # 成功時: 強く固定
+                self.states.add_(trace * modulation * 25.0)
             else:
-                # 失敗時: 痕跡箇所を鋭く削除
-                self.states.sub_(trace * abs(modulation) * 8.0)
+                # 失敗時: 痕跡箇所を大幅に削除
+                self.states.sub_(trace * abs(modulation) * 15.0)
             
-            # 修正2: 密度安定化の力を「段階的」に
+            # 修正3: 密度の動的平衡 (15% を目指してゆっくり削る)
             if conn_rate > self.target_conn_rate:
-                # 目標を超えている時だけ、ゆっくり削る（成功した構造をいきなり壊さない）
-                decay_rate = 0.1 * (conn_rate / self.target_conn_rate)
-                self.states.sub_(decay_rate)
+                # 密度過多の場合、報酬に関わらず全体を少しずつ削る
+                self.states.sub_(0.5)
             elif conn_rate < 0.05:
-                # 密度が低すぎる時は、全ニューロンの電位を底上げ（探索の開始）
-                self.states.add_(0.5)
+                # 5% を切った場合は、探索のために一律で浮上させる
+                self.states.add_(1.0)
 
             self.states.clamp_(1, self.max_states)
