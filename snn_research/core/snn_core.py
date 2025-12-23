@@ -1,10 +1,10 @@
 # /snn_research/core/snn_core.py
-# 日本語タイトル: SNNコア・ラッパー (精度・統計強化版)
-# 目的: BaseModelの統計管理機能を正しく呼び出し、mypyエラーを解消する。
+# 日本語タイトル: SNNコア・ラッパー (mypy完全適合版)
+# 目的: "Tensor not callable" エラーを回避するため、動的属性アクセスとCallableチェックを徹底する。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional, cast
+from typing import Dict, Any, Optional, cast, Callable
 import logging
 from snn_research.core.base import BaseModel
 
@@ -28,27 +28,26 @@ class SNNCore(BaseModel):
         from snn_research.core.architecture_registry import ArchitectureRegistry
         
         arch_type = self.config.get('architecture_type', 'unknown')
-        self.model: nn.Module = ArchitectureRegistry.build(arch_type, self.config, vocab_size)
+        # mypyの誤認を防ぐため、敢えてAnyのまま安全に取り扱う
+        self.model: Any = ArchitectureRegistry.build(arch_type, self.config, vocab_size)
         
         self._init_weights()
-        # 統計保持用の辞書を初期化
         self.spike_stats: Dict[str, float] = {}
 
     def forward(self, x: Optional[torch.Tensor] = None, **kwargs: Any) -> Any:
         if x is None:
-            # 入力候補を探索
             for key in ['input_ids', 'input_images', 'input_sequence', 'x', 'input']:
                 if key in kwargs:
                     x = kwargs.pop(key)
                     break
         
         try:
+            # self.model(x) の呼び出し自体は nn.Module として許容される
             if x is not None:
                 output = self.model(x, **kwargs)
             else:
                 output = self.model(**kwargs)
             
-            # 推論後の統計更新
             self._update_firing_stats()
             return output
         except Exception as e:
@@ -57,39 +56,51 @@ class SNNCore(BaseModel):
 
     def _update_firing_stats(self) -> None:
         """発火率統計を安全に更新する。"""
-        # モデル自体が get_firing_rates を持っている場合、または子レイヤーを走査
-        if hasattr(self.model, 'get_firing_rates'):
-            rates = self.model.get_firing_rates()
+        # [修正] 直接ドットでアクセスせず、getattrとCallableチェックを使用する
+        get_rates_method = getattr(self.model, 'get_firing_rates', None)
+        
+        if get_rates_method is not None and callable(get_rates_method):
+            rates = get_rates_method()
             if isinstance(rates, dict):
                 for layer_name, rate in rates.items():
                     val = float(rate.item()) if isinstance(rate, torch.Tensor) else float(rate)
                     self.spike_stats[layer_name] = val
         else:
-            # 各レイヤーを走査して統計を集計（LIFLayerなどの個別の層から取得）
+            # 代替案として子モジュールの get_firing_rate を探索
             for name, module in self.model.named_modules():
-                if hasattr(module, 'get_firing_rate'):
-                    self.spike_stats[name] = module.get_firing_rate()
+                child_rate_method = getattr(module, 'get_firing_rate', None)
+                if child_rate_method is not None and callable(child_rate_method):
+                    self.spike_stats[name] = child_rate_method()
 
     def get_firing_rates(self) -> Dict[str, float]:
         """外部から統計を取得するためのメソッド。"""
         return self.spike_stats
 
     def generate(self, input_ids: torch.Tensor, **kwargs: Any) -> torch.Tensor:
-        if hasattr(self.model, 'generate'):
-            return self.model.generate(input_ids, **kwargs)
+        """[修正] generateメソッドを安全に呼び出す。"""
+        gen_method = getattr(self.model, 'generate', None)
+        if gen_method is not None and callable(gen_method):
+            return cast(torch.Tensor, gen_method(input_ids, **kwargs))
+            
         raise NotImplementedError(f"{type(self.model).__name__} does not support generation.")
 
     def reset_state(self) -> None:
-        """ネットワーク状態（膜電位等）と統計をリセット。"""
+        """[修正] ネットワーク状態と統計をリセットする。"""
         from spikingjelly.activation_based import functional
+        # spikingjellyの関数は型チェックを通る
         functional.reset_net(self.model)
-        if hasattr(self.model, 'reset_state'):
-            self.model.reset_state()
+        
+        # モデル独自のreset_stateを安全に呼び出す
+        reset_method = getattr(self.model, 'reset_state', None)
+        if reset_method is not None and callable(reset_method):
+            reset_method()
+            
         self.spike_stats.clear()
         logger.debug("SNN state and statistics reset.")
 
     def _init_weights(self) -> None:
         """重みの初期化。"""
-        for m in self.modules():
-            if isinstance(m, (nn.Linear, nn.Conv2d)):
-                nn.init.xavier_uniform_(m.weight)
+        if isinstance(self.model, nn.Module):
+            for m in self.model.modules():
+                if isinstance(m, (nn.Linear, nn.Conv2d)):
+                    nn.init.xavier_uniform_(m.weight)
