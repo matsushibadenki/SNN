@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (競合再配線・スパース特化版)
-# 目的: 全結合飽和(100%)を数学的に破壊し、精度80%を維持したまま10%以下のスパース性を実現する。
+# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (自己再生・競合版)
+# 目的: 全消滅(0%)を物理的に回避し、情報の「代謝」を回すことで高精度な認識を実現する。
 
 import torch
 import torch.nn as nn
@@ -14,41 +14,45 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 初期状態: 疎な状態(threshold以下)からスタート
-        self.register_buffer('synapse_states', torch.randint(1, self.threshold, (out_features, in_features)).float())
+        # 初期状態: 閾値付近にバラつかせ、一部が接続された状態からスタート
+        states = torch.randn(out_features, in_features) * 5.0 + self.threshold
+        self.register_buffer('synapse_states', states.clamp(1, max_states))
+        
         self.register_buffer('membrane_potential', torch.zeros(out_features))
-        self.register_buffer('adaptive_threshold', torch.full((out_features,), 5.0)) # 閾値を高めに設定
+        self.register_buffer('adaptive_threshold', torch.full((out_features,), 3.0))
         self.register_buffer('eligibility_trace', torch.zeros(out_features, in_features))
-        self.register_buffer('accumulated_reward', torch.zeros(1))
+        
+        # 修正1: 発火疲労(不応期)バッファ
+        self.register_buffer('refractory_period', torch.zeros(out_features))
 
     @property
     def states(self) -> torch.Tensor:
         return cast(torch.Tensor, self.synapse_states)
 
     def get_ternary_weights(self) -> torch.Tensor:
-        # 重みを 0/1 に完全分離
         return (self.states > self.threshold).float()
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
         w = self.get_ternary_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # デジタル累積
         current = torch.matmul(x, w.t()).view(-1)
         
-        # 修正1: 側方抑制を内包した膜電位更新 (Winner-Take-All)
+        # 修正2: 活動依存の動的抑制
         v_mem = cast(torch.Tensor, self.membrane_potential)
-        # 自分の電位がレイヤーの平均を超えていれば維持、そうでなければ減衰
-        v_avg = current.mean()
-        v_mem.mul_(0.5).add_(current - v_avg * 0.3)
+        # 疲労しているニューロンは入力を受け付けにくくする
+        v_mem.mul_(0.5).add_(current * (1.0 - self.refractory_period * 0.5))
         
-        # 判定
         v_th = cast(torch.Tensor, self.adaptive_threshold)
         spikes = (v_mem >= v_th).to(torch.float32)
         
-        # トレース更新 (短期活動記憶)
         with torch.no_grad():
-            self.eligibility_trace.mul_(0.5).add_(torch.outer(spikes, x.view(-1)))
+            # トレース更新 (因果関係の保持)
+            self.eligibility_trace.mul_(0.8).add_(torch.outer(spikes, x.view(-1)))
+            self.eligibility_trace.clamp_(0, 5.0)
+            
+            # 疲労の蓄積と回復
+            self.refractory_period.add_(spikes).sub_(0.1).clamp_(0, 1.0)
         
         # リセット
         self.membrane_potential.copy_(v_mem * (1.0 - spikes))
@@ -56,27 +60,33 @@ class LogicGatedSNN(nn.Module):
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
-        """ 究極のスパース学習則: 成功に関与しなかった配線を積極的に「捨てる」 """
+        """ 生存本能(自己再生)を組み込んだ学習則 """
         with torch.no_grad():
-            self.accumulated_reward.copy_(self.accumulated_reward * 0.9 + reward * 0.1)
             trace = cast(torch.Tensor, self.eligibility_trace)
-            
-            modulation = torch.tanh(self.accumulated_reward).item()
-            
-            # 修正2: 成功(R>0)なら配線を固定、失敗(R<=0)なら配線を切断
-            if modulation > 0:
-                # 報酬がある場合、活躍したトレースを大幅に強化
-                self.states.add_(trace * modulation * 20.0)
-            else:
-                # 報酬がない場合、トレースに関わらず全結合を一律に弱体化 (スパース化の圧力)
-                self.states.sub_(0.5)
-
-            # 修正3: 構造的可塑性の動的ターゲット
             conn_rate = float(self.get_ternary_weights().mean().item())
-            if conn_rate > 0.15: # 15%を超えたら強烈にプルーニング
-                self.states.sub_(2.0)
-            elif conn_rate < 0.05: # 5%を切ったらランダムに発芽
-                revive_mask = torch.rand_like(self.states) < 0.005
-                self.states[revive_mask] += 10.0
+            
+            # 報酬のスケーリング
+            modulation = torch.tanh(torch.tensor(reward)).item()
+            
+            # 修正3: 積極的な配線強化と代謝
+            if modulation > 0:
+                # 成功時: 活躍した配線を強力に固定
+                self.states.add_(trace * modulation * 25.0)
+            else:
+                # 失敗時または無報酬時: 適度に弱体化 (情報の代謝)
+                self.states.sub_(0.1)
+
+            # 修正4: 強力な自己再生メカニズム (全消滅の阻止)
+            # 目標密度 10.0% を維持するように、ランダムに配線をスプラウトさせる
+            target_rate = 0.10
+            if conn_rate < target_rate:
+                # 密度が足りないほど、発芽率を上げる
+                sprout_prob = (target_rate - conn_rate) * 0.05
+                sprout_mask = torch.rand_like(self.states) < sprout_prob
+                self.states[sprout_mask] = float(self.threshold + 5)
+            
+            # 恒常的な閾値調整 (発火頻度の平準化)
+            self.adaptive_threshold.add_((post_spikes - 0.05) * 0.5)
+            self.adaptive_threshold.clamp_(1.0, 10.0)
 
             self.states.clamp_(1, self.max_states)
