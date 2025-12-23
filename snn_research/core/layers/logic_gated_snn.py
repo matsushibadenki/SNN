@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (三値・安定適応版)
-# 目的: 結合率の激しい変動を抑え、報酬に基づいた「意味のあるスパース性」を固定する。
+# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (生命維持・活動駆動版)
+# 目的: Conn: 0.0% による知能の死を物理的に不可能にし、常に情報の探索を継続させる。
 
 import torch
 import torch.nn as nn
@@ -14,42 +14,48 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 初期状態: 閾値付近でガウス分布させ、多様性を持たせる
-        states = torch.randn(out_features, in_features) * 2.0 + self.threshold
-        self.register_buffer('synapse_states', states.clamp(1, max_states))
-        
+        # 初期状態: 閾値周辺に分布 (一部は最初から結合)
+        self.register_buffer('synapse_states', torch.randn(out_features, in_features) * 3.0 + self.threshold)
         self.register_buffer('membrane_potential', torch.zeros(out_features))
-        self.register_buffer('adaptive_threshold', torch.full((out_features,), 3.0))
+        self.register_buffer('adaptive_threshold', torch.full((out_features,), 2.0))
         self.register_buffer('eligibility_trace', torch.zeros(out_features, in_features))
+        
+        # 低活動状態からの復帰用カウンタ
+        self.register_buffer('silent_steps', torch.zeros(out_features))
 
     @property
     def states(self) -> torch.Tensor:
         return cast(torch.Tensor, self.synapse_states)
 
     def get_ternary_weights(self) -> torch.Tensor:
-        """ 1.58ビット (-1, 0, 1) を模倣した重み。本実装では 0/1 に固定。"""
         return (self.states > self.threshold).float()
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
         w = self.get_ternary_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
 
-        # 電流計算 (デジタル累積)
+        # 電流計算
         current = torch.matmul(x, w.t()).view(-1)
         
-        # 膜電位更新
+        # 1. 膜電位更新
         v_mem = cast(torch.Tensor, self.membrane_potential)
-        v_mem.copy_(v_mem * 0.8 + current) 
+        v_mem.mul_(0.8).add_(current)
         
-        # 発火判定
+        # 2. 活動駆動 (Activity Drive): 長く発火していないニューロンにノイズ注入
+        drive = (self.silent_steps > 50).float() * torch.randn_like(v_mem).abs() * 2.0
+        v_mem.add_(drive)
+        
+        # 3. 発火判定
         v_th = cast(torch.Tensor, self.adaptive_threshold)
         spikes = (v_mem >= v_th).to(torch.float32)
         
-        # 適格性トレースの更新 (行列演算なし: outer product)
+        # 4. 適格性トレースの更新
         with torch.no_grad():
-            # プレとポストの共起を記録 (時間定数を長くする)
-            self.eligibility_trace.mul_(0.95).add_(torch.outer(spikes, x.view(-1)))
+            self.eligibility_trace.mul_(0.9).add_(torch.outer(spikes, x.view(-1)))
             self.eligibility_trace.clamp_(0, 5.0)
+            
+            # 沈黙カウンタの更新
+            self.silent_steps.add_(1.0).sub_(spikes * 100.0).clamp_(min=0)
         
         # リセット
         self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.5)
@@ -57,27 +63,25 @@ class LogicGatedSNN(nn.Module):
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
-        """報酬に基づく微細な配線調整"""
+        """報酬に基づく安定的な配線組み換え"""
         with torch.no_grad():
             trace = cast(torch.Tensor, self.eligibility_trace)
             
-            # 修正1: 更新の「歩幅」を小さくし、振動を抑える (0.1 単位)
-            # reward のスケーリングをマイルドにする
-            stable_reward = torch.tanh(torch.tensor(reward / 10.0)).item()
+            # 修正: 報酬を tanh で [-1, 1] に正規化し、極端な破壊を防ぐ
+            norm_reward = torch.tanh(torch.tensor(reward)).item()
             
-            # 修正2: LTP/LTD の適用
-            update = trace * stable_reward * 2.0
-            self.states.add_(update)
+            # トレースに基づく状態更新
+            self.states.add_(trace * norm_reward * 2.0)
             
-            # 修正3: 自律的なスパース性維持 (強すぎない剪定)
-            # 常に微弱な「忘却」を入れ、新しい結合の席を空ける
-            self.states.sub_(0.01)
-
-            # 修正4: 死滅防止 (最低限の好奇心)
-            conn_rate = self.get_ternary_weights().mean().item()
+            # 自然な忘却
+            self.states.sub_(0.02)
+            
+            # 修正: 強力な「ランダム・スプラウト(発芽)」
+            # 結合率が低い時、死んでいるシナプスを強制的に復活させる
+            conn_rate = float(self.get_ternary_weights().mean().item())
             if conn_rate < 0.05:
-                # 結合が少なすぎる場合、ランダムに少数を Include 状態の予備軍へ
-                revive_mask = torch.rand_like(self.states) < 0.001
-                self.states[revive_mask] += 5.0
+                revive_prob = 0.01 + (0.05 - conn_rate)
+                revive_mask = torch.rand_like(self.states) < revive_prob
+                self.states[revive_mask] = float(self.threshold + 5)
 
             self.states.clamp_(1, self.max_states)
