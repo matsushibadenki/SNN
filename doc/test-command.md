@@ -1,405 +1,287 @@
-# **Matsushiba Denki SNN - 統合テストコマンド完全版 (v20 Unified)**
+# **Matsushiba Denki SNN \- 統合テストコマンド完全版 (v20 Unified)**
 
-このドキュメントは、SNNプロジェクトの全バージョン（Brain v20, v16, v14）および全機能（Phase 1-16）を網羅したテストコマンド集です。
-
----
+このドキュメントは、SNNプロジェクトの全バージョン（Brain v20, v16, v14）および全機能（Phase 1-16+）を網羅したテストコマンド集です。  
+開発中の最新機能、ベンチマーク、ハードウェアシミュレーションを含むすべての実行手順を記載しています。
 
 ## **📋 目次**
 
-1. [環境準備・メンテナンス](#1-環境準備メンテナンス)
-2. [Brain v20 (Current Stable)](#2-brain-v20-current-stable)
-3. [新機能検証 (Bio-Foundation, Perception & Reasoning)](#3-新機能検証)
-4. [SNN学習ワークフロー](#4-snn学習ワークフロー)
-5. [脳型OS & 認知アーキテクチャ](#5-脳型os--認知アーキテクチャ)
-6. [変換 & 最適化](#6-変換--最適化)
-7. [エージェント & 自律行動](#7-エージェント--自律行動)
-8. [性能証明・検証](#8-性能証明検証)
-9. [Legacy Commands (Archive)](#9-legacy-commands-archive)
-10. [トラブルシューティング](#10-トラブルシューティング)
+1. [CLI & 環境準備](https://www.google.com/search?q=%231-cli--%E7%92%B0%E5%A2%83%E6%BA%96%E5%82%99)  
+2. [Brain v20 (Current Stable)](https://www.google.com/search?q=%232-brain-v20-current-stable)  
+3. [新機能検証 (Bio, Symbolic, Spatial)](https://www.google.com/search?q=%233-%E6%96%B0%E6%A9%9F%E8%83%BD%E6%A4%9C%E8%A8%BC-bio-symbolic-spatial)  
+4. [SNN学習 & 蒸留ワークフロー](https://www.google.com/search?q=%234-snn%E5%AD%A6%E7%BF%92--%E8%92%B8%E7%95%99%E3%83%AF%E3%83%BC%E3%82%AF%E3%83%95%E3%83%AD%E3%83%BC)  
+5. [脳型OS & 認知アーキテクチャ](https://www.google.com/search?q=%235-%E8%84%B3%E5%9E%8Bos--%E8%AA%8D%E7%9F%A5%E3%82%A2%E3%83%BC%E3%82%AD%E3%83%86%E3%82%AF%E3%83%81%E3%83%A3)  
+6. [ハードウェア & 最適化](https://www.google.com/search?q=%236-%E3%83%8F%E3%83%BC%E3%83%89%E3%82%A6%E3%82%A7%E3%82%A2--%E6%9C%80%E9%81%A9%E5%8C%96)  
+7. [エージェント & 自律行動](https://www.google.com/search?q=%237-%E3%82%A8%E3%83%BC%E3%82%B8%E3%82%A7%E3%83%B3%E3%83%88--%E8%87%AA%E5%BE%8B%E8%A1%8C%E5%8B%95)  
+8. [性能証明・ベンチマーク](https://www.google.com/search?q=%238-%E6%80%A7%E8%83%BD%E8%A8%BC%E6%98%8E%E3%83%99%E3%83%B3%E3%83%81%E3%83%9E%E3%83%BC%E3%82%AF)  
+9. [可視化 & デバッグ](https://www.google.com/search?q=%239-%E5%8F%AF%E8%A6%96%E5%8C%96--%E3%83%87%E3%83%90%E3%83%83%E3%82%B0)  
+10. [Legacy Commands (Archive)](https://www.google.com/search?q=%2310-legacy-commands-archive)  
+11. [トラブルシューティング](https://www.google.com/search?q=%2311-%E3%83%88%E3%83%A9%E3%83%96%E3%83%AB%E3%82%B7%E3%83%A5%E3%83%BC%E3%83%86%E3%82%A3%E3%83%B3%E3%82%B0)
 
----
+## **1\. CLI & 環境準備**
 
-## **1. 環境準備・メンテナンス**
+プロジェクト全体の操作を簡略化するCLIツールと、基本的なセットアップコマンドです。
 
 ### **セットアップ**
 
-```bash
-pip install -r requirements.txt
-# 静的型チェック
+\# 依存関係のインストール  
+pip install \-r requirements.txt
+
+\# 静的型チェック (開発者向け)  
 mypy .
-```
 
-### **プロジェクト健全性チェック (Health Check)**
+### **SNN CLI ツール (推奨)**
 
-全サブシステムの統合診断（学習、推論、エージェント、生物学的モデルを含む）。
+snn-cli.py を使用して主要なタスクを実行できます。
 
-```bash
-# CLI経由（推奨）
+\# ヘルスチェック (全システムの健全性確認)  
 python snn-cli.py health-check
 
-# またはスクリプト直接実行
-python scripts/run_project_health_check.py
-```
+\# 特定の実験設定でトレーニングを開始  
+python snn-cli.py train \--config configs/models/medium.yaml
 
-### **クリーンアップ**
+\# ベンチマークの実行  
+python snn-cli.py benchmark
 
-```bash
-python snn-cli.py clean logs    # ログ削除
-python snn-cli.py clean models  # モデル削除
-```
+### **プロジェクト健全性チェック (スクリプト直接実行)**
 
----
+CLIを使用しない場合の統合診断コマンドです。
 
-## **2. Brain v20 (Current Stable)**
+\# プロジェクトヘルスチェック  
+python scripts/run\_project\_health\_check.py
 
-Brain v20は、非同期イベント駆動型カーネル (AsyncArtificialBrain) と、1.58bit量子化SNNモデル (BitSpikeMamba) を統合した最新アーキテクチャです。
+\# 全テストスイートの実行 (Unit & Integration)  
+python scripts/run\_all\_tests.py
 
-### **A. Training (学習)**
+## **2\. Brain v20 (Current Stable)**
 
-モデルに言語パターンを学習させ、重みファイル (`models/checkpoints/trained_brain_v20.pth`) を生成します。
+最新の統合人工脳モデル (Brain v20) の実行コマンドです。
 
-#### **デモ用・高速学習 (推奨)**
+### **対話型デモ (Chat Interface)**
 
-特定のフレーズを短時間で過学習(Overfit)させ、応答能力を確認するためのスクリプトです。数分でLossが0.1以下になり、対話が可能になります。
+ユーザーと自然言語で対話し、推論プロセスを確認できます。
 
-```bash
-python scripts/trainers/train_overfit_demo.py
-```
+\# 最新の対話インターフェース (推奨)  
+python scripts/runners/talk\_to\_brain\_final.py
 
-#### **一般学習 (General Training)**
+\# 旧バージョン (デバッグ用)  
+python scripts/runners/talk\_to\_brain.py
 
-テキストコーパスを用いて汎用的な学習を行います。データセットがない場合はダミーデータを使用します。
+### **Brain v20 プロトタイプ実行**
 
-```bash
-python scripts/trainers/train_bit_spike_mamba.py
-```
+中核となる推論ループを実行します。
 
-### **B. Running the Prototype (自律動作デモ)**
+\# Brain v20 プロトタイプの起動  
+python scripts/runners/run\_brain\_v20\_prototype.py
 
-学習した脳を非同期カーネル上で起動させます。視覚入力（シミュレーション）、思考、運動出力が並列に動作し、アストロサイトによるエネルギー管理が行われる様子を観察できます。
+## **3\. 新機能検証 (Bio, Symbolic, Spatial)**
 
-```bash
-python scripts/runners/run_brain_v20_prototype.py
-```
+特定の研究テーマに特化した検証スクリプト群です。
 
-**期待される動作:**
+### **Biomimetic & Microcircuits (生物学的妥当性)**
 
-- ログに `🧠 Async Brain Kernel Started` が表示される
-- Energy replenished (エネルギー補給) が行われる
-- 外部入力に対して `💡 Conscious Awareness` (意識) が発生する
-- 裏で思考プロセスが走り、`🗣️ Brain Says: ...` と発話する
+\# PD14/PFC マイクロサーキットのデモ  
+python scripts/run\_bio\_microcircuit\_demo.py
 
-### **C. Interactive Dialogue (対話モード)**
+\# Deep Bio Calibration (生物学的パラメータの校正)  
+python scripts/run\_deep\_bio\_calibration.py
 
-学習済み脳とコマンドライン(CLI)で直接おしゃべりをするためのツールです。非同期処理の待ち時間を気にせず、言語生成能力をテストできます。
+\# 心電図 (ECG) データの時系列解析  
+python scripts/run\_ecg\_analysis.py
 
-```bash
-python scripts/runners/talk_to_brain.py
-```
+### **Neuro-Symbolic & Reasoning (推論・論理)**
 
-**終了方法:** `exit`, `quit`, `bye` と入力するか、`Ctrl+C` を押します。
+\# ニューロシンボリック進化 (論理的推論能力の獲得)  
+python scripts/run\_neuro\_symbolic\_evolution.py
 
-### **D. Verification & Testing (品質保証)**
+\# ニューロシンボリック・デモ実行  
+python scripts/runners/run\_neuro\_symbolic\_demo.py
 
-システムの堅牢性とモデルの動作を検証するためのテストスイートです。
+### **Perception & Multimodal (知覚・マルチモーダル)**
 
-#### **全テスト一括実行 (Master Runner) - 推奨**
+\# マルチモーダル統合デモ (視覚・言語・聴覚など)  
+python scripts/run\_multimodal\_demo.py  
+\# または  
+python scripts/runners/run\_multimodal\_brain.py
 
-モデル、カーネル、統合テストの全てを実行し、健全性を確認します。
+\# クロスモーダル学習のデモ  
+python scripts/run\_cross\_modal\_demo.py
 
-```bash
-python scripts/run_all_tests.py
-```
+\# 空間認識 (Spatial Awareness) デモ  
+python scripts/run\_spatial\_demo.py
 
-#### **個別テスト実行**
+\# 能動的推論 (Active Inference) デモ  
+python scripts/run\_active\_inference\_demo.py
 
-特定のコンポーネントのみをデバッグする場合に使用します。
+## **4\. SNN学習 & 蒸留ワークフロー**
 
-```bash
-# BitSpikeMambaモデル (1.58bit量子化 & SNN動作)
-python -m unittest tests/test_bit_spike_mamba.py
+モデルのトレーニング、知識蒸留、継続学習に関するコマンドです。
 
-# 非同期カーネル (Async Event Bus)
-python -m unittest tests/test_async_brain_kernel.py
+### **トレーニング実行**
 
-# 統合テスト (Integration Cycle)
-python -m unittest tests/test_brain_integration.py
-```
+\# 標準トレーニング (設定ファイル指定)  
+python scripts/runners/train.py \--config configs/models/small.yaml
 
----
+\# CIFAR-10データセットでのBio-PCネットワーク学習  
+python scripts/train\_bio\_pc\_cifar10.py
 
-## **3. 新機能検証**
+\# STDP (Spike-Timing-Dependent Plasticity) 学習  
+python scripts/run\_stdp\_learning.py
 
-**v16.1で強化された重要機能の単体・統合テスト。**
+\# オンチップ学習シミュレーション  
+python scripts/run\_on\_chip\_learning.py
 
-### **A. 生物学的マイクロサーキット (PD14 & Active Dendrites)**
+### **知識蒸留 (Knowledge Distillation)**
 
-Potjans-Diesmannモデルと能動的樹状突起による、生物学的妥当性の高い皮質演算デモ。
+大規模モデルからSNNへの知識転移を行います。
 
-```bash
-python scripts/run_bio_microcircuit_demo.py
-```
+\# 蒸留実験の実行  
+python scripts/run\_distillation\_experiment.py
 
-**期待される結果:**
+\# 蒸留サイクルのテスト  
+python scripts/runners/test\_distillation\_cycle.py
 
-- **Scenario A:** ボトムアップ入力により L4 → L2/3 → L5 へと信号が伝播する
-- **Scenario B:** トップダウン入力（予測）が樹状突起を活性化させ、弱い入力でも L5 が発火する（NMDAスパイク効果）
+\# 蒸留用データの準備  
+python scripts/prepare\_distillation\_data.py
 
-### **B. SNN-DSA (Dynamic Sparse Attention)**
+### **継続学習 (Continual Learning)**
 
-動的スパース注意機構を持つTransformerの学習能力を検証。
+\# 継続学習実験の実行  
+python scripts/run\_continual\_learning\_experiment.py
 
-```bash
-python scripts/verify_dsa_learning.py
-```
+## **5\. 脳型OS & 認知アーキテクチャ**
 
-**期待される結果:** Accuracy > 80% で "PASSED" が表示される。
+ニューロモルフィックOSおよび高度な認知機能のシミュレーションです。
 
-### **C. GRPO (Group Relative Policy Optimization)**
+### **Neuromorphic OS**
 
-論理推論能力（思考の軌跡の自己改善）を検証。
+\# Phase 7 OS シミュレーション (リソース管理・スケジューリング)  
+python scripts/run\_phase7\_os\_simulation.py
 
-```bash
-python tests/test_grpo_logic.py
-```
+\# OSランナー実行  
+python scripts/runners/run\_neuromorphic\_os.py
 
-**期待される結果:** 重み更新が確認され、テストがPASSする。
+### **睡眠・記憶固定化 (Sleep Consolidation)**
 
-### **D. DVS & Universal Encoder**
+\# 睡眠学習デモ  
+python scripts/runners/run\_sleep\_learning\_demo.py
 
-ニューロモルフィックデータセットと統一エンコーダの動作検証。
+\# 睡眠サイクルデモ  
+python scripts/runners/run\_sleep\_cycle\_demo.py
 
-```bash
-# DVSパイプライン (N-MNIST Mock)
-python tests/test_dvs_pipeline.py
+\# 推論から睡眠への移行デモ  
+python scripts/runners/run\_reasoning\_to\_sleep\_demo.py
 
-# Universal Spike Encoder (Image/Audio/Text/DVS)
-python tests/test_universal_encoder.py
-```
+## **6\. ハードウェア & 最適化**
 
-### **E. Liquid Association Cortex (LAC) & 五感統合**
+ハードウェアへの実装可能性や効率化を検証するコマンドです。
 
-リザーバ層によるモダリティ統合と、共感覚的想起デモ。
+### **ハードウェアシミュレーション**
 
-```bash
-# LAC統合テスト (基本動作)
-python tests/test_liquid_association.py
+\# 専用ハードウェア上での動作シミュレーション  
+python scripts/run\_hardware\_simulation.py
 
-# Cross-Modal Demo ("Hearing Colors") - 音から色を想起
-python scripts/run_cross_modal_demo.py
-```
+\# コンパイラテスト  
+python scripts/runners/run\_compiler\_test.py
 
-**期待される結果:** Association Improvement がプラスになり、音声のみから視覚概念が想起される。
+### **効率化・最適化**
 
-### **F. Interactive Web Demo**
+\# 効率性の自動チューニング  
+python scripts/auto\_tune\_efficiency.py
 
-ブラウザ上で「Hearing Colors」やチャットを体験する。
+\# スパース性と時間ステップ(T)のレポート出力  
+python scripts/report\_sparsity\_and\_T.py
 
-```bash
-python app/main.py --model-config configs/models/small.yaml
-# または
-python snn-cli.py ui start
-```
+\# モデル変換スクリプト  
+python scripts/convert\_model.py
 
-**操作:** ブラウザで `http://127.0.0.1:7860` にアクセス。
+## **7\. エージェント & 自律行動**
 
----
+環境内で動作するエージェントの検証です。
 
-## **4. SNN学習ワークフロー**
+\# 自律学習エージェントの実行  
+python scripts/runners/run\_autonomous\_learning.py
 
-### **A. 標準・高速学習**
+\# 能動的学習ループ  
+python scripts/runners/run\_active\_learning\_loop.py
 
-```bash
-# クイックテスト (5エポック)
-python scripts/runners/train.py \
-    --config configs/templates/base_config.yaml \
-    --model_config configs/models/micro.yaml \
-    --data_path data/smoke_test_data.jsonl \
-    --override_config "training.epochs=5"
+\# 強化学習エージェント (RL Agent)  
+python scripts/runners/run\_rl\_agent.py
 
-# 1.58bit BitNet学習
-python scripts/runners/train.py \
-    --model_config configs/models/bit_rwkv_micro.yaml \
-    --data_path data/smoke_test_data.jsonl \
-    --paradigm gradient_based
-```
+\# デジタル生命体 (Digital Life Form) シミュレーション  
+python scripts/runners/run\_life\_form.py
 
-### **B. 生物学的・因果学習**
+\# 世界モデル (World Model) デモ  
+python scripts/runners/run\_world\_model\_demo.py
 
-```bash
-# Bio-RL (強化学習)
-python scripts/runners/run_rl_agent.py --episodes 100
+## **8\. 性能証明・ベンチマーク**
 
-# 因果駆動型学習 (Causal Trace V2)
-python scripts/runners/train.py \
-    --config configs/experiments/smoke_test_config.yaml \
-    --model_config configs/models/small.yaml
-```
+外部に対して性能を証明するためのベンチマークスイートです。
 
----
+\# 総合ベンチマークスイートの実行  
+python scripts/run\_benchmark\_suite.py
 
-## **5. 脳型OS & 認知アーキテクチャ**
+\# パフォーマンス検証 (詳細オプション指定)  
+python scripts/verify\_performance.py \\  
+    \--model\_config configs/models/medium.yaml \\  
+    \--target\_config configs/validation/targets\_v1.yaml
 
-### **A. 脳型OSシミュレーション**
+\# Phase 3 (Transformation) の検証  
+python scripts/verify\_phase3.py
 
-複数の認知モジュールがリソース（エネルギー）を巡って競合する様子のデモ。
+\# DSA (Dynamic Sparse Attention) 学習の検証  
+python scripts/verify\_dsa\_learning.py
 
-```bash
-python scripts/runners/run_neuromorphic_os.py
-```
+\# 検証と学習の同時実行  
+python scripts/runners/verify\_and\_train.py
 
-### **B. イベント駆動 & オンチップ学習**
+## **9\. 可視化 & デバッグ**
 
-ハードウェアネイティブな学習のデモ。
+ニューロンの挙動やスパイク活動を視覚的に確認します。
 
-```bash
-# On-Chip Plasticity (STDPによる自己組織化)
-python scripts/run_on_chip_learning.py
+\# ニューロンダイナミクスの可視化  
+python scripts/visualize\_neuron\_dynamics.py
 
-# イベント駆動型シミュレーション (推論のみ)
-python scripts/run_hardware_simulation.py --model_config configs/models/micro.yaml
-```
+\# スパイクパターンの可視化  
+python scripts/visualize\_spike\_patterns.py
 
-### **C. 人工脳統合シミュレーション (Full Cycle)**
+\# スパイク活動のデバッグ  
+python scripts/debug\_spike\_activity.py
 
-対話、睡眠（記憶固定化）、進化のフルサイクル。
+\# 信号診断  
+python scripts/diagnose\_signal.py
 
-```bash
-python scripts/runners/run_brain_v14.py
-```
+## **10\. Legacy Commands (Archive)**
 
----
-
-## **6. 変換 & 最適化**
-
-### **A. Deep Bio-Calibration**
-
-HSEOを用いてSNNパラメータ（閾値など）を自動チューニングする。
-
-```bash
-python scripts/run_deep_bio_calibration.py \
-    --model_config configs/models/micro.yaml \
-    --iterations 5 --particles 5
-```
-
-### **B. ANN-SNN 変換**
-
-```bash
-python scripts/convert_model.py \
-    --method cnn-convert \
-    --ann_model_path runs/dummy_ann.pth \
-    --snn_model_config configs/models/micro.yaml \
-    --output_snn_path runs/converted_snn.pth
-```
-
----
-
-## **7. エージェント & 自律行動**
-
-### **自律タスク解決**
-
-```bash
-python scripts/runners/run_agent.py \
-    --task_description "最新のAIトレンドについて教えて" \
-    --force_retrain
-```
-
-### **デジタル生命体**
-
-```bash
-python scripts/runners/run_life_form.py --duration 60
-```
-
----
-
-## **8. 性能証明・検証**
-
-### **性能検証レポートの発行**
-
-目標値（`doc/Objective.md`）に対する達成度を自動判定し、証明書（Markdownレポート）を発行する。
-
-```bash
-# Mediumモデルの性能検証（シミュレーション）
-python scripts/verify_performance.py --model_config configs/models/medium.yaml
-
-# ターゲット設定ファイルを指定して実行（より厳しい基準など）
-python scripts/verify_performance.py \
-    --model_config configs/models/medium.yaml \
-    --target_config configs/validation/targets_v1.yaml
-```
-
----
-
-## **9. Legacy Commands (Archive)**
-
-以下のコマンドは旧バージョン (v14, v16) のものです。後方互換性テストのために残されています。
+以下のコマンドは旧バージョン (v14, v16) のものです。後方互換性テストや比較のために残されています。
 
 ### **Brain v16 (Previous Gen)**
 
-```bash
-# Full Demo
-python scripts/runners/run_brain_v16_demo.py
+\# Full Demo v16.3  
+python scripts/runners/run\_v16\_3\_demo.py
 
-# Sleep Cycle Test
-python scripts/runners/run_sleep_cycle_demo.py
-```
+\# Full Demo v16.2  
+python scripts/runners/run\_v16\_2\_final\_demo.py
+
+\# Brain v16 Demo  
+python scripts/runners/run\_brain\_v16\_demo.py
 
 ### **Brain v14 (Stable SNN)**
 
-```bash
-# Standard Run
-python scripts/runners/run_brain_v14.py
-```
+\# Standard Run  
+python scripts/runners/run\_brain\_v14.py
 
-### **Functional Tests**
+\# Brain Simulation  
+python scripts/runners/run\_brain\_simulation.py
 
-```bash
-# Visual Cortex (Industrial Eye)
-python scripts/runners/run_industrial_eye_demo.py
+### **Others**
 
-# Project Health Check
-python scripts/run_project_health_check.py
-```
+\# Visual Cortex (Industrial Eye) \- 旧デモ  
+python scripts/runners/run\_industrial\_eye\_demo.py
 
----
+## **11\. トラブルシューティング**
 
-## **10. トラブルシューティング**
+### **ModuleNotFoundError が発生する場合**
 
-### **ログが表示されない場合**
+プロジェクトルート（snn/）でコマンドを実行しているか確認してください。また、Pythonパスを通す必要がある場合があります。
 
-スクリプト内の `logging.basicConfig(..., force=True)` が設定されているか確認してください。他のライブラリがログ設定を上書きしている可能性があります。
-
-### **モデルロードエラー**
-
-- `models/checkpoints/trained_brain_v20.pth` が存在するか確認
-- モデルのハイパーパラメータ（`d_model`, `num_layers` 等）が学習時と推論時で一致しているか確認
-
-### **依存関係エラー**
-
-```bash
-pip install -r requirements.txt --upgrade
-```
-
-### **メモリ不足**
-
-より小さいモデル設定（`micro.yaml`）を使用するか、バッチサイズを減らしてください。
-
----
-
-## **📝 補足情報**
-
-- **現在の安定版:** Brain v20 (Async Event-Driven Architecture + BitSpikeMamba)
-- **推奨テストフロー:**
-  1. 環境準備 → Health Check
-  2. Brain v20 の高速学習 → 対話モード
-  3. 新機能検証 (Bio-Foundation など)
-  4. 性能検証レポート発行
-
-- **開発時のベストプラクティス:**
-  - 新機能追加時は必ず対応するテストを追加
-  - `run_all_tests.py` で全体回帰テストを実施
-  - Health Check を定期的に実行して品質を維持
-
----
-
-**最終更新:** Brain v20 統合版 (2025-12-16)
+export PYTHONPATH=$PYTHONPATH:.  
