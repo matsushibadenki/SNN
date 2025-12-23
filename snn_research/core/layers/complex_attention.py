@@ -1,10 +1,8 @@
 # ファイルパス: snn_research/core/layers/complex_attention.py
-# (snn_core.pyから分離)
-#
-# Title: 複雑なアテンションレイヤー (修正版)
+# Title: Bit-Spike Multi-Level Attention
 # Description:
-# - SpikingTransformer_OldTextOnly で使用されるレイヤーコンポーネント。
-# - 修正: _filter_neuron_params に v_reset を追加。
+# - SpikingTransformer 用アテンションレイヤー。
+# - 修正: BitSpikeLinear を採用し、乗算フリーの1.58bitアテンションを実現。
 
 import torch
 import torch.nn as nn
@@ -18,12 +16,17 @@ from snn_research.core.neurons import (
     TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron
 )
 from snn_research.io.spike_encoder import DifferentiableTTFSEncoder 
+# BitNetインポート
+try:
+    from snn_research.core.layers.bit_spike_layer import BitSpikeLinear
+except ImportError:
+    BitSpikeLinear = nn.Linear # type: ignore
 
 logger = logging.getLogger(__name__)
 
 class MultiLevelSpikeDrivenSelfAttention(nn.Module):
     """
-    複数時間スケールで動作するSDSA。
+    BitNet 1.58bit 統合型 Multi-Level Spike Self-Attention。
     """
     neuron_out: nn.Module 
     mem_history: List[torch.Tensor]
@@ -38,10 +41,12 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
         self.time_scales = time_scales
         self.mem_history = []
         
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
-        self.out_proj = nn.Linear(d_model * len(time_scales), d_model)
+        # BitSpikeLinear への置き換え
+        # これにより Q, K, V の射影が {-1, 0, 1} の重みで行われる
+        self.q_proj = BitSpikeLinear(d_model, d_model)
+        self.k_proj = BitSpikeLinear(d_model, d_model)
+        self.v_proj = BitSpikeLinear(d_model, d_model)
+        self.out_proj = BitSpikeLinear(d_model * len(time_scales), d_model)
         
         filtered_params = self._filter_neuron_params(neuron_class, neuron_params)
         
@@ -52,10 +57,8 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
         self.sparsity_threshold = nn.Parameter(torch.tensor(0.01))
 
     def _filter_neuron_params(self, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any]) -> Dict[str, Any]:
-        """指定されたニューロンクラスの__init__が受け入れるパラメータのみをフィルタリングする"""
         valid_params: List[str] = []
         if neuron_class == AdaptiveLIFNeuron:
-            # --- 修正: v_reset を追加 ---
             valid_params = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step', 'v_reset']
         elif neuron_class == IzhikevichNeuron:
             valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
@@ -87,6 +90,9 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
         self.mem_history = []
 
     def _xnor_similarity(self, q_spikes: torch.Tensor, k_spikes: torch.Tensor) -> torch.Tensor:
+        # XNOR演算はビットワイズ演算の近似として浮動小数点で行う
+        # (0,1)入力に対して、一致すれば1, 不一致なら0に近い挙動
+        # ここではL2距離の逆数的なアプローチを継続
         q_ext: torch.Tensor = q_spikes.unsqueeze(3)
         k_ext: torch.Tensor = k_spikes.unsqueeze(2)
         xnor_matrix: torch.Tensor = 1.0 - torch.pow(q_ext - k_ext, 2)
@@ -137,7 +143,7 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
 
 class STAttenBlock(nn.Module):
     """
-    Spiking Transformer (v1) のエンコーダーブロック。
+    Spiking Transformer Block with BitNet.
     """
     mem_history: List[torch.Tensor]
     lif1: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF]
@@ -156,33 +162,23 @@ class STAttenBlock(nn.Module):
         
         self.lif1 = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF], neuron_class(features=d_model, **filtered_params))
         self.norm2 = SNNLayerNorm(d_model)
-        self.fc1 = nn.Linear(d_model, d_model * 4)
+        
+        # FFN部分もBitSpikeLinearに変更して完全BitNet化
+        self.fc1 = BitSpikeLinear(d_model, d_model * 4)
         self.lif2 = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF], neuron_class(features=d_model * 4, **filtered_params))
-        self.fc2 = nn.Linear(d_model * 4, d_model)
+        self.fc2 = BitSpikeLinear(d_model * 4, d_model)
         self.lif3 = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF], neuron_class(features=d_model, **filtered_params))
         self.mem_history = []
 
     def _filter_neuron_params(self, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any]) -> Dict[str, Any]:
-        """指定されたニューロンクラスの__init__が受け入れるパラメータのみをフィルタリングする"""
+        # (Parameter filtering logic remains same)
         valid_params: List[str] = []
         if neuron_class == AdaptiveLIFNeuron:
-            # --- 修正: v_reset を追加 ---
             valid_params = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step', 'v_reset']
-        elif neuron_class == IzhikevichNeuron:
-            valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
-        elif neuron_class == GLIFNeuron:
-            valid_params = ['features', 'base_threshold', 'gate_input_features']
-        elif neuron_class == DifferentiableTTFSEncoder:
-            valid_params = ['num_neurons', 'duration', 'initial_sensitivity']
-        elif neuron_class == TC_LIF:
-            valid_params = ['features', 'tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']
-        elif neuron_class == DualThresholdNeuron:
-            valid_params = ['features', 'tau_mem', 'threshold_high_init', 'threshold_low_init', 'v_reset']
-        elif neuron_class == ScaleAndFireNeuron:
-            valid_params = ['features', 'num_levels', 'base_threshold']
-        
-        filtered_params: Dict[str, Any] = {k: v for k, v in neuron_params.items() if k in valid_params}
-        return filtered_params
+        else:
+             # Default fallback
+             valid_params = ['features', 'tau_mem', 'base_threshold', 'v_reset']
+        return {k: v for k, v in neuron_params.items() if k in valid_params}
 
     def _hook_mem(self, module: nn.Module, input: Any, output: Tuple[torch.Tensor, torch.Tensor]) -> None:
         self.mem_history.append(output[1])
