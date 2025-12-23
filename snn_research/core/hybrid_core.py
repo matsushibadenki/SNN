@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (活動強制・知能蒸留版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (段階的習熟版)
 
 import torch
 import torch.nn as nn
@@ -30,13 +30,13 @@ class HybridNeuromorphicCore(nn.Module):
                 t_f = target.view(-1)
                 o_f = out.view(-1)
                 
-                # 修正5: 沈黙は「最悪の事態」として扱う
                 if out.sum() == 0:
-                    reward = -5.0 
+                    reward = -10.0 # 沈黙は断固拒否
                 else:
                     hits = torch.sum(t_f * o_f)
                     misses = torch.sum((1 - t_f) * o_f)
-                    reward = float(hits.item() * 10.0 - misses.item() * 4.0)
+                    # 圧倒的加点主義
+                    reward = float(hits.item() * 20.0 - misses.item() * 2.0)
             
             self.fast_process.update_plasticity(x_input.view(-1), f.view(-1), reward=reward)
             self.output_gate.update_plasticity(r.view(-1), out.view(-1), reward=reward)
@@ -46,5 +46,6 @@ class HybridNeuromorphicCore(nn.Module):
         return {
             "prediction_error": surprise,
             "reward": reward,
-            "output_spike_count": float(out.sum().item())
+            "output_spike_count": float(out.sum().item()),
+            "proficiency": float(self.output_gate.proficiency.item())
         }
