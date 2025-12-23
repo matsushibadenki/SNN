@@ -1,50 +1,34 @@
 # ファイルパス: snn_research/cognitive_architecture/hdc_engine.py
-# 日本語タイトル: Hyperdimensional Computing (HDC) エンジン
+# 日本語タイトル: HDC Engine v2.0 (Neuro-Symbolic Bridge)
 # 機能説明: 
-#   10,000次元以上の超高次元ベクトル（Hypervector）を用いた計算エンジン。
-#   GPUを使用せず、ビット演算（XOR等）と整数演算のみで高度なシンボル処理を実現する。
-#   従来のベクトル検索よりもノイズに強く、ワンショット学習が可能。
-#   Green AI / 省エネコンピューティングの中核モジュール。
+#   HDC演算に加え、SNNのスパイク活動とハイパーベクトルを相互変換する
+#   「Neuro-Symbolic Bridge」機能を追加。これによりシンボル接地を実現する。
 
 import torch
+import torch.nn as nn
 import logging
-from typing import Dict, Optional, List, Union, Tuple # 修正: Tupleを追加
+from typing import Dict, Optional, List, Union, Tuple
 
 logger = logging.getLogger(__name__)
 
 class HDCEngine:
     """
-    Hyperdimensional Computing (HDC) / Vector Symbolic Architecture (VSA) エンジン。
-    MAP (Multiply, Add, Permute) アーキテクチャに基づく。
-    
-    Attributes:
-        dim (int): ハイパーベクトルの次元数 (通常 10,000 以上)。
-        device (torch.device): 計算に使用するデバイス (CPU推奨だがCUDAも可)。
+    Hyperdimensional Computing (HDC) エンジン。
+    MAP (Multiply, Add, Permute) アーキテクチャ。
     """
     
     def __init__(self, dim: int = 10000, device: Optional[str] = None):
         self.dim = dim
-        # HDCはCPUのビット演算が高速であるため、デフォルトはCPUでも良いが、
-        # 大規模並列化のためにCUDAもサポートする。
         self.device = torch.device(device if device else "cpu")
-        
-        # アイテムメモリ（既知の基本ベクトル）
         self.item_memory: Dict[str, torch.Tensor] = {}
-        
         logger.info(f"🌌 HDC Engine initialized (Dim: {dim}, Device: {self.device})")
 
     def create_hypervector(self, name: Optional[str] = None) -> torch.Tensor:
-        """
-        ランダムなバイナリハイパーベクトル (-1, +1) を生成する。
-        """
-        # {0, 1} を生成
+        """ランダムなバイナリハイパーベクトル (-1, +1) を生成"""
         hv = torch.randint(0, 2, (self.dim,), device=self.device, dtype=torch.float32)
-        # {0, 1} -> {-1, 1} に変換 (Bipolar表現)
         hv = torch.where(hv == 0, -1.0, 1.0)
-        
         if name:
             self.item_memory[name] = hv
-            
         return hv
 
     def get_hypervector(self, name: str) -> torch.Tensor:
@@ -53,125 +37,86 @@ class HDCEngine:
             return self.create_hypervector(name)
         return self.item_memory[name]
 
-    # --- Operations (MAP) ---
+    # --- Operations ---
 
     def bind(self, hv1: torch.Tensor, hv2: torch.Tensor) -> torch.Tensor:
-        """
-        Binding (結合) 操作。
-        Bipolar表現では要素ごとの乗算（XORに相当）。
-        結合されたベクトルは元のベクトルとは直交する（似ていない）。
-        例: Color * Red
-        """
+        """Binding (XOR equivalent in bipolar)"""
         return hv1 * hv2
 
     def bundle(self, hvs: List[torch.Tensor]) -> torch.Tensor:
-        """
-        Bundling (重ね合わせ) 操作。
-        要素ごとの加算を行い、符号関数(sign)で正規化する。
-        重ね合わせたベクトルは、元の全てのベクトルと類似する。
-        例: Red + Car + Fast
-        """
+        """Bundling (Superposition with normalization)"""
         if not hvs:
             return torch.zeros(self.dim, device=self.device)
-            
         stacked = torch.stack(hvs)
         summed = torch.sum(stacked, dim=0)
-        
-        # マジョリティ投票による正規化 {-1, 1}
-        # 0の場合はランダムに割り振ることで情報を保存するのが一般的だが、ここでは1とする
         bundled = torch.sign(summed)
         bundled[bundled == 0] = 1.0 
         return bundled
 
     def permute(self, hv: torch.Tensor, shifts: int = 1) -> torch.Tensor:
-        """
-        Permutation (置換) 操作。
-        ベクトルの要素を巡回シフトする。順序情報をエンコードする際に使用。
-        例: A then B -> A + Permute(B)
-        """
+        """Permutation (Cyclic shift)"""
         return torch.roll(hv, shifts=shifts, dims=0)
 
     def similarity(self, hv1: torch.Tensor, hv2: torch.Tensor) -> float:
-        """
-        コサイン類似度計算。
-        Bipolar HDCでは、内積を次元数で割ったものとほぼ等価。
-        +1: 同一, 0: 直交(無関係), -1: 正反対
-        """
+        """Cosine Similarity"""
         return torch.nn.functional.cosine_similarity(hv1.unsqueeze(0), hv2.unsqueeze(0)).item()
 
-    # --- High-Level Cognitive Functions ---
-
-    def encode_sequence(self, sequence: List[str]) -> torch.Tensor:
-        """
-        系列情報をエンコードする。
-        H = v1 + P(v2) + P(P(v3)) ...
-        """
-        if not sequence:
-            return self.create_hypervector() # random noise
-            
-        accumulated = torch.zeros(self.dim, device=self.device)
-        
-        for i, token in enumerate(sequence):
-            hv = self.get_hypervector(token)
-            permuted_hv = self.permute(hv, shifts=i)
-            accumulated += permuted_hv
-            
-        # 正規化
-        result = torch.sign(accumulated)
-        result[result == 0] = 1.0
-        return result
-
     def query_memory(self, query_hv: torch.Tensor, top_k: int = 1) -> List[Tuple[str, float]]:
-        """
-        クエリベクトルに最も近い概念をメモリから検索する。
-        """
+        """連想メモリ検索"""
         results = []
         for name, mem_hv in self.item_memory.items():
             sim = self.similarity(query_hv, mem_hv)
             results.append((name, sim))
-            
         results.sort(key=lambda x: x[1], reverse=True)
         return results[:top_k]
 
-class HDCReasoningAgent:
+class NeuroSymbolicBridge(nn.Module):
     """
-    HDCを用いた簡易推論エージェントの例。
-    「日本の首都は？」のようなクエリを、行列演算なしで解く。
+    SNN(サブシンボリック)とHDC(シンボリック)の架け橋。
+    ランダム射影を用いて、低次元のスパイク活動を高次元のハイパーベクトルへ、
+    あるいはその逆へと変換する。
     """
-    def __init__(self, engine: HDCEngine):
-        self.hdc = engine
+    def __init__(self, snn_features: int, hdc_dim: int = 10000, device: Optional[str] = None):
+        super().__init__()
+        self.snn_features = snn_features
+        self.hdc_dim = hdc_dim
+        self.device = torch.device(device if device else "cpu")
         
-    def learn_concept(self, subject: str, relation: str, obj: str):
+        # 固定ランダム射影行列 (学習不要、生物学的妥当性が高い)
+        # SNN -> HDC (Encoder)
+        self.projection_matrix = torch.randn(hdc_dim, snn_features, device=self.device)
+        # HDC -> SNN (Decoder) - 擬似逆行列に近い役割だが、ここでは転置を使用(双方向性)
+        
+        # 2値化のための閾値
+        self.threshold = 0.0
+
+    def spikes_to_hypervector(self, spikes: torch.Tensor) -> torch.Tensor:
         """
-        知識を結合して記憶する。
-        Memory = Memory + (Subject * Relation * Object)
+        SNNのスパイク活動 (Batch, Features) or (Features,) を ハイパーベクトルに変換。
+        Symbol Grounding: 「知覚」を「概念」に変換。
         """
-        # 例: (Japan * Capital * Tokyo)
-        h_sub = self.hdc.get_hypervector(subject)
-        h_rel = self.hdc.get_hypervector(relation)
-        h_obj = self.hdc.get_hypervector(obj)
-        
-        fact = self.hdc.bind(self.hdc.bind(h_sub, h_rel), h_obj)
-        
-        # "Global Knowledge" という概念に束ねていく（簡易実装）
-        global_mem = self.hdc.get_hypervector("GLOBAL_KNOWLEDGE")
-        new_mem = self.hdc.bundle([global_mem, fact])
-        self.hdc.item_memory["GLOBAL_KNOWLEDGE"] = new_mem
-        
-    def query(self, subject: str, relation: str) -> List[Tuple[str, float]]:
+        if spikes.dim() > 1:
+            # 時間平均またはバッチ平均をとる（簡易化）
+            spikes = spikes.mean(dim=0)
+            
+        # 射影: HV = sign(W @ spikes)
+        projected = torch.matmul(self.projection_matrix, spikes)
+        hv = torch.sign(projected)
+        hv[hv == 0] = 1.0
+        return hv
+
+    def hypervector_to_spikes(self, hv: torch.Tensor, steps: int = 10) -> torch.Tensor:
         """
-        推論を行う。
-        Query: Japan * Capital * ? = Tokyo
-        Unbind: Memory * Subject * Relation
+        ハイパーベクトルをSNNの入力電流/スパイクに変換。
+        Top-down Attention / Imagination: 「概念」から「知覚イメージ」を生成。
         """
-        global_mem = self.hdc.get_hypervector("GLOBAL_KNOWLEDGE")
-        h_sub = self.hdc.get_hypervector(subject)
-        h_rel = self.hdc.get_hypervector(relation)
+        # 逆射影: Input = W.T @ HV
+        currents = torch.matmul(self.projection_matrix.t(), hv)
         
-        # BipolarにおけるUnbind(逆演算)はBindと同じ
-        # Query = Memory * Subject * Relation
-        # 期待値: Object + Noise
-        query_res = self.hdc.bind(self.hdc.bind(global_mem, h_sub), h_rel)
+        # レートコーディングへの変換 (簡易的なポアソン生成)
+        # 電流値を発火確率とみなす（正規化必要）
+        probs = torch.sigmoid(currents) # 0.0 ~ 1.0
         
-        # ノイズの中から最も近い概念を探す
-        return self.hdc.query_memory(query_res, top_k=3)
+        # 時間ステップ分生成
+        spike_train = (torch.rand(steps, self.snn_features, device=self.device) < probs).float()
+        return spike_train
