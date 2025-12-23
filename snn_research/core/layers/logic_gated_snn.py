@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (三因子学習・報酬連動版)
-# 修正内容: プレ・ポスト・報酬（誤差）の三因子による学習則を導入し、ターゲットへの収束を導く。
+# 日本語タイトル: 1.58ビット・ロジックゲート樹状突起レイヤー (競合・剪定強化版)
+# 目的: 全結合飽和(Conn: 100%)を解消し、誤差に基づく配線剪定を駆動させる。
 
 import torch
 import torch.nn as nn
@@ -14,12 +14,13 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
+        # 初期状態を閾値付近に下げ、飽和を防ぐ
         self.register_buffer('synapse_states', torch.randint(
-            self.threshold - 5, self.threshold + 15, (out_features, in_features)
+            self.threshold - 5, self.threshold + 5, (out_features, in_features)
         ).float())
         
         self.register_buffer('membrane_potential', torch.zeros(out_features))
-        self.register_buffer('adaptive_threshold', torch.full((out_features,), 1.0))
+        self.register_buffer('adaptive_threshold', torch.full((out_features,), 1.5))
         self.register_buffer('firing_history', torch.zeros(out_features))
 
     @property
@@ -37,41 +38,44 @@ class LogicGatedSNN(nn.Module):
         # 電流計算
         current = torch.matmul(x, w.t()).view(-1)
         
-        # 膜電位の蓄積とノイズ
-        potential = cast(torch.Tensor, self.membrane_potential) + current + torch.randn(self.out_features) * 0.2
+        # 1. 膜電位の更新
+        v_mem = cast(torch.Tensor, self.membrane_potential)
+        v_mem.add_(current)
         
-        # 発火判定
-        spikes = (potential >= cast(torch.Tensor, self.adaptive_threshold)).to(torch.float32)
+        # 2. 強力な側方抑制 (Winner-Take-All 的な挙動)
+        # 最も電位が高いもの以外を抑制
+        if v_mem.max() > 0:
+            v_mem.sub_(v_mem.mean() * 0.5)
         
-        # リセット処理
-        self.membrane_potential.copy_(potential * (1.0 - spikes) * 0.5)
-        self.firing_history.copy_(cast(torch.Tensor, self.firing_history) * 0.9 + spikes * 0.1)
+        # 3. 発火判定
+        v_th = cast(torch.Tensor, self.adaptive_threshold)
+        spikes = (v_mem >= v_th).to(torch.float32)
+        
+        # 4. リセット (発火したら完全リセット、そうでなければ少し減衰)
+        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.7)
+        
+        # 5. 恒常性 (発火しすぎを抑制)
+        with torch.no_grad():
+            self.firing_history.copy_(cast(torch.Tensor, self.firing_history) * 0.9 + spikes * 0.1)
+            # 発火率が高いほど閾値を急激に上げ、Conn: 100% を阻止
+            self.adaptive_threshold.add_((spikes - 0.05) * 0.2)
+            self.adaptive_threshold.clamp_(1.0, 20.0)
         
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
-        """
-        三因子学習則: ΔW = Reward * (Pre * Post)
-        Rewardは誤差の減少度合い、またはターゲットとの一致度。
-        """
+        """三因子学習則による配線剪定"""
         with torch.no_grad():
-            # 相関 (Eligibility Traceに相当)
             correlation = torch.outer(post_spikes, pre_spikes)
             
-            # 修正1: 報酬（reward）に基づいて強化・抑圧を切り替える
-            # 正解に近い（reward > 0）なら現在の結合を強く固定
-            # 不正解（reward < 0）なら現在の結合を弱体化
-            update = correlation * reward * 10.0
-            self.states.add_(update)
+            # 修正: 報酬(reward)が負（間違い）のとき、その結合を強力に剪定
+            if reward < 0:
+                # 間違った発火に寄与した配線を切る
+                self.states.sub_(correlation * abs(reward) * 20.0)
+            else:
+                # 正解に近い場合は結合を強化
+                self.states.add_(correlation * reward * 5.0)
             
-            # 修正2: 恒常的な探索 (ランダムな微増)
-            # これがないと一度結合が切れた時に二度と繋がらなくなる
-            self.states.add_(torch.randn_like(self.states) * 0.1)
-
-            # 修正3: ターゲットに基づいた直接的な状態誘導 (Supervisor Signal)
-            # 全く発火していないのに正解が1の箇所を無理やり Include へ
-            # 本来は局所学習に反するが、学習の「種」を蒔くために必要
-            dead_mask = (self.firing_history < 0.01)
-            self.states[dead_mask] += 0.5
-
+            # 自然な忘却（スパース性の維持）
+            self.states.sub_(0.2)
             self.states.clamp_(1, self.max_states)
