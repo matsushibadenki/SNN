@@ -1,8 +1,8 @@
 # ファイルパス: snn_research/core/mamba_core.py
-# Title: Spiking-MAMBAモデル コア実装 (Bug Fix)
+# Title: Spiking-MAMBA (BitNet Integrated)
 # Description:
-# - 修正: B_bar の計算におけるテンソル形状不一致(RuntimeError)を修正。
-#   (delta.unsqueeze(-1) * B_param.unsqueeze(-2) による外積計算へ変更)
+#   Spiking-MAMBAモデルの実装。
+#   修正: BitSpikeLinear を採用し、1.58bit量子化による推論効率化を実現。
 
 import torch
 import torch.nn as nn
@@ -15,13 +15,18 @@ from .neurons import (
     TC_LIF, DualThresholdNeuron
 )
 from .base import BaseModel, SNNLayerNorm
+# BitNetのインポート (存在チェック付き)
+try:
+    from snn_research.core.layers.bit_spike_layer import BitSpikeLinear
+except ImportError:
+    BitSpikeLinear = nn.Linear # type: ignore
+
 from spikingjelly.activation_based import base as sj_base # type: ignore[import-untyped]
 from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
 
 class SpikingMambaBlock(sj_base.MemoryModule):
     """
-    Spiking-MAMBAの基本ブロック。
-    選択的SSMをスパイクベースで実装。
+    Spiking-MAMBA Block with BitNet Weights.
     """
     def __init__(
         self, 
@@ -39,7 +44,9 @@ class SpikingMambaBlock(sj_base.MemoryModule):
         self.expand = expand
         self.d_inner = d_model * expand
 
-        self.in_proj = nn.Linear(d_model, self.d_inner * 2)
+        # BitSpikeLinearを使用 (乗算フリー化への布石)
+        self.in_proj = BitSpikeLinear(d_model, self.d_inner * 2)
+        
         self.conv1d = nn.Conv1d(
             in_channels=self.d_inner,
             out_channels=self.d_inner,
@@ -51,14 +58,16 @@ class SpikingMambaBlock(sj_base.MemoryModule):
         
         self.lif_conv = neuron_class(features=self.d_inner, **neuron_params)
         
-        self.x_proj = nn.Linear(self.d_inner, self.d_inner + 2 * d_state)
-        self.dt_proj = nn.Linear(self.d_inner, self.d_inner)
+        # BitSpikeLinear
+        self.x_proj = BitSpikeLinear(self.d_inner, self.d_inner + 2 * d_state)
+        self.dt_proj = BitSpikeLinear(self.d_inner, self.d_inner)
         
         A = torch.arange(1, d_state + 1, dtype=torch.float32).repeat(self.d_inner, 1)
         self.A_log = nn.Parameter(torch.log(A))
         self.D = nn.Parameter(torch.ones(self.d_inner))
         
-        self.out_proj = nn.Linear(self.d_inner, d_model)
+        # BitSpikeLinear
+        self.out_proj = BitSpikeLinear(self.d_inner, d_model)
         self.norm = SNNLayerNorm(d_model)
         
         self.lif_out = neuron_class(features=d_model, **neuron_params)
@@ -78,19 +87,15 @@ class SpikingMambaBlock(sj_base.MemoryModule):
             cast(Any, self.lif_out).reset()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, L, D)
         B, L, D = x.shape
         
         x_and_res = self.in_proj(x)
         x_in, res = x_and_res.split(split_size=[self.d_inner, self.d_inner], dim=-1)
         
-        # Conv1D: (B, D_inner, L)
         x_conv = self.conv1d(x_in.transpose(1, 2))[:, :, :L].transpose(1, 2)
         
-        # LIF Conv
         x_conv_flat = x_conv.reshape(B * L, -1)
-        
-        output = self.lif_conv(x_conv_flat) # type: ignore[operator]
+        output = self.lif_conv(x_conv_flat) 
         if isinstance(output, tuple):
             x_conv_spikes = output[0]
         else:
@@ -98,37 +103,22 @@ class SpikingMambaBlock(sj_base.MemoryModule):
             
         x_conv_spikes = x_conv_spikes.reshape(B, L, -1)
         
-        # SSM Parameters
         x_ssm_params = self.x_proj(x_conv_spikes)
         delta, B_param, C_param = x_ssm_params.split(split_size=[self.d_inner, self.d_state, self.d_state], dim=-1)
         
         delta = F.softplus(self.dt_proj(delta))
         A = -torch.exp(self.A_log.float())
         
-        # Discrete SSM
         A_bar = torch.exp(A * delta.unsqueeze(-1))
-        
-        # [Fix] 外積計算のため、deltaとB_paramのunsqueeze次元を調整
-        # delta: (B, L, d_inner) -> (..., d_inner, 1)
-        # B_param: (B, L, d_state) -> (..., 1, d_state)
-        # B_bar: (B, L, d_inner, d_state)
         B_bar = delta.unsqueeze(-1) * B_param.unsqueeze(-2)
         
         h = torch.zeros(B, self.d_inner, self.d_state, device=x.device)
         y_scan = []
         
-        # Sequential Scan (Simple recurrence)
+        # Python loop for SSM scan (Can be optimized with custom kernel in future)
         for i in range(L):
-            # h: (B, d_inner, d_state)
-            # x_conv_spikes[:, i]: (B, d_inner) -> unsqueeze(-1) -> (B, d_inner, 1)
-            # B_bar[:, i]: (B, d_inner, d_state)
-            
-            # x項の計算: (B, d_inner, d_state)
             x_term = B_bar[:, i] * x_conv_spikes[:, i].unsqueeze(-1)
-            
             h = A_bar[:, i] * h + x_term
-            
-            # yの計算: (B, d_inner, d_state) @ (B, d_state, 1) -> (B, d_inner, 1) -> (B, d_inner)
             y = (h @ C_param[:, i].unsqueeze(-1)).squeeze(-1)
             y_scan.append(y)
             
@@ -137,8 +127,7 @@ class SpikingMambaBlock(sj_base.MemoryModule):
         
         out = self.norm(x + self.out_proj(y))
         
-        # Output LIF
-        out_output = self.lif_out(out.reshape(B * L, -1)) # type: ignore[operator]
+        out_output = self.lif_out(out.reshape(B * L, -1))
         if isinstance(out_output, tuple):
             out_spikes = out_output[0]
         else:
@@ -148,7 +137,7 @@ class SpikingMambaBlock(sj_base.MemoryModule):
 
 class SpikingMamba(BaseModel):
     """
-    SpikingMambaBlockを複数層重ねた、完全なSpiking-MAMBAモデル。
+    SpikingMamba: BitNet + SNN + SSM
     """
     def __init__(
         self, 
@@ -169,7 +158,7 @@ class SpikingMamba(BaseModel):
         neuron_params = neuron_config.copy()
         neuron_params.pop('type', None)
         
-        neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF, DualThresholdNeuron]]
+        neuron_class: Any
 
         filtered_params: Dict[str, Any]
         if neuron_type == 'lif':
@@ -194,7 +183,6 @@ class SpikingMamba(BaseModel):
         else:
              raise ValueError(f"Unknown neuron type for SpikingMamba: {neuron_type}")
 
-        
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.layers = nn.ModuleList([
             SpikingMambaBlock(
@@ -216,21 +204,17 @@ class SpikingMamba(BaseModel):
         
         x = self.embedding(input_ids)
         
-        # --- 時間ステップループでの状態保持 ---
         for layer in self.layers:
             if hasattr(layer, 'set_stateful'):
                 cast(SpikingMambaBlock, layer).set_stateful(True)
 
-        # 時間ステップループ
         for _ in range(self.time_steps):
             for layer in self.layers:
                 x = layer(x)
         
-        # 状態解除
         for layer in self.layers:
             if hasattr(layer, 'set_stateful'):
                 cast(SpikingMambaBlock, layer).set_stateful(False)
-        # -----------------------------------
 
         x = self.norm(x)
         logits = self.output_projection(x)
