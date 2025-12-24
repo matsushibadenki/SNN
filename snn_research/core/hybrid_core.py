@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: LSM構成・堅牢版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: 詳細メトリクス計測版)
 
 import torch
 import torch.nn as nn
@@ -14,13 +14,13 @@ class HybridNeuromorphicCore(nn.Module):
     def __init__(self, in_features: int, hidden_features: int, out_features: int) -> None:
         super().__init__()
         
-        # 隠れ層: 'reservoir' モード (固定・量子化重み)
+        # 隠れ層: 'reservoir'
         self.fast_process = LogicGatedSNN(in_features, hidden_features, mode='reservoir')
         
-        # パススルー (将来的な拡張用)
+        # パススルー
         self.deep_process = ActivePredictiveLayer(hidden_features)
         
-        # 出力層: 'readout' モード (学習・連続値重み)
+        # 出力層: 'readout'
         self.output_gate = LogicGatedSNN(hidden_features, out_features, mode='readout')
 
     def forward(self, x_input: torch.Tensor) -> torch.Tensor:
@@ -30,7 +30,7 @@ class HybridNeuromorphicCore(nn.Module):
 
     def autonomous_step(self, x_input: torch.Tensor, target: Optional[torch.Tensor] = None) -> Dict[str, float]:
         """
-        自律学習ステップ
+        自律学習ステップ（詳細情報付き）
         """
         with torch.no_grad():
             # 1. Forward Pass
@@ -38,27 +38,42 @@ class HybridNeuromorphicCore(nn.Module):
             r = self.deep_process(f)
             out = self.output_gate(r)
             
-            reward_scalar_val = 0.0
+            loss_val = 0.0
+            acc = 0.0
             
             if target is not None:
-                # 2. Compute Error (Target - Output)
+                # 2. Compute Error
                 target_onehot = torch.zeros_like(out)
                 target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
                 
-                # 誤差計算: 教師信号 - 出力
+                # Error for update
                 error = target_onehot - out
                 
-                # 3. Update Output Layer ONLY
+                # 3. Update Weights
                 self.output_gate.update_plasticity(r, out, reward=error)
 
-                # 精度計測
+                # Metrics
                 pred = out.argmax(dim=1)
                 acc = (pred == target).float().mean().item()
-                reward_scalar_val = acc
+                # MSE Loss
+                loss_val = error.pow(2).mean().item()
+
+            # --- 統計情報の収集 ---
+            # リザーバー層のスパイク密度 (Sparsity)
+            res_density = f.mean().item()
+            # 出力層のスパイク密度 (Density)
+            out_density = out.mean().item()
+            
+            # 出力層の膜電位統計 (発火のしやすさ、過剰入力の監視)
+            v_mem = self.output_gate.membrane_potential
+            v_mean = v_mem.mean().item()
+            v_max = v_mem.max().item()
 
         return {
-            "prediction_error": 0.0,
-            "reward": reward_scalar_val,
-            "output_spike_count": float(out.sum().item() / max(1, x_input.size(0))),
-            "proficiency": reward_scalar_val
+            "loss": loss_val,
+            "accuracy": acc,
+            "res_density": res_density,   # リザーバー層の発火率
+            "out_density": out_density,   # 出力層の発火率
+            "out_v_mean": v_mean,         # 出力層膜電位の平均
+            "out_v_max": v_max            # 出力層膜電位の最大値
         }
