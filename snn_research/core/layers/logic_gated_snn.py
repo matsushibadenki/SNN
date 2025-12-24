@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 空間局所性強化版・1.58ビットロジックゲートレイヤー
-# 目的: 発火ニューロン限定の可塑性を導入し、接続の飽和を防ぎ精度を90%へ引き上げる。
+# 日本語タイトル: 進化的剪定・高精度ロジックゲートレイヤー
+# 目的: ソフト空間局所性と進化的剪定を導入し、認識精度 90% 以上を確実に達成する。
 
 import torch
 import torch.nn as nn
@@ -14,12 +14,12 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 初期状態: ややスパース（30%程度）に設定
-        states = torch.randn(out_features, in_features) * 3.0 + (self.threshold - 5)
+        # 初期状態: 広めに分布させて探索を促進
+        states = torch.randn(out_features, in_features) * 10.0 + self.threshold
         self.register_buffer('synapse_states', states.clamp(1, max_states))
         
         self.register_buffer('membrane_potential', torch.zeros(out_features))
-        self.register_buffer('adaptive_threshold', torch.full((out_features,), 4.0))
+        self.register_buffer('adaptive_threshold', torch.full((out_features,), 5.0))
         self.register_buffer('eligibility_trace', torch.zeros(out_features, in_features))
         self.register_buffer('proficiency', torch.zeros(1))
 
@@ -37,56 +37,58 @@ class LogicGatedSNN(nn.Module):
         current = torch.matmul(x, w.t()).view(-1)
         
         v_mem = cast(torch.Tensor, self.membrane_potential)
-        v_mem.mul_(0.85).add_(current)
+        # 情報を蓄積しやすくするために保持率を0.9に
+        v_mem.mul_(0.9).add_(current)
         
         v_th = cast(torch.Tensor, self.adaptive_threshold)
         spikes = (v_mem >= v_th).to(torch.float32)
         
         with torch.no_grad():
-            # エリジビリティ・トレースをスパイク強度と直結
-            self.eligibility_trace.mul_(0.7).add_(torch.outer(spikes, x.view(-1)))
+            # エリジビリティ・トレース: 入出力の相関をより長く保持
+            self.eligibility_trace.mul_(0.95).add_(torch.outer(spikes, x.view(-1)))
             self.eligibility_trace.clamp_(0, 5.0)
             
-            # ホメオスタシス: 特定ニューロンの独占を防ぐ
-            self.adaptive_threshold.add_((spikes - 0.1) * 0.1)
-            self.adaptive_threshold.clamp_(1.0, 15.0)
+            # ホメオスタシス: 発火率を一定に保つ
+            self.adaptive_threshold.add_((spikes - 0.1) * 0.05)
+            self.adaptive_threshold.clamp_(2.0, 20.0)
         
-        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.2)
+        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.1)
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
-        """ 空間局所性を考慮した成功報酬型学習則 """
         with torch.no_grad():
-            is_success = 1.0 if reward > 0.0 else 0.0
+            is_success = 1.0 if reward > 0.5 else 0.0
             self.proficiency.copy_(self.proficiency * 0.99 + is_success * 0.01)
             prof = self.proficiency.item()
             
-            # 発火したニューロンのインデックスを取得 (空間局所性の担保)
-            # post_spikesがNoneの場合、出力層からの情報を期待
-            fired_mask = (post_spikes > 0).float().view(-1, 1) if post_spikes is not None else 1.0
+            # ソフト空間局所性: 発火したニューロンを1.0、しなかったニューロンを0.1の重みで更新
+            # これにより、未発火ニューロンもわずかに学習機会を得る
+            fired_mask = (post_spikes > 0).float().view(-1, 1) if post_spikes is not None else torch.ones(self.out_features, 1)
+            soft_mask = fired_mask + 0.1 * (1.0 - fired_mask)
             
-            lr = 8.0 * (1.0 - prof * 0.4)
+            # 学習率の動的調整
+            lr = 15.0 / (1.0 + prof * 5.0)
             trace = cast(torch.Tensor, self.eligibility_trace)
             modulation = torch.clamp(torch.tensor(reward), -1.0, 1.0).item()
             
             if modulation > 0:
-                # 成功時: 「発火して貢献した」接続のみを強化
-                update = trace * modulation * lr * fired_mask
-                self.states.add_(update)
-                # 発火しなかったニューロンの接続は微減させてスパース性を維持
-                self.states.sub_(0.02 * (1.0 - fired_mask))
+                # 成功時: 寄与した接続を強化 (Soft Mask適用)
+                self.states.add_(trace * modulation * lr * soft_mask)
             else:
-                # 失敗時: 「発火して間違わせた」接続をリセット
-                self.states.sub_(trace * abs(modulation) * lr * 0.5 * fired_mask)
+                # 失敗時: 寄与した接続を弱体化
+                self.states.sub_(trace * abs(modulation) * lr * 0.5 * soft_mask)
             
-            # 接続密度の厳格制御
+            # 進化的剪定 (Evolutionary Pruning)
+            # 接続率が高い場合は、弱い接続から順に削る
             conn_rate = float(self.get_ternary_weights().mean().item())
-            target_conn = 0.25 # ロジックを組むのに最適な密度
+            target_conn = 0.35 - (prof * 0.15) # 習熟に従い35%から20%へ
             
             if conn_rate > target_conn:
-                # 密度超過時は、ランダムに全体を押し下げる（競合の発生）
-                self.states.sub_(1.0)
-            elif conn_rate < target_conn - 0.05:
-                self.states.add_(0.5)
+                # 接続が多い場合、トレース（貢献度）が低いシナプスを優先的に減衰させる
+                decay = (1.0 - trace / 5.0) * 0.5
+                self.states.sub_(decay)
+            elif conn_rate < target_conn - 0.1:
+                # 接続が少なすぎる場合は全体を底上げ
+                self.states.add_(0.2)
 
             self.states.clamp_(1, self.max_states)
