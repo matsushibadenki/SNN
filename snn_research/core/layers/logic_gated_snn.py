@@ -1,16 +1,17 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 状態モニタリング対応)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 初期化スケール適正化版)
 
 import torch
 import torch.nn as nn
+import math
 from typing import cast, Union, Optional
 
 class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         mode: 
-          - 'reservoir': 固定重み、3値量子化 (-1, 0, 1)
-          - 'readout': 学習可能、連続値重み (Float)
+          - 'reservoir': 固定重み、3値量子化
+          - 'readout': 学習可能、連続値重み
         """
         super().__init__()
         self.in_features = in_features
@@ -20,11 +21,14 @@ class LogicGatedSNN(nn.Module):
         
         # モードに応じた初期化
         if self.mode == 'readout':
-            std_dev = 0.01
+            # 読み出し層
+            std_dev = 0.05
             self.threshold = 1.0 
             trainable = True
         else:
-            std_dev = 5.0
+            # リザーバー層: 重みが大きすぎると飽和するため、入力数に応じてスケーリング
+            # He initialization / sqrt(n) scaling
+            std_dev = 2.0 / math.sqrt(in_features)
             self.threshold = 1.0
             trainable = False
             
@@ -32,7 +36,7 @@ class LogicGatedSNN(nn.Module):
         states = torch.randn(out_features, in_features) * std_dev
         self.register_buffer('synapse_states', states.clamp(-max_states, max_states))
         
-        # 膜電位モニタリング用バッファ (学習には影響しない)
+        # 膜電位モニタリング用バッファ
         self.register_buffer('membrane_potential', torch.zeros(out_features))
         
         self.trainable = trainable
@@ -45,25 +49,28 @@ class LogicGatedSNN(nn.Module):
         if self.mode == 'readout':
             return self.states
         else:
+            # 3値量子化重み
             w = torch.zeros_like(self.states)
-            w[self.states > self.threshold] = 1.0
-            w[self.states < -self.threshold] = -1.0
-            return w
+            # 閾値も分散に合わせて調整（または固定値1.0に対して重みが小さければ発火しにくくなる）
+            # ここでは重み自体は小さいままで、集団的な入力で1.0を超える設計にする
+            threshold_val = 0.1 # スパースな量子化のための閾値
+            w[self.states > threshold_val] = 1.0
+            w[self.states < -threshold_val] = -1.0
+            # 量子化後の重みは 1.0 なので、入力数が多いと電流が大きくなることに注意
+            # Reservoirの出力が大きくなりすぎないよう、係数を掛ける
+            return w * 0.5 
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
-        """
-        Forward Pass
-        """
         w = self.get_effective_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # 電流計算: (Batch, Out)
+        # 電流計算
         current = torch.matmul(x, w.t())
         
-        # 膜電位 (Stateless approach for robustness)
+        # 膜電位 (Stateless)
         v_mem = current 
         
-        # モニタリング用にバッチ平均電位を保存 (デタッチして計算グラフを切る)
+        # モニタリング
         if self.training or not self.training:
             self.membrane_potential.copy_(v_mem.mean(dim=0).detach())
 
@@ -90,5 +97,5 @@ class LogicGatedSNN(nn.Module):
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
             
             self.states.add_(delta * lr)
-            self.states.mul_(0.9995) # Decay
+            self.states.mul_(0.9995) 
             self.states.clamp_(-self.max_states, self.max_states)
