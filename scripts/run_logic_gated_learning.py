@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: リザーバーアプローチ)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 高精度LSM版)
 
 import sys
 import os
@@ -17,7 +17,7 @@ def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out
     """
     パターン認識タスク (高密度プロトタイプ + ノイズ)
     """
-    # プロトタイプ
+    # プロトタイプ: 密度50%
     prototypes = (torch.randn(out_features, in_features) > 0.0).float()
     
     x_data = []
@@ -27,8 +27,8 @@ def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out
         label = torch.randint(0, out_features, (1,)).item()
         pattern = prototypes[label].clone()
         
-        # ノイズ注入 (10%反転) - 少し優しくする
-        noise = (torch.rand(in_features) < 0.1).float()
+        # ノイズ注入 (15%反転)
+        noise = (torch.rand(in_features) < 0.15).float()
         noisy_pattern = torch.abs(pattern - noise)
         
         x_data.append(noisy_pattern)
@@ -45,17 +45,17 @@ def run_simulation():
 
     # パラメータ設定
     IN_FEATURES = 784
-    # 隠れ層を広くとってリザーバー能力を高める
-    HIDDEN_FEATURES = 2048
+    # リザーバー層を十分に大きく取る (カーネル法効果)
+    HIDDEN_FEATURES = 4096 
     OUT_FEATURES = 10
-    BATCH_SIZE = 64
-    TOTAL_SAMPLES = 10000
+    BATCH_SIZE = 128
+    TOTAL_SAMPLES = 20000
     EPOCHS = 20
 
     # モデル構築
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     
-    print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons (Reservoir Mode).")
+    print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons (Liquid State Machine).")
     print("Generating High-Density Pattern Data...")
     
     x_train, y_train = generate_synthetic_data(num_samples=TOTAL_SAMPLES, in_features=IN_FEATURES)
@@ -64,7 +64,7 @@ def run_simulation():
     dataset = TensorDataset(x_train, y_train)
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     
-    print("\nStarting Reservoir Learning Phase...")
+    print("\nStarting Readout Training Phase...")
     print(f"Target: >90% Accuracy. Max Epochs: {EPOCHS}")
     
     moving_avg_acc = 0.1
@@ -77,6 +77,7 @@ def run_simulation():
         core.train()
         
         for i, (data, target) in enumerate(loader):
+            # 自律学習 (Output層の重み更新)
             metrics = core.autonomous_step(data, target)
             
             with torch.no_grad():
@@ -87,18 +88,17 @@ def run_simulation():
                 total_seen += data.size(0)
             
             batch_acc = correct / data.size(0)
-            moving_avg_acc = moving_avg_acc * 0.95 + batch_acc * 0.05
+            moving_avg_acc = moving_avg_acc * 0.9 + batch_acc * 0.1
             
             if i % 50 == 0:
-                # 出力層の接続率
-                w_out = core.output_gate.get_ternary_weights()
-                conn_out = (w_out != 0).float().mean().item() * 100
+                # 出力層の重み平均 (0にならないことを確認)
+                w_out = core.output_gate.get_effective_weights()
+                w_mean = w_out.abs().mean().item()
                 
                 elapsed = time.time() - start_time
                 print(f"Epoch {epoch+1:2d} [{i*BATCH_SIZE:5d}/{TOTAL_SAMPLES}] "
                       f"Acc: {batch_acc*100:4.1f}% (MA: {moving_avg_acc*100:4.1f}%) | "
-                      f"OutConn: {conn_out:4.1f}% | "
-                      f"Spikes: {metrics['output_spike_count']:.1f} | "
+                      f"W_Mean: {w_mean:.4f} | "
                       f"Time: {elapsed:.0f}s")
         
         epoch_acc = epoch_correct / total_seen * 100
@@ -111,7 +111,7 @@ def run_simulation():
     print("\nRunning Final Evaluation...")
     core.eval()
     
-    TEST_SAMPLES = 2000
+    TEST_SAMPLES = 5000
     x_test, y_test = generate_synthetic_data(num_samples=TEST_SAMPLES, in_features=IN_FEATURES)
     x_test, y_test = x_test.to(device), y_test.to(device)
     
