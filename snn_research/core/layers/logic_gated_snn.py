@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 初期化スケール適正化版)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: 完成版)
 
 import torch
 import torch.nn as nn
@@ -10,8 +10,8 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         mode: 
-          - 'reservoir': 固定重み、3値量子化
-          - 'readout': 学習可能、連続値重み
+          - 'reservoir': 固定重み、3値量子化 (-1, 0, 1)
+          - 'readout': 学習可能、連続値重み (Float)
         """
         super().__init__()
         self.in_features = in_features
@@ -26,8 +26,8 @@ class LogicGatedSNN(nn.Module):
             self.threshold = 1.0 
             trainable = True
         else:
-            # リザーバー層: 重みが大きすぎると飽和するため、入力数に応じてスケーリング
-            # He initialization / sqrt(n) scaling
+            # リザーバー層: 入力次元数に応じたスケーリング (He initialization / sqrt(n))
+            # これによりニューロンの飽和を防ぎ、情報の伝達効率を最大化する
             std_dev = 2.0 / math.sqrt(in_features)
             self.threshold = 1.0
             trainable = False
@@ -47,17 +47,15 @@ class LogicGatedSNN(nn.Module):
 
     def get_effective_weights(self) -> torch.Tensor:
         if self.mode == 'readout':
+            # 連続値重み
             return self.states
         else:
             # 3値量子化重み
             w = torch.zeros_like(self.states)
-            # 閾値も分散に合わせて調整（または固定値1.0に対して重みが小さければ発火しにくくなる）
-            # ここでは重み自体は小さいままで、集団的な入力で1.0を超える設計にする
-            threshold_val = 0.1 # スパースな量子化のための閾値
+            threshold_val = 0.1 # 量子化の閾値
             w[self.states > threshold_val] = 1.0
             w[self.states < -threshold_val] = -1.0
-            # 量子化後の重みは 1.0 なので、入力数が多いと電流が大きくなることに注意
-            # Reservoirの出力が大きくなりすぎないよう、係数を掛ける
+            # リザーバー層の出力を安定させるためのゲイン調整
             return w * 0.5 
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
@@ -68,9 +66,10 @@ class LogicGatedSNN(nn.Module):
         current = torch.matmul(x, w.t())
         
         # 膜電位 (Stateless)
+        # バッチ間の独立性を保つため、内部状態を持ち越さない
         v_mem = current 
         
-        # モニタリング
+        # モニタリング用に保存 (学習グラフには影響させない)
         if self.training or not self.training:
             self.membrane_potential.copy_(v_mem.mean(dim=0).detach())
 
@@ -97,5 +96,5 @@ class LogicGatedSNN(nn.Module):
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
             
             self.states.add_(delta * lr)
-            self.states.mul_(0.9995) 
+            self.states.mul_(0.9995) # Weight Decay
             self.states.clamp_(-self.max_states, self.max_states)
