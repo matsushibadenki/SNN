@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: パターン認識・対照学習版)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 成長型学習検証版)
 
 import sys
 import os
@@ -15,29 +15,23 @@ from snn_research.core.hybrid_core import HybridNeuromorphicCore
 
 def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out_features: int = 10):
     """
-    SNNが得意とする「ノイズのあるパターン認識タスク」を生成
-    各クラスに対して固有の「プロトタイプ（原型）」を作成し、
-    それをノイズで崩したものを入力とする。
+    パターン認識タスク (プロトタイプ + ノイズ)
     """
-    # 1. 各クラスのプロトタイプを作成 (ランダムな疎なパターン)
-    # クラスごとに固定の「正解パターン」を決める
-    prototypes = (torch.randn(out_features, in_features) > 0.5).float()
+    # 1. プロトタイプ作成 (各クラスの理想的なパターン)
+    # 密度20%程度の疎なパターン
+    prototypes = (torch.randn(out_features, in_features) > 1.0).float()
     
     x_data = []
     y_data = []
     
     for _ in range(num_samples):
-        # ランダムにクラスを選択
         label = torch.randint(0, out_features, (1,)).item()
-        
-        # プロトタイプを取得
         pattern = prototypes[label].clone()
         
-        # 2. ノイズ注入 (ビット反転)
-        # 20%の確率でビットを反転させ、不確実性を持たせる
-        noise_mask = (torch.rand(in_features) < 0.2).float()
-        # XOR的な操作でビット反転 (0->1, 1->0)
-        noisy_pattern = torch.abs(pattern - noise_mask)
+        # 2. ノイズ注入
+        # 15%のビットを反転
+        noise = (torch.rand(in_features) < 0.15).float()
+        noisy_pattern = torch.abs(pattern - noise)
         
         x_data.append(noisy_pattern)
         y_data.append(label)
@@ -48,7 +42,6 @@ def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out
     return x, y
 
 def run_simulation():
-    # デバイス設定
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on Device: {device}")
 
@@ -56,15 +49,15 @@ def run_simulation():
     IN_FEATURES = 784
     HIDDEN_FEATURES = 2048
     OUT_FEATURES = 10
-    BATCH_SIZE = 64 # バッチサイズを小さくして更新頻度を上げる
-    TOTAL_SAMPLES = 10000 # サンプル数を適正化
-    EPOCHS = 20 
+    BATCH_SIZE = 64
+    TOTAL_SAMPLES = 10000
+    EPOCHS = 15 # 成長が早いため少なめでOK
 
     # モデル構築
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print("Generating Pattern Recognition Data (Prototypes + Noise)...")
+    print("Generating Pattern Recognition Data...")
     
     x_train, y_train = generate_synthetic_data(num_samples=TOTAL_SAMPLES, in_features=IN_FEATURES)
     x_train, y_train = x_train.to(device), y_train.to(device)
@@ -72,7 +65,7 @@ def run_simulation():
     dataset = TensorDataset(x_train, y_train)
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     
-    print("\nStarting Contrastive Hebbian Learning Phase...")
+    print("\nStarting Tabula Rasa Learning Phase...")
     print(f"Target: >90% Accuracy. Max Epochs: {EPOCHS}")
     
     moving_avg_acc = 0.1
@@ -85,10 +78,8 @@ def run_simulation():
         core.train()
         
         for i, (data, target) in enumerate(loader):
-            # 自律学習ステップ (Contrastive Learning)
             metrics = core.autonomous_step(data, target)
             
-            # 精度確認
             with torch.no_grad():
                 out = core(data)
                 pred = out.argmax(dim=1)
@@ -99,9 +90,8 @@ def run_simulation():
             batch_acc = correct / data.size(0)
             moving_avg_acc = moving_avg_acc * 0.9 + batch_acc * 0.1
             
-            # ログ表示
             if i % 50 == 0:
-                # 接続性の確認
+                # 接続率の確認 (最初は0%付近からスタートするはず)
                 w_hid = core.fast_process.get_ternary_weights()
                 conn_hid = (w_hid != 0).float().mean().item() * 100
                 
@@ -115,12 +105,11 @@ def run_simulation():
         epoch_acc = epoch_correct / total_seen * 100
         print(f"--- Epoch {epoch+1} Final Accuracy: {epoch_acc:.2f}% ---")
         
-        # 早期終了条件
         if epoch_acc > 95.0:
             print(">>> Target Accuracy (95%) Reached. Optimization Complete.")
             break
             
-    print("\nRunning Final Evaluation on Test Set...")
+    print("\nRunning Final Evaluation...")
     core.eval()
     
     TEST_SAMPLES = 2000
