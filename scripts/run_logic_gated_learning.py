@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 長期学習版)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final Fix: 分離学習版)
 
 import sys
 import os
@@ -15,7 +15,6 @@ def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out
     x = (torch.randn(num_samples, in_features) > 1.0).float()
     y = []
     for i in range(num_samples):
-        # データ生成ロジックは変えず、モデルの学習能力で克服させる
         sum_val = x[i, 200:260].sum().long() 
         val = sum_val % out_features
         y.append(val)
@@ -28,6 +27,7 @@ def run_simulation():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on Device: {device}")
 
+    # Hidden層: 1024
     core = HybridNeuromorphicCore(784, 1024, 10).to(device)
     
     total_samples = 5000
@@ -40,12 +40,11 @@ def run_simulation():
     dataset = TensorDataset(x_train, y_train)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     
-    print("\nStarting Autonomous Intelligence Integration (Delta Rule Mode)...")
+    print("\nStarting Autonomous Intelligence Integration (Hybrid Learning Mode)...")
     
     ma_error = 0.5
     correct_avg = 0.1
-    # エポック数を30に増加
-    epochs = 30
+    epochs = 20 # 安定すれば20で十分
     
     for epoch in range(epochs):
         epoch_correct = 0
@@ -67,16 +66,21 @@ def run_simulation():
             ma_error = ma_error * 0.99 + e * 0.01
             
             if i % 1000 == 0:
-                w = core.fast_process.get_ternary_weights()
-                conn = float(w.mean().item()) * 100
-                v_th = float(core.fast_process.adaptive_threshold.mean().item())
+                # Hidden層の状態
+                w_hid = core.fast_process.get_ternary_weights()
+                conn_hid = float(w_hid.mean().item()) * 100
+                
+                # Output層の状態
+                w_out = core.output_gate.get_ternary_weights()
+                conn_out = float(w_out.mean().item()) * 100
+                
                 out_spikes = metrics["output_spike_count"]
                 
                 print(f"Epoch {epoch+1:2d} [{i:4d}/{total_samples}] - "
                       f"Acc(MA): {correct_avg*100:.1f}% | "
-                      f"Conn: {conn:.1f}% | "
-                      f"V_th: {v_th:.1f} | "
-                      f"OutSpikes: {out_spikes:.1f}")
+                      f"Conn(H): {conn_hid:.1f}% | "
+                      f"Conn(O): {conn_out:.1f}% | "
+                      f"Spikes: {out_spikes:.1f}")
         
         epoch_acc = epoch_correct / total_samples * 100
         print(f"--- Epoch {epoch+1} Final Accuracy: {epoch_acc:.2f}% ---")
