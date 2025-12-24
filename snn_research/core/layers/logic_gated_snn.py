@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: ハイブリッド学習則版)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: FA対応安定版)
 
 import torch
 import torch.nn as nn
@@ -13,7 +13,7 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 初期状態: スパース性を意識して分散を調整
+        # 初期状態
         states = torch.randn(out_features, in_features) * 20.0 + (self.threshold - 5.0)
         self.register_buffer('synapse_states', states.clamp(1, max_states))
         
@@ -34,7 +34,7 @@ class LogicGatedSNN(nn.Module):
         w = self.get_ternary_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # ゲイン調整: 8.0
+        # ゲイン
         conn_count = w.sum(dim=1).clamp(min=1.0)
         gain = 8.0 / torch.log1p(conn_count * 0.5)
         
@@ -48,7 +48,6 @@ class LogicGatedSNN(nn.Module):
         effective_current = current * (1.0 - is_refractory)
         
         noise = torch.randn_like(current) * 0.5
-        
         new_v_mem = v_mem.unsqueeze(0) * 0.8 + effective_current + noise
         spikes = (new_v_mem >= v_th.unsqueeze(0)).to(torch.float32)
         
@@ -61,7 +60,7 @@ class LogicGatedSNN(nn.Module):
         self.membrane_potential.copy_(v_mem_next)
         
         with torch.no_grad():
-            self.adaptive_threshold.mul_(0.98) # 自然減衰
+            self.adaptive_threshold.mul_(0.98) 
             target_activity = 0.15 
             th_update = (mean_spikes - target_activity) * 0.5
             self.adaptive_threshold.add_(th_update)
@@ -71,9 +70,9 @@ class LogicGatedSNN(nn.Module):
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor] = 0.0) -> None:
         """ 
-        修正版学習則: 
-        - Vector Reward (Output層): 強制学習 (Delta-like)
-        - Scalar Reward (Hidden層): 選択的強化学習 (Hebbian-like)
+        FA対応学習則: 
+        Rewardがベクトルの場合、それは「誤差信号」とみなされ、
+        自身の発火状態に関わらず重みを修正する (Delta Rule / Feedback Alignment)
         """
         with torch.no_grad():
             if isinstance(reward, torch.Tensor):
@@ -87,39 +86,26 @@ class LogicGatedSNN(nn.Module):
             
             lr = 4.0 * (1.0 - prof * 0.5)
             
-            # Pre activity (共通)
-            # pre_spikes: (in,) -> (1, in)
             pre_activity = pre_spikes.unsqueeze(0) if pre_spikes.dim() == 1 else pre_spikes.mean(dim=0, keepdim=True)
 
-            # --- 分岐ロジック ---
             if isinstance(reward, torch.Tensor) and reward.ndim == 1:
-                # 【出力層モード】: ベクトル教示信号
-                # 特定のニューロンに対して「お前は発火すべきだった/すべきでなかった」と指導する。
-                # 自身が発火していなくても(post=0)、正解なら強化する。
+                # 【ベクトルモード】: 強制学習 (FA / Delta)
+                # reward contains (Target - Output) or (Projected Error)
                 modulation = reward.unsqueeze(1) # (out, 1)
                 
-                # delta = (out, 1) * (1, in) -> (out, in)
-                # 個別のニューロンごとに異なる更新が行われる
+                # delta = Error * Input
+                # 誤差がプラス(もっと発火すべき)なら、入力があったシナプスを強化
+                # 誤差がマイナス(抑制すべき)なら、入力があったシナプスを抑制
                 delta = modulation * pre_activity * lr
 
             else:
-                # 【中間層モード】: スカラ報酬 (全体評価)
-                # 「今の結果は良かった/悪かった」という情報のみ。
-                # 誰が貢献したかわからないので、「発火したニューロン(post>0)」のみを対象にする。
-                # これをやらないと、全員が同じように更新されて個性が消滅する。
-                
-                modulation = reward # scalar
-                
-                # post_spikes: (batch, out) -> mean -> (out,) -> (out, 1)
+                # 【スカラモード】: 従来型強化学習 (予備)
+                modulation = reward
                 post_mean = post_spikes if post_spikes.dim() == 1 else post_spikes.mean(dim=0)
                 post_activity = post_mean.unsqueeze(1)
-                
-                # delta = Reward * Post * Pre
-                # 発火したニューロンだけが、入力パターンを学習(強化/抑制)する
                 delta = modulation * post_activity * pre_activity * lr
 
-            # 罰の緩和
-            if isinstance(reward, torch.Tensor): # modulationがTensorの場合
+            if isinstance(reward, torch.Tensor):
                  delta = delta.clamp(min=-5.0, max=15.0)
             
             self.states.add_(delta)
