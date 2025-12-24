@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (構造恒常性版)
-# 内容: 物理的な制約により接続率を確保し、その基盤の上で論理学習を行う。
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (感度最適化版)
+# 内容: 接続率と発火率のバランスを監視し、学習の進捗を確認する。
 
 import torch
 import torch.nn as nn
@@ -13,7 +13,7 @@ def generate_synthetic_data(num_samples: int = 3000, in_features: int = 784, out
     
     y = []
     for i in range(num_samples):
-        # 空間的論理
+        # 空間的論理: 特定領域のビットパターン
         sum_val = x[i, 200:250].sum().long()
         val = sum_val % out_features
         y.append(val)
@@ -29,7 +29,7 @@ def run_simulation():
     dataset = TensorDataset(x_train, y_train)
     loader = DataLoader(dataset, batch_size=1, shuffle=True)
     
-    print("\nStarting Autonomous Intelligence Integration (Homeostatic Structure Mode)...")
+    print("\nStarting Autonomous Intelligence Integration (Sensitivity Optimized Mode)...")
     
     ma_error = 0.5
     correct_avg = 0.1
