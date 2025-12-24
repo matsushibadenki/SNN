@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Fix: IndexError修正版)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 長期学習版)
 
 import sys
 import os
@@ -15,6 +15,7 @@ def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out
     x = (torch.randn(num_samples, in_features) > 1.0).float()
     y = []
     for i in range(num_samples):
+        # データ生成ロジックは変えず、モデルの学習能力で克服させる
         sum_val = x[i, 200:260].sum().long() 
         val = sum_val % out_features
         y.append(val)
@@ -39,11 +40,12 @@ def run_simulation():
     dataset = TensorDataset(x_train, y_train)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     
-    print("\nStarting Autonomous Intelligence Integration (Supervised Hebbian Mode)...")
+    print("\nStarting Autonomous Intelligence Integration (Delta Rule Mode)...")
     
     ma_error = 0.5
     correct_avg = 0.1
-    epochs = 10 
+    # エポック数を30に増加
+    epochs = 30
     
     for epoch in range(epochs):
         epoch_correct = 0
@@ -57,7 +59,7 @@ def run_simulation():
             
             is_correct = 1.0 if metrics["reward"] > 0.0 else 0.0
             
-            correct_avg = correct_avg * 0.99 + is_correct * 0.01
+            correct_avg = correct_avg * 0.995 + is_correct * 0.005
             epoch_correct += is_correct
             total_seen += 1
                 
@@ -97,7 +99,6 @@ def run_simulation():
             
             out = core(inp) 
             
-            # 修正: 次元不足の場合の対応
             if out.dim() == 1:
                 out = out.unsqueeze(0)
             
