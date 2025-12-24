@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 完成版)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 完成版・高速化適用)
 
 import sys
 import os
@@ -84,7 +84,7 @@ def run_simulation():
     # モデル構築
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Reservoir Weights Scaled Down for Stability.")
+    print(f"Training Logic: Reservoir Weights Frozen & Momentum Learning Enabled.")
     
     # --- 学習フェーズ ---
     print(f"Generating Training Data (Noise Range: {TRAIN_NOISE_RANGE})...")
@@ -137,7 +137,7 @@ def run_simulation():
         epoch_acc = epoch_correct / total_seen * 100
         print(f"--- Epoch {epoch+1} Final Accuracy: {epoch_acc:.2f}% ---")
         
-        if epoch_acc > 99.0:
+        if epoch_acc > 99.5: # 目標値を少し厳しく設定
             print(">>> High Accuracy Reached. Optimization Complete.")
             break
     
