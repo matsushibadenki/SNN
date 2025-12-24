@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/models/experimental/bit_spike_mamba.py
-# 日本語タイトル: Bit-Spike Mamba Model (Fix: Strict Return Values)
-# 目的: forwardの戻り値を厳密に定義し、アンパックエラーを防ぐ。
+# 日本語タイトル: Bit-Spike Mamba Model (Fix: Time Loop & Input Handling)
+# 目的: SNNの時間発展ループを復元し、トークンIDと特徴量入力の両方に対応する。
 
 import torch
 import torch.nn as nn
@@ -9,6 +9,7 @@ from typing import Dict, Any, Type, cast, Tuple, Union
 from snn_research.core.mamba_core import SpikingMambaBlock, SpikingMamba
 from snn_research.core.layers.bit_spike_layer import BitSpikeLinear
 from snn_research.core.neurons import AdaptiveLIFNeuron
+from spikingjelly.activation_based import functional as SJ_F # type: ignore
 
 class BitSpikeMambaBlock(SpikingMambaBlock):
     """
@@ -22,9 +23,8 @@ class BitSpikeMambaBlock(SpikingMambaBlock):
         self.out_proj = BitSpikeLinear(self.d_inner, d_model, bias=False)
 
     def forward(self, x):
-        # 親クラスのforward実装を利用
-        # 注意: 親クラスが (out, state) を返す場合でも、ここではTensorのみを期待して処理する
         out = super().forward(x)
+        # タプルならTensorのみ抽出
         if isinstance(out, tuple):
             return out[0]
         return out
@@ -36,7 +36,6 @@ class BitSpikeMamba(SpikingMamba):
     def __init__(self, vocab_size, d_model, d_state, d_conv, expand, num_layers, time_steps, neuron_config, **kwargs):
         super().__init__(vocab_size, d_model, d_state, d_conv, expand, num_layers, time_steps, neuron_config, **kwargs)
         
-        # パラメータフィルタリング
         neuron_type = neuron_config.get("type", "lif")
         neuron_params = neuron_config.copy()
         neuron_params.pop('type', None)
@@ -50,7 +49,6 @@ class BitSpikeMamba(SpikingMamba):
         else:
             filtered_params = neuron_params
 
-        # レイヤー再構築
         self.layers = nn.ModuleList([
             BitSpikeMambaBlock(
                 d_model, d_state, d_conv, expand, 
@@ -63,39 +61,66 @@ class BitSpikeMamba(SpikingMamba):
 
     def forward(self, x: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        安全なForward実装。常に (logits, avg_spikes, mem) の3要素を返す。
+        SNN Forward Pass.
+        x: (Batch, Length) if Long (Token IDs)
+           (Batch, Length, Dim) if Float (Embeddings/Features)
         """
-        # Embedding
-        if hasattr(self, 'embedding'):
-            x = self.embedding(x)
-
-        # Layers Loop
-        for layer in self.layers:
-            out = layer(x)
-            if isinstance(out, tuple):
-                x = out[0]
+        B = x.size(0)
+        device = x.device
+        
+        # 1. 状態リセット
+        SJ_F.reset_net(self)
+        
+        # 2. 入力処理 (Embedding or Direct)
+        if x.dtype == torch.long:
+            if hasattr(self, 'embedding'):
+                x_input = self.embedding(x) # (B, L, D)
             else:
-                x = out
+                raise ValueError("Model has no embedding layer but received LongTensor input.")
+        else:
+            # 既に埋め込み済み、あるいは視覚特徴量など
+            x_input = x # (B, L, D)
+
+        # 3. Statefulness有効化
+        for layer in self.layers:
+            if hasattr(layer, 'set_stateful'):
+                cast(SpikingMambaBlock, layer).set_stateful(True)
+
+        # 4. SNN時間発展ループ (Time Loop)
+        # 入力が静的(Static)であると仮定し、各タイムステップで同じ入力を流す
+        # (動的入力の場合はここを (B, T, L, D) 等にする必要があるが、現状はStatic想定)
+        x_last = x_input
         
-        # Norm
+        for _ in range(self.time_steps):
+            x_step = x_input
+            for layer in self.layers:
+                x_step = layer(x_step)
+            x_last = x_step # 最終層の出力を更新
+
+        # 5. Statefulness解除
+        for layer in self.layers:
+            if hasattr(layer, 'set_stateful'):
+                cast(SpikingMambaBlock, layer).set_stateful(False)
+        
+        # 6. 出力層
         if hasattr(self, 'norm_f'):
-            x = self.norm_f(x)
-        elif hasattr(self, 'norm'): # SpikingMamba might use 'norm'
-            x = self.norm(x)
+            x_out = self.norm_f(x_last)
+        elif hasattr(self, 'norm'):
+            x_out = self.norm(x_last)
+        else:
+            x_out = x_last
             
-        # Head (Logits)
         if hasattr(self, 'lm_head'):
-            x = self.lm_head(x)
+            logits = self.lm_head(x_out)
         elif hasattr(self, 'output_projection'):
-            x = self.output_projection(x)
+            logits = self.output_projection(x_out)
+        else:
+            logits = x_out
             
-        logits = x
+        # ダミー統計
+        avg_spikes = torch.tensor(0.0, device=device)
+        mem = torch.tensor(0.0, device=device)
         
-        # ダミーのスパイク統計 (計算コスト削減のため0埋め)
-        avg_spikes = torch.tensor(0.0, device=x.device)
-        mem = torch.tensor(0.0, device=x.device)
-        
-        # 確実に3要素を返す
         return logits, avg_spikes, mem
 
     def get_model_size_mb(self) -> float:
