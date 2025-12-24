@@ -1,96 +1,112 @@
 # ファイルパス: snn_research/adaptive/on_chip_self_corrector.py
-# 日本語タイトル: オンチップ自己修正エンジン v1.1 (LNN/RSNN 適応層)
-# 目的・内容:
-#   Objective.md の目標⑤, ⑥を達成するための「非勾配型学習」実装。
-#   - 誤差逆伝播（BP）に依存しない局所的な重み更新則。
-#   - mypyエラー修正: BaseModelを継承し、AstrocyteNetworkの既存メソッド(request_resource)を使用。
-#   - Bit-Spike（{-1, 0, 1}）制約下での熱力学的・確率的更新を模倣。
+# (Phase 4: Autonomous Adaptation)
+# Title: On-Chip Self-Correction Module
+# Description:
+#   推論時にリアルタイムでモデルの状態を監視し、自己修正を行う。
+#   - エントロピーに基づく不確実性検知
+#   - 恒常性維持（Homeostasis）による閾値調整
+#   - 局所的な重み更新（STDP/Hebbian）の動的トリガー
 
 import torch
 import torch.nn as nn
-import logging
-from typing import Dict, Any, Optional
-from snn_research.core.base import BaseModel
-from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
+import torch.nn.functional as F
+from typing import Dict, Any, Optional, List, Tuple
 
-logger = logging.getLogger(__name__)
-
-class OnChipSelfCorrector(BaseModel):
+class OnChipSelfCorrector(nn.Module):
     """
-    オンチップでの継続的な自己修正・適応を担当するモジュール。
-    行列計算やGPUに頼らず、加算と局所的な比較によって重みを適応させる。
+    オンチップ自己修正・適応モジュール。
+    推論モード(eval)であっても、内部状態を監視して適応的なパラメータ更新を行う。
     """
     def __init__(
-        self, 
-        model: nn.Module, 
-        astrocyte: Optional[AstrocyteNetwork] = None,
-        learning_rate: float = 0.01,
-        device: str = "cpu"
+        self,
+        monitor_layers: List[nn.Module],
+        adaptation_rate: float = 0.001,
+        entropy_threshold: float = 0.6,
+        homeostasis_target: float = 0.05  # 目標スパイク率
     ):
         super().__init__()
-        self.model = model
-        self.astrocyte = astrocyte
-        self.lr = learning_rate
-        self.device = device
+        self.monitor_layers = nn.ModuleList(monitor_layers)
+        self.adaptation_rate = adaptation_rate
+        self.entropy_threshold = entropy_threshold
+        self.homeostasis_target = homeostasis_target
         
-        # 修正目標: 目標⑩ 平均発火率 0.1Hz ~ 2Hz の維持
-        self.target_firing_rate = 0.05 
-        
-    def forward(self, x: torch.Tensor, uncertainty: float, feedback: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        推論を行い、不確実性が高い場合に自己修正を行う。
-        uncertainty: MetaCognitiveSNN等から供給される「自信のなさ」。
-        """
-        # アストロサイトによるエネルギー代謝チェック (request_resourceを使用)
-        energy_cost = 0.1
-        if self.astrocyte and not self.astrocyte.request_resource("self_corrector", energy_cost):
-            logger.warning("Low energy: Skipping on-chip adaptation.")
-            return self.model(x)
+        # 統計情報のバッファ
+        self.register_buffer("global_surprise", torch.tensor(0.0))
+        self.register_buffer("adaptation_count", torch.tensor(0))
 
-        # 推論実行 (System 1)
-        output = self.model(x)
+    def _calculate_entropy(self, logits: torch.Tensor) -> torch.Tensor:
+        """予測分布のエントロピーを計算"""
+        probs = F.softmax(logits, dim=-1)
+        log_probs = F.log_softmax(logits, dim=-1)
+        entropy = -(probs * log_probs).sum(dim=-1).mean()
+        return entropy
 
-        # 自己修正トリガー (不確実性が高い時、または明示的なフィードバックがある時)
-        if uncertainty > 0.7 or feedback is not None:
-            self._apply_local_learning_rule(x, output, feedback)
-            
-        return output
-
-    def _apply_local_learning_rule(self, x: torch.Tensor, output: torch.Tensor, feedback: Optional[torch.Tensor]):
+    def update_homeostasis(self):
         """
-        生物学的に妥当な局所学習則（非勾配型）。
-        Forward-Forwardアルゴリズムに近い手法で、Goodnessを最大化/最小化する。
+        恒常性維持: 各ニューロンの発火率を目標値に近づけるよう閾値を調整
+        （バックプロパゲーション不要の局所更新）
         """
         with torch.no_grad():
-            for name, param in self.model.named_parameters():
-                if 'weight' in name:
-                    # 1.58-bit (Ternary) 制約の維持
-                    # 重みを {-1, 0, 1} に引き寄せる確率的更新
-                    noise = torch.randn_like(param) * 0.01
+            for layer in self.monitor_layers:
+                # AdaptiveLIFNeuron などを想定
+                if hasattr(layer, "avg_firing_rate") and hasattr(layer, "base_threshold"):
+                    current_rate = layer.avg_firing_rate
+                    error = current_rate - self.homeostasis_target
                     
-                    if feedback is not None:
-                        # 外部フィードバックに基づく修正
-                        # 行列演算に頼らない単純な外積的更新 (Local Update)
-                        error = feedback - output
-                        update = torch.matmul(error.t(), x)
-                        param.add_(update * self.lr)
-                    else:
-                        # 内発的な安定化 (ヘブ則的強化)
-                        # 発火率が高すぎる場合は抑制、低すぎる場合は強化
-                        current_rate = torch.mean(output.float())
-                        adjustment = self.target_firing_rate - current_rate
-                        param.add_(noise + adjustment * self.lr)
+                    # 発火しすぎ -> 閾値を上げる (+ error)
+                    # 発火しなさすぎ -> 閾値を下げる (- error)
+                    # 不感帯を設ける
+                    mask = (error.abs() > (self.homeostasis_target * 0.2)).float()
+                    delta = error * self.adaptation_rate * mask
+                    
+                    layer.base_threshold.data += delta
+                    layer.base_threshold.data.clamp_(min=0.1)
 
-                    # Bit-Spike制約の再適用: クランプによる量子化維持
-                    param.copy_(torch.clamp(torch.round(param), -1, 1))
+    def trigger_plasticity(self, layer: nn.Module, pre_spikes: torch.Tensor, post_spikes: torch.Tensor):
+        """
+        驚き（Surprise）が高い場合に可塑性（重み更新）をトリガーする
+        簡易的なSTDP/Hebbianルールの適用
+        """
+        with torch.no_grad():
+            if hasattr(layer, "weight") and layer.weight.requires_grad:
+                # Hebbian: Fire together, wire together
+                # ΔW = η * (Post * Pre^T)
+                # バッチ処理のための簡易計算
+                if pre_spikes.dim() == 2 and post_spikes.dim() == 2:
+                    delta_w = torch.matmul(post_spikes.t(), pre_spikes)
+                    
+                    # 重みの大きさに応じた正規化 (Oja's rule like)
+                    # 実際には勾配を使わず、in-placeで値を更新
+                    layer.weight.data += self.adaptation_rate * 0.1 * delta_w
+                    
+                    # 重みの発散を防ぐための減衰
+                    layer.weight.data *= 0.999
 
-    def get_adaptation_metrics(self) -> Dict[str, Any]:
+    def forward(self, logits: torch.Tensor, hidden_states: List[Tuple[torch.Tensor, torch.Tensor]]) -> Dict[str, float]:
         """
-        修正の進捗状況をレポートする。
+        推論ステップごとに呼び出される。
+        Args:
+            logits: モデルの最終出力 (B, Classes)
+            hidden_states: 各層の (入力スパイク, 出力スパイク) のリスト
         """
-        return {
-            "status": "ADAPTING",
-            "learning_rate": self.lr,
-            "target_rate_hz": 1.0, # 目標⑩
-            "is_bitspike_compliant": True # 目標④
-        }
+        stats = {}
+        
+        # 1. 不確実性（エントロピー）の監視
+        entropy = self._calculate_entropy(logits)
+        stats["entropy"] = entropy.item()
+        
+        # 2. 「驚き」の検知 (High Entropy = Surprise)
+        is_surprised = entropy > self.entropy_threshold
+        
+        if is_surprised:
+            self.global_surprise = entropy
+            self.adaptation_count += 1
+            
+            # 3. 適応ステップの実行
+            self.update_homeostasis()
+            
+            # 層ごとの可塑性トリガー (監視対象層とhidden_statesが対応している前提)
+            # ここでは簡易的に実装
+            pass 
+            
+        return stats
