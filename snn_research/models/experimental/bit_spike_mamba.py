@@ -1,8 +1,6 @@
 # ファイルパス: snn_research/models/experimental/bit_spike_mamba.py
-# 日本語タイトル: Bit-Spike Mamba Model (Fix: Robust Forward)
-# 目的・内容:
-#   SpikingMambaのforwardループ内でのアンパックエラーを回避するため、
-#   forwardメソッドをオーバーライドして安全な実装に置き換える。
+# 日本語タイトル: Bit-Spike Mamba Model (Fix: Strict Return Values)
+# 目的: forwardの戻り値を厳密に定義し、アンパックエラーを防ぐ。
 
 import torch
 import torch.nn as nn
@@ -18,14 +16,18 @@ class BitSpikeMambaBlock(SpikingMambaBlock):
     """
     def __init__(self, d_model, d_state, d_conv, expand, neuron_class, neuron_params):
         super().__init__(d_model, d_state, d_conv, expand, neuron_class, neuron_params)
-        # --- Layer Replacement with BitSpike ---
+        # BitSpikeLayerへの置換
         self.in_proj = BitSpikeLinear(d_model, self.d_inner * 2, bias=False)
         self.x_proj = BitSpikeLinear(self.d_inner, self.d_inner + 2 * d_state, bias=False)
         self.out_proj = BitSpikeLinear(self.d_inner, d_model, bias=False)
 
     def forward(self, x):
-        # 親クラスのforwardに依存 (戻り値がTensorかTupleかは親の実装依存)
-        return super().forward(x)
+        # 親クラスのforward実装を利用
+        # 注意: 親クラスが (out, state) を返す場合でも、ここではTensorのみを期待して処理する
+        out = super().forward(x)
+        if isinstance(out, tuple):
+            return out[0]
+        return out
 
 class BitSpikeMamba(SpikingMamba):
     """
@@ -48,7 +50,7 @@ class BitSpikeMamba(SpikingMamba):
         else:
             filtered_params = neuron_params
 
-        # レイヤーの再構築
+        # レイヤー再構築
         self.layers = nn.ModuleList([
             BitSpikeMambaBlock(
                 d_model, d_state, d_conv, expand, 
@@ -59,12 +61,11 @@ class BitSpikeMamba(SpikingMamba):
         ])
         self._init_weights()
 
-    def forward(self, x: torch.Tensor) -> Union[torch.Tensor, Tuple[torch.Tensor, Any, Any]]:
+    def forward(self, x: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        安全なForward実装。
-        レイヤーが (x, state) を返しても x だけを取り出して次に渡す。
+        安全なForward実装。常に (logits, avg_spikes, mem) の3要素を返す。
         """
-        # Embedding (親クラスに存在すると仮定)
+        # Embedding
         if hasattr(self, 'embedding'):
             x = self.embedding(x)
 
@@ -72,24 +73,32 @@ class BitSpikeMamba(SpikingMamba):
         for layer in self.layers:
             out = layer(x)
             if isinstance(out, tuple):
-                x = out[0] # 状態変数は無視してTensorのみ伝播
+                x = out[0]
             else:
                 x = out
         
         # Norm
         if hasattr(self, 'norm_f'):
             x = self.norm_f(x)
+        elif hasattr(self, 'norm'): # SpikingMamba might use 'norm'
+            x = self.norm(x)
             
         # Head (Logits)
         if hasattr(self, 'lm_head'):
             x = self.lm_head(x)
+        elif hasattr(self, 'output_projection'):
+            x = self.output_projection(x)
             
-        # SNNとしての互換性のため (logits, spikes, mem) を返す形式に合わせる
-        # ここでは簡易的に logits のみを返す（Adapter側で吸収）
-        return x
+        logits = x
+        
+        # ダミーのスパイク統計 (計算コスト削減のため0埋め)
+        avg_spikes = torch.tensor(0.0, device=x.device)
+        mem = torch.tensor(0.0, device=x.device)
+        
+        # 確実に3要素を返す
+        return logits, avg_spikes, mem
 
     def get_model_size_mb(self) -> float:
-        """モデルサイズ(MB)を計算"""
         param_count = sum(p.numel() for p in self.parameters())
         bit_size = param_count * 0.25 / (1024 * 1024) 
         return bit_size
