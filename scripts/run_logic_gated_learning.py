@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Fix: 最適化ノイズ境界版)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 完成版)
 
 import sys
 import os
@@ -17,6 +17,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from snn_research.core.hybrid_core import HybridNeuromorphicCore
 
 def set_seed(seed: int = 42):
+    """再現性のためにSeedを固定"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -29,7 +30,13 @@ def generate_synthetic_data(num_samples: int = 5000,
                           out_features: int = 10, 
                           prototypes=None, 
                           noise_level: Union[float, Tuple[float, float]] = 0.1):
+    """
+    パターン認識タスクデータ生成
+    Args:
+        noise_level: floatなら固定値、tupleなら(min, max)の範囲でランダム
+    """
     if prototypes is None:
+        # 密度50%のランダムパターンを「正解」として定義
         prototypes = (torch.randn(out_features, in_features) > 0.0).float()
     
     x_data = []
@@ -39,19 +46,22 @@ def generate_synthetic_data(num_samples: int = 5000,
         label = torch.randint(0, out_features, (1,)).item()
         pattern = prototypes[label].clone()
         
+        # ノイズレベルの決定
         if isinstance(noise_level, (tuple, list)):
             current_noise = random.uniform(noise_level[0], noise_level[1])
         else:
             current_noise = noise_level
             
+        # ノイズ注入 (XOR Noise)
         noise = (torch.rand(in_features) < current_noise).float()
-        noisy_pattern = torch.abs(pattern - noise) # XOR noise
+        noisy_pattern = torch.abs(pattern - noise)
         
         x_data.append(noisy_pattern)
         y_data.append(label)
     
     x = torch.stack(x_data)
     y = torch.tensor(y_data, dtype=torch.long)
+    
     return x, y, prototypes
 
 def run_simulation():
@@ -59,22 +69,24 @@ def run_simulation():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on Device: {device}")
 
+    # パラメータ設定
     IN_FEATURES = 784
     HIDDEN_FEATURES = 4096 
     OUT_FEATURES = 10
     BATCH_SIZE = 128
     TOTAL_SAMPLES = 20000
-    EPOCHS = 15
+    EPOCHS = 15 # ハイパー・ロバスト学習には十分なエポック数が必要
     
-    # ノイズ限界について:
-    # 密度50%のデータに対しビット反転確率0.5は「情報量ゼロ」を意味します。
-    # したがって、学習可能な限界値である 0.45 までをターゲットとします。
+    # 学習ノイズ範囲: 0.0 (Clean) 〜 0.45 (Limit)
+    # 理論限界(0.5)の手前まで徹底的に鍛える
     TRAIN_NOISE_RANGE = (0.0, 0.45)
 
+    # モデル構築
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
     print(f"Training Logic: Reservoir Weights Scaled Down for Stability.")
     
+    # --- 学習フェーズ ---
     print(f"Generating Training Data (Noise Range: {TRAIN_NOISE_RANGE})...")
     
     x_train, y_train, shared_prototypes = generate_synthetic_data(
@@ -103,6 +115,7 @@ def run_simulation():
         core.train()
         
         for i, (data, target) in enumerate(loader):
+            # 自律学習ステップ
             metrics = core.autonomous_step(data, target)
             
             acc = metrics["accuracy"]
@@ -128,15 +141,16 @@ def run_simulation():
             print(">>> High Accuracy Reached. Optimization Complete.")
             break
     
+    # --- 評価フェーズ ---
     print("\n=== Running Robustness Evaluation (Stress Test) ===")
     core.eval()
     
-    # 0.5は理論的にランダム(10%)になるはず
+    # テスト範囲: 0.1 〜 0.5 (理論限界)
     noise_levels = [0.1, 0.2, 0.3, 0.4, 0.45, 0.5]
     TEST_SAMPLES = 2000
     
     print(f"{'Noise':<6} | {'Acc':<7} | {'Loss':<6} | {'O_Spk%':<6} | {'V_Mean':<6} | {'Status'}")
-    print("-" * 60)
+    print("-" * 65)
     
     for noise in noise_levels:
         x_test, y_test, _ = generate_synthetic_data(
@@ -160,10 +174,13 @@ def run_simulation():
             for data, target in test_loader:
                 out = core(data)
                 
+                # Loss計算
                 target_onehot = torch.zeros_like(out)
                 target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
                 loss = (target_onehot - out).pow(2).mean().item()
                 total_loss += loss * data.size(0)
+                
+                # 統計情報
                 total_spikes += out.mean().item() * data.size(0)
                 total_v_mean += core.output_gate.membrane_potential.mean().item() * data.size(0)
 
@@ -175,12 +192,19 @@ def run_simulation():
         avg_spk = (total_spikes / TEST_SAMPLES) * 100
         avg_v = total_v_mean / TEST_SAMPLES
         
-        # 0.45付近でも80%を超えれば成功
+        # 評価基準判定
         status = "Robust" if final_acc > 80.0 else "Weak"
         if final_acc > 98.0: status = "Excellent"
-        if noise >= 0.5 and final_acc < 15.0: status = "Theoretical Limit" # 0.5は予測不可能
-            
-        print(f"{noise:<6.1f} | {final_acc:6.1f}% | {avg_loss:6.4f} | {avg_spk:5.1f}% | {avg_v:6.3f} | {status}")
+        
+        # 0.50は理論的に情報量ゼロなので10%前後が正しい挙動
+        if noise >= 0.5:
+            if final_acc < 15.0:
+                status = "Theoretical Limit (OK)"
+            else:
+                status = "Suspiciously High" # 逆に高すぎるとデータリークの疑いあり
+
+        # 表示修正: 小数点2桁まで表示して 0.45 と 0.50 を区別
+        print(f"{noise:<6.2f} | {final_acc:6.1f}% | {avg_loss:6.4f} | {avg_spk:5.1f}% | {avg_v:6.3f} | {status}")
     
     print("\nSimulation Complete.")
 
