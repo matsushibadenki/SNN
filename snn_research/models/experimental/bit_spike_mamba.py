@@ -1,12 +1,12 @@
 # ファイルパス: snn_research/models/experimental/bit_spike_mamba.py
-# 日本語タイトル: Bit-Spike Mamba Model (Brain v20 Prototype) - Fixed v3
+# 日本語タイトル: Bit-Spike Mamba Model (Fix: Robust Forward)
 # 目的・内容:
-#   SpikingMambaBlockの線形射影層をBitSpikeLinearに置換。
-#   修正: get_model_size_mb メソッドを復元。
+#   SpikingMambaのforwardループ内でのアンパックエラーを回避するため、
+#   forwardメソッドをオーバーライドして安全な実装に置き換える。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Type, cast
+from typing import Dict, Any, Type, cast, Tuple, Union
 
 from snn_research.core.mamba_core import SpikingMambaBlock, SpikingMamba
 from snn_research.core.layers.bit_spike_layer import BitSpikeLinear
@@ -24,6 +24,7 @@ class BitSpikeMambaBlock(SpikingMambaBlock):
         self.out_proj = BitSpikeLinear(self.d_inner, d_model, bias=False)
 
     def forward(self, x):
+        # 親クラスのforwardに依存 (戻り値がTensorかTupleかは親の実装依存)
         return super().forward(x)
 
 class BitSpikeMamba(SpikingMamba):
@@ -47,7 +48,7 @@ class BitSpikeMamba(SpikingMamba):
         else:
             filtered_params = neuron_params
 
-        # レイヤーの再構築（BitSpikeMambaBlockを使用）
+        # レイヤーの再構築
         self.layers = nn.ModuleList([
             BitSpikeMambaBlock(
                 d_model, d_state, d_conv, expand, 
@@ -58,9 +59,37 @@ class BitSpikeMamba(SpikingMamba):
         ])
         self._init_weights()
 
+    def forward(self, x: torch.Tensor) -> Union[torch.Tensor, Tuple[torch.Tensor, Any, Any]]:
+        """
+        安全なForward実装。
+        レイヤーが (x, state) を返しても x だけを取り出して次に渡す。
+        """
+        # Embedding (親クラスに存在すると仮定)
+        if hasattr(self, 'embedding'):
+            x = self.embedding(x)
+
+        # Layers Loop
+        for layer in self.layers:
+            out = layer(x)
+            if isinstance(out, tuple):
+                x = out[0] # 状態変数は無視してTensorのみ伝播
+            else:
+                x = out
+        
+        # Norm
+        if hasattr(self, 'norm_f'):
+            x = self.norm_f(x)
+            
+        # Head (Logits)
+        if hasattr(self, 'lm_head'):
+            x = self.lm_head(x)
+            
+        # SNNとしての互換性のため (logits, spikes, mem) を返す形式に合わせる
+        # ここでは簡易的に logits のみを返す（Adapter側で吸収）
+        return x
+
     def get_model_size_mb(self) -> float:
-        """モデルサイズ(MB)を計算。1.58bit化による圧縮効果を表示"""
+        """モデルサイズ(MB)を計算"""
         param_count = sum(p.numel() for p in self.parameters())
-        # BitSpikeなら理論上 2 bits/param (0.25 bytes)
         bit_size = param_count * 0.25 / (1024 * 1024) 
         return bit_size
