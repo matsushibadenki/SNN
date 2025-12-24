@@ -1,10 +1,10 @@
 # ファイルパス: snn_research/models/transformer/spiking_vlm.py
-# (Phase 3: Visual-Language Alignment)
+# (Phase 3: Visual-Language Alignment - Bugfix)
 # Title: Spiking Vision-Language Model (SpikingVLM)
 # Description:
-# - 視覚エンコーダ (Vision Core) と言語モデル (Language Core) を
+#   視覚エンコーダ (Vision Core) と言語モデル (Language Core) を
 #   マルチモーダル・プロジェクターで接続した統合モデル。
-# - 修正: SNNCore のインポートを遅延させ、循環参照を回避。
+#   修正: Vision Encoder の出力次元 (vocab_size) を projector の入力次元に合わせて動的に設定するように変更。
 
 import torch
 import torch.nn as nn
@@ -12,8 +12,6 @@ from typing import Dict, Any, Optional, Tuple, Union, cast
 import logging
 
 from snn_research.core.base import BaseModel
-# SNNCoreのトップレベルインポートを削除
-# from snn_research.core.snn_core import SNNCore 
 from snn_research.hybrid.multimodal_projector import MultimodalProjector
 
 logger = logging.getLogger(__name__)
@@ -34,7 +32,7 @@ class SpikingVLM(BaseModel):
         super().__init__()
         self.vocab_size = vocab_size
 
-        # --- 修正: 遅延インポートで循環参照を回避 ---
+        # --- 遅延インポートで循環参照を回避 ---
         try:
             from snn_research.core.snn_core import SNNCore
         except ImportError:
@@ -43,13 +41,18 @@ class SpikingVLM(BaseModel):
         
         # 1. Vision Encoder (e.g., SpikingCNN, SpikingViT)
         logger.info("👁️ SpikingVLM: Building Vision Encoder...")
-        # 画像モデルなので vocab_size はダミーまたはクラス数として渡す
-        self.vision_encoder = SNNCore(config=vision_config, vocab_size=1000)
+        
+        # 【修正】Projectorの入力次元に合わせてVision Encoderの出力次元(vocab_size)を設定
+        # これにより、(B, 1000) ではなく (B, visual_dim) が出力され、型不一致エラーを防ぐ
+        visual_dim = projector_config.get("visual_dim", 128)
+        
+        # Vision Encoderの出力クラス数として visual_dim を使用
+        self.vision_encoder = SNNCore(config=vision_config, vocab_size=visual_dim)
         
         # 2. Multimodal Projector
         logger.info("🔗 SpikingVLM: Building Multimodal Projector...")
         self.projector = MultimodalProjector(
-            visual_dim=projector_config.get("visual_dim", 128),
+            visual_dim=visual_dim,
             lang_dim=language_config.get("d_model", 256),
             visual_time_steps=vision_config.get("time_steps", 16),
             lang_time_steps=language_config.get("time_steps", 16),
@@ -65,24 +68,15 @@ class SpikingVLM(BaseModel):
 
     def forward(
         self,
-        input_ids: torch.Tensor,          # (B, SeqLen) - テキスト入力（Teacher Forcing用またはプロンプト）
+        input_ids: torch.Tensor,          # (B, SeqLen) - テキスト入力
         input_images: torch.Tensor,       # (B, C, H, W) - 画像入力
         return_spikes: bool = False,
         **kwargs: Any
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass for VLM.
-        
-        Returns:
-            logits: (B, SeqLen, VocabSize)
-            avg_spikes: 平均スパイク数
-            mem: 膜電位 (ダミー)
         """
         # 1. Encode Images
-        # vision_encoder は (logits, spikes, mem) を返す。ここでは特徴量としてlogits(または中間層)を使用したい。
-        # SNNCore/SpikingCNN は通常 logits を返すが、ここでは特徴抽出器として振る舞う必要がある。
-        # 簡易的に、vision_encoder の出力を特徴量として扱う。
-        # (より高度な実装では、return_hidden_states=True などで中間層を取得する)
         vision_outputs = self.vision_encoder(input_images)
         
         if isinstance(vision_outputs, tuple):
@@ -93,15 +87,12 @@ class SpikingVLM(BaseModel):
             vis_spikes = torch.tensor(0.0, device=input_images.device)
 
         # 2. Project to Language Space
-        # (B, VisualDim) -> (B, ContextLen, LangDim)
         context_embeds = self.projector(visual_features)
         
         # 3. Decode Text with Visual Context
-        # language_decoder (SNNCore) に context_embeds を渡す
-        # (SpikingTransformerV2 などがこれを受け取って Cross-Modal Injection を行う)
         lang_outputs = self.language_decoder(
             input_ids, 
-            context_embeds=context_embeds, # 視覚コンテキストを注入
+            context_embeds=context_embeds,
             return_spikes=True,
             **kwargs
         )
@@ -110,8 +101,15 @@ class SpikingVLM(BaseModel):
         lang_spikes = lang_outputs[1]
         mem = lang_outputs[2]
         
-        # スパイク統計の統合
-        avg_spikes = (vis_spikes + lang_spikes) / 2.0
+        # スパイク統計の統合 (Tensorかfloatかをチェックして計算)
+        if isinstance(vis_spikes, torch.Tensor) and isinstance(lang_spikes, torch.Tensor):
+            avg_spikes = (vis_spikes.mean() + lang_spikes.mean()) / 2.0
+        elif isinstance(vis_spikes, torch.Tensor):
+            avg_spikes = vis_spikes.mean()
+        elif isinstance(lang_spikes, torch.Tensor):
+            avg_spikes = lang_spikes.mean()
+        else:
+            avg_spikes = torch.tensor(0.0)
         
         return logits, avg_spikes, mem
 
@@ -129,13 +127,11 @@ class SpikingVLM(BaseModel):
             context_embeds = self.projector(visual_features)
             
             # 3. Autoregressive Generation
-            # (簡易実装: 実際には SNNInferenceEngine の generate ロジックを使用すべきだが、
-            #  モデル内部で完結する簡易ループをここに記述)
             current_ids = prompt_ids
             
             for _ in range(max_len):
                 outputs = self.language_decoder(current_ids, context_embeds=context_embeds)
-                logits = outputs[0] # (B, Seq, Vocab)
+                logits = outputs[0]
                 next_token_logits = logits[:, -1, :]
                 next_token = torch.argmax(next_token_logits, dim=-1).unsqueeze(1)
                 current_ids = torch.cat([current_ids, next_token], dim=1)
