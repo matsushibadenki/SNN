@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (適応的生命維持版)
-# 目的: 活動停止（デッドロック）を検知し、閾値の動的調整によって学習能力を強制復元する。
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (自己鎮静・不応期版)
+# 目的: 過剰興奮（てんかん状態）を鎮め、不応期によって健全なスパイク列を形成する。
 
 import torch
 import torch.nn as nn
@@ -14,14 +14,17 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 初期状態: 分散を大きくし、ニューロンごとの個性を出す
-        states = torch.randn(out_features, in_features) * 8.0 + (self.threshold - 5.0)
+        # 初期状態: やや抑制的な初期分布からスタート
+        states = torch.randn(out_features, in_features) * 5.0 + (self.threshold - 2.0)
         self.register_buffer('synapse_states', states.clamp(1, max_states))
         
         self.register_buffer('membrane_potential', torch.zeros(out_features))
-        self.register_buffer('adaptive_threshold', torch.full((out_features,), 6.0))
+        self.register_buffer('adaptive_threshold', torch.full((out_features,), 10.0)) # 初期閾値を高めに
         self.register_buffer('eligibility_trace', torch.zeros(out_features, in_features))
         self.register_buffer('proficiency', torch.zeros(1))
+        
+        # 不応期カウンタ (Refractory Counter)
+        self.register_buffer('refractory_count', torch.zeros(out_features))
 
     @property
     def states(self) -> torch.Tensor:
@@ -34,36 +37,49 @@ class LogicGatedSNN(nn.Module):
         w = self.get_ternary_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # 入力ゲインの動的補償: 接続数が少ない時（飢餓状態）ほどゲインを上げる
+        # 入力ゲインの適正化: 接続数が少ない時は強く、多い時は弱く（平方根則）
         conn_count = w.sum(dim=1).clamp(min=1.0)
-        # ログの 0.5% という極端な疎状態でも発火できるよう、補正を強化
-        gain = 25.0 / torch.sqrt(conn_count / 10.0 + 0.1)
+        # 前回の 25.0 は強すぎたため 12.0 に抑制
+        gain = 12.0 / torch.sqrt(conn_count / 10.0 + 1.0)
         current = torch.matmul(x, w.t()).view(-1) * gain
         
         v_mem = cast(torch.Tensor, self.membrane_potential)
-        v_mem.mul_(0.85).add_(current)
-        
         v_th = cast(torch.Tensor, self.adaptive_threshold)
+        ref_count = cast(torch.Tensor, self.refractory_count)
+        
+        # 不応期処理: カウントが残っているニューロンは入力を無視
+        is_refractory = (ref_count > 0).float()
+        effective_current = current * (1.0 - is_refractory)
+        
+        # 膜電位更新
+        v_mem.mul_(0.9).add_(effective_current)
+        
+        # 発火判定
         spikes = (v_mem >= v_th).to(torch.float32)
+        
+        # 不応期リセット: 発火したら 3ステップ休む
+        new_refractory = (ref_count - 1.0).clamp(0) + spikes * 3.0
+        self.refractory_count.copy_(new_refractory)
         
         with torch.no_grad():
             self.eligibility_trace.mul_(0.9).add_(torch.outer(spikes, x.view(-1)))
-            self.eligibility_trace.clamp_(0, 5.0)
+            self.eligibility_trace.clamp_(0, 3.0)
             
-            # 【重要】活動依存のホメオスタシス
-            # 発火したら閾値を上げ、発火しない（飢餓）なら急速に下げる
-            # ログの V_th=20.0, V_avg=1.1 という絶望的なギャップを埋める
-            self.adaptive_threshold.add_((spikes - 0.1) * 0.5)
-            # 自然減衰（常に感度を高めようとする圧力）を追加
-            self.adaptive_threshold.mul_(0.99)
-            self.adaptive_threshold.clamp_(1.5, 30.0)
+            # ホメオスタシス: 発火したら閾値を上げ、発火しないなら下げる
+            # 上限を撤廃し、過剰入力にも耐えられるようにする
+            self.adaptive_threshold.add_((spikes - 0.05) * 1.0)
+            self.adaptive_threshold.mul_(0.995) # 緩やかな減衰
+            self.adaptive_threshold.clamp_(5.0, 100.0) # 下限は守るが上限は広く
         
-        # ソフトリセット
-        self.membrane_potential.copy_(v_mem * (1.0 - spikes) * 0.2)
+        # リセット: 発火したニューロンは閾値を引いてリセット（Soft Reset）
+        # これにより情報の完全消失を防ぐ
+        v_mem_reset = v_mem - (spikes * v_th)
+        self.membrane_potential.copy_(v_mem_reset)
+        
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: float = 0.0) -> None:
-        """ 非線形・個別密度制御型学習則 """
+        """ バランス調整型学習則 """
         with torch.no_grad():
             is_success = 1.0 if reward > 0.1 else 0.0
             self.proficiency.copy_(self.proficiency * 0.995 + is_success * 0.005)
@@ -72,27 +88,24 @@ class LogicGatedSNN(nn.Module):
             trace = cast(torch.Tensor, self.eligibility_trace)
             modulation = torch.tanh(torch.tensor(reward)).item()
             
-            # 学習率の安定化
+            # 学習率: 少し落ち着かせる
             lr = 2.0 * (1.0 - prof * 0.5)
             
             if modulation > 0:
                 self.states.add_(trace * modulation * lr)
             else:
-                # 失敗時の切断は、現在の接続率が高い時ほど厳しくする
-                conn_rate = float(self.get_ternary_weights().mean().item())
-                penalty_scale = 1.5 if conn_rate > 0.3 else 0.2
-                self.states.sub_(trace * abs(modulation) * lr * penalty_scale)
+                # 失敗時の罰則
+                self.states.sub_(trace * abs(modulation) * lr * 0.5)
             
-            # 代謝システム（ランダムな揺らぎ）: デッドロックを物理的に防ぐ
-            # 1% の確率で非常に弱いノイズを加え、休眠中のシナプスを活性化
-            noise = torch.randn_like(self.states) * 0.02
-            self.states.add_(noise)
+            # 密度制御: 20-30% をターゲットに緩やかに誘導
+            conn_rates = float(self.get_ternary_weights().mean().item())
+            target_density = 0.25
+            density_error = conn_rates - target_density
             
-            # 密度ホメオスタシス（個別・非線形）
-            # 平均ではなく、各ニューロンの活動ポテンシャルを調整
-            conn_rates = (self.states > self.threshold).float().mean(dim=1)
-            # 接続率 10% - 30% を維持するように、ニューロンごとにフィードバック
-            pull = (conn_rates - 0.20) * 2.0
-            self.states.sub_(pull.unsqueeze(1))
+            # 全体的なフィードバック圧
+            self.states.sub_(density_error * 0.5)
+            
+            # ランダムノイズ（代謝）
+            self.states.add_(torch.randn_like(self.states) * 0.05)
 
             self.states.clamp_(1, self.max_states)
