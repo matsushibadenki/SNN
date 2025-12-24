@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: 型安全性向上版)
+# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: 堅牢性強化版)
 
 import torch
 import torch.nn as nn
@@ -9,20 +9,25 @@ from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
 class ActivePredictiveLayer(nn.Module):
     def __init__(self, features: int) -> None: 
         super().__init__()
+        # 正規化と非線形性の導入による堅牢性向上
+        self.norm = nn.LayerNorm(features)
+        self.activation = nn.GELU()
+        
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
-        return x
+        # 入力を正規化し、非線形変換を行うことでノイズを抑制し特徴を際立たせる
+        return self.activation(self.norm(x))
 
 class HybridNeuromorphicCore(nn.Module):
     def __init__(self, in_features: int, hidden_features: int, out_features: int) -> None:
         super().__init__()
         
-        # 隠れ層: 'reservoir'
+        # 隠れ層: 'reservoir' (高速化版)
         self.fast_process = LogicGatedSNN(in_features, hidden_features, mode='reservoir')
         
-        # パススルー
+        # パススルー + 正規化 (堅牢性強化)
         self.deep_process = ActivePredictiveLayer(hidden_features)
         
-        # 出力層: 'readout'
+        # 出力層: 'readout' (Momentum学習版)
         self.output_gate = LogicGatedSNN(hidden_features, out_features, mode='readout')
 
     def forward(self, x_input: torch.Tensor) -> torch.Tensor:
@@ -47,7 +52,7 @@ class HybridNeuromorphicCore(nn.Module):
                 
                 error = target_onehot - out
                 
-                # 3. Update Weights
+                # 3. Update Weights (with Momentum)
                 self.output_gate.update_plasticity(r, out, reward=error)
 
                 pred = out.argmax(dim=1)
