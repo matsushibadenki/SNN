@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 活性化・高密度タスク版)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: リザーバーアプローチ)
 
 import sys
 import os
@@ -17,9 +17,7 @@ def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out
     """
     パターン認識タスク (高密度プロトタイプ + ノイズ)
     """
-    # プロトタイプ作成 (密度50%)
-    # 0.0より大きい -> 約半分のビットが1になる
-    # これにより、ニューロンが入力を捉えやすくなる
+    # プロトタイプ
     prototypes = (torch.randn(out_features, in_features) > 0.0).float()
     
     x_data = []
@@ -29,8 +27,8 @@ def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out
         label = torch.randint(0, out_features, (1,)).item()
         pattern = prototypes[label].clone()
         
-        # ノイズ注入 (15%反転)
-        noise = (torch.rand(in_features) < 0.15).float()
+        # ノイズ注入 (10%反転) - 少し優しくする
+        noise = (torch.rand(in_features) < 0.1).float()
         noisy_pattern = torch.abs(pattern - noise)
         
         x_data.append(noisy_pattern)
@@ -47,16 +45,17 @@ def run_simulation():
 
     # パラメータ設定
     IN_FEATURES = 784
+    # 隠れ層を広くとってリザーバー能力を高める
     HIDDEN_FEATURES = 2048
     OUT_FEATURES = 10
     BATCH_SIZE = 64
     TOTAL_SAMPLES = 10000
-    EPOCHS = 30 
+    EPOCHS = 20
 
     # モデル構築
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     
-    print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
+    print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons (Reservoir Mode).")
     print("Generating High-Density Pattern Data...")
     
     x_train, y_train = generate_synthetic_data(num_samples=TOTAL_SAMPLES, in_features=IN_FEATURES)
@@ -65,7 +64,7 @@ def run_simulation():
     dataset = TensorDataset(x_train, y_train)
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     
-    print("\nStarting Active Growth Learning Phase...")
+    print("\nStarting Reservoir Learning Phase...")
     print(f"Target: >90% Accuracy. Max Epochs: {EPOCHS}")
     
     moving_avg_acc = 0.1
@@ -91,14 +90,14 @@ def run_simulation():
             moving_avg_acc = moving_avg_acc * 0.95 + batch_acc * 0.05
             
             if i % 50 == 0:
-                # 接続率の確認
-                w_hid = core.fast_process.get_ternary_weights()
-                conn_hid = (w_hid != 0).float().mean().item() * 100
+                # 出力層の接続率
+                w_out = core.output_gate.get_ternary_weights()
+                conn_out = (w_out != 0).float().mean().item() * 100
                 
                 elapsed = time.time() - start_time
                 print(f"Epoch {epoch+1:2d} [{i*BATCH_SIZE:5d}/{TOTAL_SAMPLES}] "
                       f"Acc: {batch_acc*100:4.1f}% (MA: {moving_avg_acc*100:4.1f}%) | "
-                      f"Conn: {conn_hid:4.1f}% | "
+                      f"OutConn: {conn_out:4.1f}% | "
                       f"Spikes: {metrics['output_spike_count']:.1f} | "
                       f"Time: {elapsed:.0f}s")
         
