@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (不応期・安定化版)
-# 内容: 不応期導入により過剰発火を防ぎ、意味のある論理構造を学習する。
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (構造恒常性版)
+# 内容: 物理的な制約により接続率を確保し、その基盤の上で論理学習を行う。
 
 import torch
 import torch.nn as nn
@@ -8,13 +8,14 @@ from torch.utils.data import DataLoader, TensorDataset
 from snn_research.core.hybrid_core import HybridNeuromorphicCore
 
 def generate_synthetic_data(num_samples: int = 3000, in_features: int = 784, out_features: int = 10):
-    # スパース入力 (10% 密度)
-    x = (torch.randn(num_samples, in_features) > 1.28).float()
+    # スパース入力 (12% 密度)
+    x = (torch.randn(num_samples, in_features) > 1.2).float()
     
     y = []
     for i in range(num_samples):
-        # 空間的論理: 200:250 のスパイク数に基づくクラス分類
-        val = x[i, 200:250].sum().long() % out_features
+        # 空間的論理
+        sum_val = x[i, 200:250].sum().long()
+        val = sum_val % out_features
         y.append(val)
     
     y = torch.stack(y)
@@ -28,7 +29,7 @@ def run_simulation():
     dataset = TensorDataset(x_train, y_train)
     loader = DataLoader(dataset, batch_size=1, shuffle=True)
     
-    print("\nStarting Autonomous Intelligence Integration (Refractory Stability Mode)...")
+    print("\nStarting Autonomous Intelligence Integration (Homeostatic Structure Mode)...")
     
     ma_error = 0.5
     correct_avg = 0.1
