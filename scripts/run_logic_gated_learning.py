@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 完成版・高速化適用)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 高精度調整版)
 
 import sys
 import os
@@ -77,9 +77,9 @@ def run_simulation():
     TOTAL_SAMPLES = 20000
     EPOCHS = 15 # ハイパー・ロバスト学習には十分なエポック数が必要
     
-    # 学習ノイズ範囲: 0.0 (Clean) 〜 0.45 (Limit)
-    # 理論限界(0.5)の手前まで徹底的に鍛える
-    TRAIN_NOISE_RANGE = (0.0, 0.45)
+    # 学習ノイズ範囲: 0.0 (Clean) 〜 0.48 (Limit)
+    # 【修正】0.45 -> 0.48: より過酷なノイズ条件を含めることで限界付近での性能を底上げする
+    TRAIN_NOISE_RANGE = (0.0, 0.48)
 
     # モデル構築
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
@@ -137,8 +137,8 @@ def run_simulation():
         epoch_acc = epoch_correct / total_seen * 100
         print(f"--- Epoch {epoch+1} Final Accuracy: {epoch_acc:.2f}% ---")
         
-        if epoch_acc > 99.5: # 目標値を少し厳しく設定
-            print(">>> High Accuracy Reached. Optimization Complete.")
+        if epoch_acc > 99.8: # 【修正】目標値をさらに厳しく設定 (99.5 -> 99.8)
+            print(">>> Ultra High Accuracy Reached. Optimization Complete.")
             break
     
     # --- 評価フェーズ ---
