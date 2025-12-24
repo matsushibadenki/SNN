@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 高速化・Momentum学習版)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 高精度化・スパース性最適化)
 
 import torch
 import torch.nn as nn
@@ -38,7 +38,8 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
         else:
             # リザーバー層: 入力次元数に応じたスケーリング
-            std_dev = 2.0 / math.sqrt(in_features)
+            # 【修正】2.0 -> 1.5: 分散を小さくして接続をスパースにし、発火率を適正化（ノイズ耐性向上）
+            std_dev = 1.5 / math.sqrt(in_features)
             self.threshold = 1.0
             trainable = False
             
@@ -122,5 +123,6 @@ class LogicGatedSNN(nn.Module):
             self.states.add_(self.momentum_buffer * lr)
             
             # 正則化 (Weight Decay equivalent)
-            self.states.mul_(0.9995) 
+            # 【修正】0.9995 -> 0.9999: 減衰を弱め、高ノイズパターンの記憶を保持しやすくする
+            self.states.mul_(0.9999) 
             self.states.clamp_(-self.max_states, self.max_states)
