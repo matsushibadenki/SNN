@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: デルタ則・強制学習版)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: ハイブリッド学習則版)
 
 import torch
 import torch.nn as nn
@@ -13,13 +13,12 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.threshold = max_states // 2
         
-        # 初期状態: 少し高めの分散で初期化
+        # 初期状態: スパース性を意識して分散を調整
         states = torch.randn(out_features, in_features) * 20.0 + (self.threshold - 5.0)
         self.register_buffer('synapse_states', states.clamp(1, max_states))
         
         self.register_buffer('membrane_potential', torch.zeros(out_features))
         self.register_buffer('adaptive_threshold', torch.full((out_features,), 5.0))
-        # traceバッファは維持するが、今回の主要学習ロジックからは外す
         self.register_buffer('eligibility_trace', torch.zeros(out_features, in_features))
         self.register_buffer('proficiency', torch.zeros(1))
         self.register_buffer('refractory_count', torch.zeros(out_features))
@@ -35,7 +34,7 @@ class LogicGatedSNN(nn.Module):
         w = self.get_ternary_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # ゲイン調整: 8.0で維持
+        # ゲイン調整: 8.0
         conn_count = w.sum(dim=1).clamp(min=1.0)
         gain = 8.0 / torch.log1p(conn_count * 0.5)
         
@@ -62,7 +61,6 @@ class LogicGatedSNN(nn.Module):
         self.membrane_potential.copy_(v_mem_next)
         
         with torch.no_grad():
-            # 閾値ホメオスタシス
             self.adaptive_threshold.mul_(0.98) # 自然減衰
             target_activity = 0.15 
             th_update = (mean_spikes - target_activity) * 0.5
@@ -73,9 +71,9 @@ class LogicGatedSNN(nn.Module):
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor] = 0.0) -> None:
         """ 
-        修正版学習則: デルタ則に基づく強制学習
-        pre_spikes: (in_features,) またはバッチ平均
-        reward: (out_features,) のベクトル教示信号
+        修正版学習則: 
+        - Vector Reward (Output層): 強制学習 (Delta-like)
+        - Scalar Reward (Hidden層): 選択的強化学習 (Hebbian-like)
         """
         with torch.no_grad():
             if isinstance(reward, torch.Tensor):
@@ -87,35 +85,46 @@ class LogicGatedSNN(nn.Module):
             self.proficiency.copy_(self.proficiency * 0.99 + is_success * 0.01)
             prof = float(self.proficiency.item())
             
-            # Modulation (報酬/教示信号)
-            if isinstance(reward, torch.Tensor) and reward.ndim == 1:
-                modulation = reward.unsqueeze(1) # (out, 1)
-            else:
-                modulation = reward
+            lr = 4.0 * (1.0 - prof * 0.5)
             
-            # 学習率
-            lr = 4.0 * (1.0 - prof * 0.5) # 初期学習率を倍増 (2.0 -> 4.0)
-            
-            # --- 核心的な変更 ---
-            # 旧: delta = Trace(Pre*Post) * Reward
-            # 新: delta = Pre * Reward * LR
-            # これにより、Postが発火していなくても、Reward(正解信号)があればPreが接続されているシナプスを強化できる。
-            
+            # Pre activity (共通)
             # pre_spikes: (in,) -> (1, in)
             pre_activity = pre_spikes.unsqueeze(0) if pre_spikes.dim() == 1 else pre_spikes.mean(dim=0, keepdim=True)
-            
-            # delta: (out, 1) * (1, in) -> (out, in)
-            # 正解ニューロン(Reward>0)は、入力があったシナプスを強化。
-            # 不正解ニューロン(Reward<0)は、入力があったシナプスを抑制。
-            delta = modulation * pre_activity * lr
-            
-            # 罰の緩和 (死の螺旋防止)
-            if isinstance(modulation, torch.Tensor):
-                delta = delta.clamp(min=-5.0, max=15.0) 
+
+            # --- 分岐ロジック ---
+            if isinstance(reward, torch.Tensor) and reward.ndim == 1:
+                # 【出力層モード】: ベクトル教示信号
+                # 特定のニューロンに対して「お前は発火すべきだった/すべきでなかった」と指導する。
+                # 自身が発火していなくても(post=0)、正解なら強化する。
+                modulation = reward.unsqueeze(1) # (out, 1)
+                
+                # delta = (out, 1) * (1, in) -> (out, in)
+                # 個別のニューロンごとに異なる更新が行われる
+                delta = modulation * pre_activity * lr
+
+            else:
+                # 【中間層モード】: スカラ報酬 (全体評価)
+                # 「今の結果は良かった/悪かった」という情報のみ。
+                # 誰が貢献したかわからないので、「発火したニューロン(post>0)」のみを対象にする。
+                # これをやらないと、全員が同じように更新されて個性が消滅する。
+                
+                modulation = reward # scalar
+                
+                # post_spikes: (batch, out) -> mean -> (out,) -> (out, 1)
+                post_mean = post_spikes if post_spikes.dim() == 1 else post_spikes.mean(dim=0)
+                post_activity = post_mean.unsqueeze(1)
+                
+                # delta = Reward * Post * Pre
+                # 発火したニューロンだけが、入力パターンを学習(強化/抑制)する
+                delta = modulation * post_activity * pre_activity * lr
+
+            # 罰の緩和
+            if isinstance(reward, torch.Tensor): # modulationがTensorの場合
+                 delta = delta.clamp(min=-5.0, max=15.0)
             
             self.states.add_(delta)
             
-            # 構造恒常性 (接続維持)
+            # 構造恒常性
             current_conn = (self.states > self.threshold).float().mean(dim=1, keepdim=True)
             target_conn = 0.20
             conn_error = target_conn - current_conn
@@ -123,7 +132,6 @@ class LogicGatedSNN(nn.Module):
             
             # 忘却とノイズ
             self.states.mul_(0.9995)
-            # ノイズを少し増やして探索を維持
             self.states.add_(torch.randn_like(self.states) * 0.1)
 
             self.states.clamp_(1, self.max_states)
