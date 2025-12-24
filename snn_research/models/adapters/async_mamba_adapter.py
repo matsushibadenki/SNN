@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/models/adapters/async_mamba_adapter.py
-# 日本語タイトル: AsyncBitSpikeMamba アダプター (Fix: Safe Unpacking)
-# 目的: モデル戻り値のアンパックエラーを完全に防止する。
+# 日本語タイトル: AsyncBitSpikeMamba アダプター (Fix: Remove Manual Expansion)
+# 目的: 入力次元の過剰な拡張を廃止し、モデルに適切な形状のテンソルを渡す。
 
 import torch
 import torch.nn as nn
@@ -75,6 +75,7 @@ class AsyncBitSpikeMambaAdapter(nn.Module):
         if isinstance(input_data, torch.Tensor):
             tensor_input = input_data
         elif isinstance(input_data, str):
+            # 簡易トークナイズ
             tensor_input = torch.randint(0, 100, (1, 10)).to(self.device)
         elif isinstance(input_data, dict):
             if "features" in input_data and isinstance(input_data["features"], list):
@@ -92,16 +93,15 @@ class AsyncBitSpikeMambaAdapter(nn.Module):
             with torch.no_grad():
                 output_raw = self.forward(tensor_input)
             
-            # 【重要】安全なアンパック処理
-            # output_rawがタプルなら最初の要素(logits)を取り出し、残りは無視する
             if isinstance(output_raw, tuple):
                 output = output_raw[0]
             else:
                 output = output_raw
             
-            # 3. 結果整形
+            # 結果整形
+            # SNN出力が (Batch, Length, Vocab) の場合
             if output.dim() == 3:
-                output = output.mean(dim=1) # 時間平均
+                output = output.mean(dim=1) # Length平均 (または最後のトークンを使う)
                 
             probs = torch.softmax(output, dim=-1)
             pred_token = torch.argmax(probs, dim=-1).item()
@@ -113,17 +113,14 @@ class AsyncBitSpikeMambaAdapter(nn.Module):
             }
         except Exception as e:
             logger.error(f"Inference error in System 1: {e}")
-            # エラーの詳細を返す
             import traceback
             logger.error(traceback.format_exc())
             return {"error": str(e)}
 
     def forward(self, x: torch.Tensor, **kwargs: Any) -> Any:
+        """PyTorch標準のForward"""
         x = x.to(self.device)
-        if x.dim() == 2:
-            time_steps = self.config_dict.get("time_steps", 16)
-            x = x.unsqueeze(1).repeat(1, time_steps, 1)
-            
+        # 【修正】ここでは次元拡張を行わない。モデル側で処理させる。
         return self.model(x, **kwargs)
 
 # エイリアス
