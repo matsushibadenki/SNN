@@ -1,9 +1,9 @@
 # ファイルパス: scripts/train_spiking_vlm.py
 # (Phase 3: Visual-Language Alignment - Bugfix)
-# Title: Spiking VLM Training Script (Fix: Padding in collate_fn)
+# Title: Spiking VLM Training Script (Fix: Logit Slicing)
 # Description:
-#   ImageTextDatasetを用いてSpikingVLMを学習させるスクリプト。
-#   修正: バッチ内の可変長シーケンスをパディングするように collate_fn を修正。
+#   修正: モデル出力(logits)と正解ラベル(labels)のシーケンス長不一致を解消。
+#   視覚トークン分(先頭)をスライスして除外する。
 
 import sys
 import os
@@ -70,16 +70,13 @@ def main():
             pad_token_id = tokenizer.pad_token_id
     except Exception:
         logger.warning("Could not load distilbert tokenizer. Using basic whitespace tokenizer fallback.")
-        # ダミートークナイザー（依存関係回避用）
         class DummyTokenizer:
             pad_token_id = 0
             bos_token = "[CLS]"
             eos_token = "[SEP]"
             def __call__(self, text, **kwargs):
-                # 簡易的なハッシュによるID化
                 ids = [hash(w) % args.vocab_size for w in text.split()]
                 ids = ids[:args.max_seq_len]
-                # Dataset側でsqueezeされるため、(1, L)で返す
                 return {"input_ids": torch.tensor([ids], dtype=torch.long)}
         tokenizer = DummyTokenizer()
 
@@ -93,23 +90,15 @@ def main():
     )
     
     def collate_fn(batch):
-        # バッチ内のNoneを除外
         batch = [b for b in batch if b is not None]
         if not batch:
             return None, None, None
             
-        # 可変長シーケンスの取得
         input_ids_list = [item['input_ids'] for item in batch]
         labels_list = [item['labels'] for item in batch]
         
-        # パディング処理 (batch_first=True)
-        # input_ids: pad_token_id で埋める
         input_ids_padded = pad_sequence(input_ids_list, batch_first=True, padding_value=pad_token_id)
-        
-        # labels: -100 で埋める (CrossEntropyLossで無視される値)
         labels_padded = pad_sequence(labels_list, batch_first=True, padding_value=-100)
-        
-        # 画像は固定サイズなので stack でOK
         pixel_values = torch.stack([item['pixel_values'] for item in batch])
         
         return input_ids_padded, labels_padded, pixel_values
@@ -151,7 +140,7 @@ def main():
     
     # 4. オプティマイザと損失関数
     optimizer = optim.AdamW(model.parameters(), lr=args.lr)
-    criterion = nn.CrossEntropyLoss(ignore_index=-100) # パディング部分は無視
+    criterion = nn.CrossEntropyLoss(ignore_index=-100)
 
     # 5. 学習ループ
     model.train()
@@ -177,7 +166,14 @@ def main():
                 return_spikes=True
             )
             
-            # Loss計算 (Flattenして計算)
+            # 【修正】Logitsのスライシング
+            # logits: (B, 1+L, V) -> 視覚トークン分(先頭)を除去し (B, L, V) にする
+            # labels: (B, L)
+            # 長さが異なる場合、後ろを合わせる形でスライスする
+            if logits.size(1) > labels.size(1):
+                logits = logits[:, -labels.size(1):, :]
+            
+            # Loss計算
             loss = criterion(logits.reshape(-1, args.vocab_size), labels.reshape(-1))
             
             loss.backward()
