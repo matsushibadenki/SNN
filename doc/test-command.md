@@ -298,6 +298,7 @@ python scripts/runners/run\_brain\_simulation.py
 
 # プロジェクトルートで実行 (PYTHONPATHの設定が必要な場合があります)
 export PYTHONPATH\=\$PYTHONPATH:.
+
 python scripts\/run\_logic\_gated\_learning.py
 
 * **期待される結果**:  
