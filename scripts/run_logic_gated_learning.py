@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 高精度達成・CPU最適化版)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: サロゲート勾配適用版)
 
 import sys
 import os
@@ -21,7 +21,6 @@ def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out
     x = (torch.randn(num_samples, in_features) > 0.0).float()
     
     # ターゲット領域: 200-260 (60ビット) の合計 mod 10
-    # この非線形性は単純な線形分類器では解けない
     target_region = x[:, 200:260]
     sum_val = target_region.sum(dim=1).long()
     y = sum_val % out_features
@@ -33,14 +32,13 @@ def run_simulation():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on Device: {device}")
 
-    # パラメータ設定 (CPU向けに調整)
+    # パラメータ設定 (CPU最適化)
     IN_FEATURES = 784
-    # 4096はCPUには重すぎるため2048に調整。これでも十分な表現力があります。
     HIDDEN_FEATURES = 2048 
     OUT_FEATURES = 10
     BATCH_SIZE = 128
     TOTAL_SAMPLES = 20000
-    EPOCHS = 50
+    EPOCHS = 30 # 高速学習が見込めるため減らす
 
     # モデル構築
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
@@ -54,7 +52,7 @@ def run_simulation():
     dataset = TensorDataset(x_train, y_train)
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     
-    print("\nStarting Forward-Forward / DFA Training Phase...")
+    print("\nStarting Surrogate Gradient Training Phase...")
     print(f"Target: >90% Accuracy. Max Epochs: {EPOCHS}")
     
     moving_avg_acc = 0.1
@@ -67,10 +65,10 @@ def run_simulation():
         core.train()
         
         for i, (data, target) in enumerate(loader):
-            # 自律学習ステップ (BPなし)
+            # 自律学習ステップ
             metrics = core.autonomous_step(data, target)
             
-            # 精度確認用フォワードパス
+            # 精度確認
             with torch.no_grad():
                 out = core(data)
                 pred = out.argmax(dim=1)
@@ -79,32 +77,35 @@ def run_simulation():
                 total_seen += data.size(0)
             
             batch_acc = correct / data.size(0)
-            moving_avg_acc = moving_avg_acc * 0.95 + batch_acc * 0.05
+            moving_avg_acc = moving_avg_acc * 0.9 + batch_acc * 0.1 # 反応を早くする
             
-            # ログ表示間隔
+            # ログ表示
             if i % 50 == 0:
                 # 接続性の確認
                 w_hid = core.fast_process.get_ternary_weights()
                 conn_hid = (w_hid != 0).float().mean().item() * 100
                 
+                # スパイク発火率
+                spikes = metrics['output_spike_count']
+                
                 elapsed = time.time() - start_time
                 print(f"Epoch {epoch+1:2d} [{i*BATCH_SIZE:5d}/{TOTAL_SAMPLES}] "
                       f"Acc: {batch_acc*100:4.1f}% (MA: {moving_avg_acc*100:4.1f}%) | "
                       f"Conn: {conn_hid:4.1f}% | "
-                      f"Spikes: {metrics['output_spike_count']:.1f} | "
+                      f"Spikes: {spikes:.1f} | "
                       f"Time: {elapsed:.0f}s")
         
         epoch_acc = epoch_correct / total_seen * 100
         print(f"--- Epoch {epoch+1} Final Accuracy: {epoch_acc:.2f}% ---")
         
         # 早期終了条件
-        if epoch_acc > 95.0:
-            print(">>> Target Accuracy (95%) Reached. Optimization Complete.")
+        if epoch_acc > 92.0:
+            print(">>> Target Accuracy (92%) Reached. Optimization Complete.")
             break
             
-        # 安全装置: 5エポック経過しても精度が15%以下の場合は設定ミスとみなして中断
-        if epoch >= 5 and epoch_acc < 15.0:
-            print(">>> FAILURE DETECTED: Model is not learning (Accuracy < 15%). Stopping.")
+        # 安全装置
+        if epoch >= 3 and epoch_acc < 15.0:
+            print(">>> FAILURE DETECTED: Model is still not learning. Check Surrogate Gradient parameters.")
             break
 
     print("\nRunning Final Evaluation on Test Set...")
@@ -126,11 +127,6 @@ def run_simulation():
                 
     final_acc = test_correct / TEST_SAMPLES * 100
     print(f"Final Test Accuracy: {final_acc:.2f}%")
-    
-    if final_acc > 90.0:
-        print("SUCCESS: The Logic-Gated SNN has successfully learned the modulo logic task!")
-    else:
-        print("RESULT: Training finished. Please adjust hyperparameters if accuracy is insufficient.")
 
 if __name__ == "__main__":
     run_simulation()
