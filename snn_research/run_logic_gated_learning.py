@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (代謝・再始動版)
-# 内容: 活動停止したモデルに「代謝」を導入し、論理形成を再開させる。
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (適応的生命維持版)
+# 内容: 接続飽和と活動停止の双方を回避し、持続的な自己組織化を実現する。
 
 import torch
 import torch.nn as nn
@@ -8,14 +8,14 @@ from torch.utils.data import DataLoader, TensorDataset
 from snn_research.core.hybrid_core import HybridNeuromorphicCore
 
 def generate_synthetic_data(num_samples: int = 3000, in_features: int = 784, out_features: int = 10):
-    # スパース入力 (15% 密度)
-    x = (torch.randn(num_samples, in_features) > 1.0).float()
+    # スパース入力 (10% 密度)
+    x = (torch.randn(num_samples, in_features) > 1.28).float()
     
     y = []
     for i in range(num_samples):
-        # 200:250 の領域の活動に基づく論理
-        sum_val = x[i, 200:250].sum().long()
-        val = sum_val % out_features
+        # 空間的論理タスク
+        area = x[i, 200:250]
+        val = area.sum().long() % out_features
         y.append(val)
     
     y = torch.stack(y)
@@ -29,7 +29,7 @@ def run_simulation():
     dataset = TensorDataset(x_train, y_train)
     loader = DataLoader(dataset, batch_size=1, shuffle=True)
     
-    print("\nStarting Autonomous Intelligence Integration (Metabolic Restart Mode)...")
+    print("\nStarting Autonomous Intelligence Integration (Adaptive Survival Mode)...")
     
     ma_error = 0.5
     correct_avg = 0.1
@@ -39,8 +39,8 @@ def run_simulation():
         for i, (data, target) in enumerate(loader):
             metrics = core.autonomous_step(data, target)
             
-            is_correct = 1.0 if metrics["reward"] > 0 else 0.0
-            correct_avg = correct_avg * 0.995 + is_correct * 0.005
+            is_correct = 1.0 if metrics["reward"] > 0.5 else 0.0
+            correct_avg = correct_avg * 0.99 + is_correct * 0.01
             epoch_correct += is_correct
                 
             e = metrics["prediction_error"]
@@ -52,7 +52,9 @@ def run_simulation():
                 prof = float(core.fast_process.proficiency.item())
                 v_avg = float(core.fast_process.membrane_potential.abs().mean().item())
                 v_th = float(core.fast_process.adaptive_threshold.mean().item())
-                print(f"Epoch {epoch+1:2d} [{i:4d}/{total_samples}] - Error: {ma_error:.4f} | Conn: {conn:.1f}% | Acc(MA): {correct_avg*100:.1f}% | V_avg: {v_avg:.2f} | V_th: {v_th:.1f}")
+                
+                # ログの視認性向上
+                print(f"Epoch {epoch+1:2d} [{i:4d}/{total_samples}] - Err: {ma_error:.4f} | Conn: {conn:.1f}% | Acc(MA): {correct_avg*100:.1f}% | V_avg: {v_avg:.2f} | V_th: {v_th:.1f}")
         
         print(f"--- Epoch {epoch+1} Final Acc: {epoch_correct/total_samples*100:.2f}% | Conn: {conn:.1f}% ---")
 
