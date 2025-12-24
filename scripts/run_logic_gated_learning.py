@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 低速着実成長版)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 活性化・高密度タスク版)
 
 import sys
 import os
@@ -15,10 +15,12 @@ from snn_research.core.hybrid_core import HybridNeuromorphicCore
 
 def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out_features: int = 10):
     """
-    パターン認識タスク (プロトタイプ + ノイズ)
+    パターン認識タスク (高密度プロトタイプ + ノイズ)
     """
-    # プロトタイプ作成 (密度20%)
-    prototypes = (torch.randn(out_features, in_features) > 1.0).float()
+    # プロトタイプ作成 (密度50%)
+    # 0.0より大きい -> 約半分のビットが1になる
+    # これにより、ニューロンが入力を捉えやすくなる
+    prototypes = (torch.randn(out_features, in_features) > 0.0).float()
     
     x_data = []
     y_data = []
@@ -49,14 +51,13 @@ def run_simulation():
     OUT_FEATURES = 10
     BATCH_SIZE = 64
     TOTAL_SAMPLES = 10000
-    # 学習率を下げたので、エポック数を増やしてじっくり育てます
     EPOCHS = 30 
 
     # モデル構築
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print("Generating Pattern Recognition Data...")
+    print("Generating High-Density Pattern Data...")
     
     x_train, y_train = generate_synthetic_data(num_samples=TOTAL_SAMPLES, in_features=IN_FEATURES)
     x_train, y_train = x_train.to(device), y_train.to(device)
@@ -64,7 +65,7 @@ def run_simulation():
     dataset = TensorDataset(x_train, y_train)
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     
-    print("\nStarting Selective Growth Learning Phase...")
+    print("\nStarting Active Growth Learning Phase...")
     print(f"Target: >90% Accuracy. Max Epochs: {EPOCHS}")
     
     moving_avg_acc = 0.1
