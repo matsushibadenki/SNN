@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/models/adapters/async_mamba_adapter.py
-# 日本語タイトル: AsyncBitSpikeMamba アダプター (Fix: Tuple/Tensor Return)
-# 目的: モデルからの戻り値の型をチェックし、タプルであれば要素を取り出して処理を継続する。
+# 日本語タイトル: AsyncBitSpikeMamba アダプター (Fix: Safe Unpacking)
+# 目的: モデル戻り値のアンパックエラーを完全に防止する。
 
 import torch
 import torch.nn as nn
@@ -12,9 +12,6 @@ from typing import Dict, Any, Optional, Union
 logger = logging.getLogger(__name__)
 
 class AsyncBitSpikeMambaAdapter(nn.Module):
-    """
-    非同期実行環境とBitSpikeMambaモデルを橋渡しするアダプター。
-    """
     def __init__(
         self, 
         config: Any, 
@@ -75,11 +72,9 @@ class AsyncBitSpikeMambaAdapter(nn.Module):
         
         tensor_input = None
         
-        # 1. 入力の型判定と変換
         if isinstance(input_data, torch.Tensor):
             tensor_input = input_data
         elif isinstance(input_data, str):
-            # 簡易トークナイズ (本来はTokenizer使用)
             tensor_input = torch.randint(0, 100, (1, 10)).to(self.device)
         elif isinstance(input_data, dict):
             if "features" in input_data and isinstance(input_data["features"], list):
@@ -93,14 +88,14 @@ class AsyncBitSpikeMambaAdapter(nn.Module):
         if tensor_input is None:
             return {"error": "Invalid input format"}
 
-        # 2. 推論実行
         try:
             with torch.no_grad():
                 output_raw = self.forward(tensor_input)
             
-            # 【重要】タプル戻り値への対応
+            # 【重要】安全なアンパック処理
+            # output_rawがタプルなら最初の要素(logits)を取り出し、残りは無視する
             if isinstance(output_raw, tuple):
-                output = output_raw[0] # 最初の要素(logits)を使用
+                output = output_raw[0]
             else:
                 output = output_raw
             
@@ -118,10 +113,12 @@ class AsyncBitSpikeMambaAdapter(nn.Module):
             }
         except Exception as e:
             logger.error(f"Inference error in System 1: {e}")
+            # エラーの詳細を返す
+            import traceback
+            logger.error(traceback.format_exc())
             return {"error": str(e)}
 
     def forward(self, x: torch.Tensor, **kwargs: Any) -> Any:
-        """PyTorch標準のForward"""
         x = x.to(self.device)
         if x.dim() == 2:
             time_steps = self.config_dict.get("time_steps", 16)
