@@ -1,87 +1,101 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: リザーバー対応・安定化版)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: ハイブリッド精度・LSM対応版)
 
 import torch
 import torch.nn as nn
 from typing import cast, Union, Optional
 
 class LogicGatedSNN(nn.Module):
-    def __init__(self, in_features: int, out_features: int, max_states: int = 100, trainable: bool = True) -> None:
+    def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
+        """
+        mode: 
+          - 'reservoir': 固定重み、3値量子化 (-1, 0, 1)、リカレント接続（今回はFFとして使用）
+          - 'readout': 学習可能、連続値重み (Float)、高精度分類用
+        """
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.max_states = max_states
-        self.trainable = trainable # 学習するかどうかを制御
+        self.mode = mode
         
-        # 閾値を固定 (安定化のため)
-        # 隠れ層(Reservoir)なら少し高め、出力層なら標準的
-        self.threshold = 1.5 if not trainable else 0.5
-        
-        # 初期化
-        # trainable=False (隠れ層) の場合は、最初からスパースで多様な接続を持たせる
-        # trainable=True (出力層) の場合は、ゼロ付近からスタートして学習させる
-        std_dev = 20.0 if not trainable else 0.1
+        # モードに応じた初期化
+        if self.mode == 'readout':
+            # 読み出し層: 学習するのでゼロ付近からスタート
+            std_dev = 0.01
+            self.threshold = 0.0 # 使用しないが定義
+            trainable = True
+        else:
+            # リザーバー層: 固定、スパース、強めの結合
+            std_dev = 5.0
+            self.threshold = 1.0
+            trainable = False
+            
         states = torch.randn(out_features, in_features) * std_dev
         self.register_buffer('synapse_states', states.clamp(-max_states, max_states))
         
+        # 膜電位
         self.register_buffer('membrane_potential', torch.zeros(out_features))
-        # 閾値は固定値を使うためバッファとしては持っておくが更新しない
-        self.register_buffer('adaptive_threshold', torch.full((out_features,), self.threshold))
-        self.register_buffer('refractory_count', torch.zeros(out_features))
-        self.register_buffer('proficiency', torch.zeros(1))
+        
+        # 学習フラグ
+        self.trainable = trainable
 
     @property
     def states(self) -> torch.Tensor:
         return cast(torch.Tensor, self.synapse_states)
 
-    def get_ternary_weights(self) -> torch.Tensor:
-        # 1.58bit (Ternary) Weights: -1, 0, 1
-        w = torch.zeros_like(self.states)
-        w[self.states > self.threshold] = 1.0
-        w[self.states < -self.threshold] = -1.0
-        return w
+    def get_effective_weights(self) -> torch.Tensor:
+        """
+        モードに応じて重みを返す
+        """
+        if self.mode == 'readout':
+            # 連続値重み (Continuous Weights)
+            # これにより微細な境界決定が可能になる
+            return self.states
+        else:
+            # 3値量子化重み (Ternary Weights)
+            # ノイズに強いロジックゲートとして機能
+            w = torch.zeros_like(self.states)
+            w[self.states > self.threshold] = 1.0
+            w[self.states < -self.threshold] = -1.0
+            return w
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
-        w = self.get_ternary_weights()
+        w = self.get_effective_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # 入力電流
+        # 電流計算
         current = torch.matmul(x, w.t())
         
         v_mem = cast(torch.Tensor, self.membrane_potential)
-        ref_count = cast(torch.Tensor, self.refractory_count)
-        
-        is_refractory = (ref_count > 0).float().unsqueeze(0)
-        effective_current = current * (1.0 - is_refractory)
         
         # 膜電位更新
-        # リーク係数を固定 (0.9 = 情報を長く保持)
-        new_v_mem = v_mem.unsqueeze(0) * 0.9 + effective_current
-        
-        # 発火判定 (固定閾値)
-        # adaptive_thresholdは使わず、固定のself.threshold (またはそれに基づく値) を使う
-        # ここでは発火しやすくするため、重み閾値とは別の「発火閾値」を設定
-        firing_threshold = 1.0
-        spikes = (new_v_mem >= firing_threshold).float()
-        
-        # 状態更新
-        mean_spikes = spikes.mean(dim=0)
-        # 不応期
-        new_refractory = (ref_count - 1.0).clamp(0) + mean_spikes * 2.0
-        self.refractory_count.copy_(new_refractory)
-        
-        # リセット (ソフトリセット)
-        v_mem_next = new_v_mem.mean(dim=0) * (1.0 - mean_spikes)
+        if self.mode == 'readout':
+            # 読み出し層: 積分器として動作 (Leaky Integrator)
+            # スパイクではなく、蓄積された電位そのもの（またはソフトマックス）を分類に使うのが一般的だが
+            # ここではSNNの枠組みを守り、発火させる。ただし閾値は固定。
+            
+            # 減衰係数 0.8
+            new_v_mem = v_mem.unsqueeze(0) * 0.8 + current
+            
+            # 発火判定 (単純な閾値 1.0)
+            spikes = (new_v_mem >= 1.0).float()
+            
+            # リセット (減算リセット)
+            v_mem_next = new_v_mem.mean(dim=0) - spikes.mean(dim=0) * 1.0
+            
+        else:
+            # リザーバー層: 従来のLogicGated動作
+            new_v_mem = v_mem.unsqueeze(0) * 0.5 + current # 減衰速め
+            spikes = (new_v_mem >= 1.0).float()
+            v_mem_next = new_v_mem.mean(dim=0) * (1.0 - spikes.mean(dim=0)) # ハードリセット
+
         self.membrane_potential.copy_(v_mem_next)
-        
-        # Homeostasis (閾値調整) は「行わない」。
-        # これが学習の振動原因になるため、固定特性で学習させる。
         
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor]) -> None:
         """
-        デルタ則による学習 (Trainableな層のみ)
+        デルタ則による学習 (Readout層のみ有効)
         """
         if not self.trainable:
             return
@@ -94,20 +108,18 @@ class LogicGatedSNN(nn.Module):
             elif reward.dim() == 1:
                 reward = reward.unsqueeze(1).expand(-1, self.out_features)
             
-            # 学習率: 固定で少し高め
-            lr = 0.5
+            # 学習率: 連続値なので小さめで安定させる
+            lr = 0.05
             
             # Delta Rule: ΔW = lr * Error * Input
-            # Errorは reward として渡される (Target - Output)
+            # Error = reward (Target - Output)
+            # pre_spikes = Input
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
             
             self.states.add_(delta * lr)
             
-            # 減衰 (Weight Decay) - 爆発を防ぐ
+            # Weight Decay (L2 Regularization)
             self.states.mul_(0.9999)
             
-            # ノイズ
-            self.states.add_(torch.randn_like(self.states) * 0.01)
-            
+            # クランプ (発散防止)
             self.states.clamp_(-self.max_states, self.max_states)
-            self.proficiency.add_(0.001)
