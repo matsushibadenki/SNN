@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 型安全性向上版)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 高速化・Momentum学習版)
 
 import torch
 import torch.nn as nn
@@ -10,12 +10,14 @@ class LogicGatedSNN(nn.Module):
     # バッファの型ヒントを明示
     membrane_potential: torch.Tensor
     synapse_states: torch.Tensor
+    frozen_weight: torch.Tensor
+    momentum_buffer: torch.Tensor
 
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         mode: 
-          - 'reservoir': 固定重み、3値量子化 (-1, 0, 1)
-          - 'readout': 学習可能、連続値重み (Float)
+          - 'reservoir': 固定重み、3値量子化 (-1, 0, 1)。初期化時に計算して固定化（高速化）。
+          - 'readout': 学習可能、連続値重み (Float)。Momentum学習則適用。
         """
         super().__init__()
         self.in_features = in_features
@@ -29,16 +31,26 @@ class LogicGatedSNN(nn.Module):
             std_dev = 0.05
             self.threshold = 1.0 
             trainable = True
+            # 学習可能な状態変数
+            states = torch.randn(out_features, in_features) * std_dev
+            self.register_buffer('synapse_states', states.clamp(-max_states, max_states))
+            # Momentumバッファ
+            self.register_buffer('momentum_buffer', torch.zeros_like(states))
         else:
             # リザーバー層: 入力次元数に応じたスケーリング
             std_dev = 2.0 / math.sqrt(in_features)
             self.threshold = 1.0
             trainable = False
             
-        # 重み行列 (States)
-        states = torch.randn(out_features, in_features) * std_dev
-        self.register_buffer('synapse_states', states.clamp(-max_states, max_states))
-        
+            # 初期状態生成と量子化の事前実行（高速化）
+            raw_states = torch.randn(out_features, in_features) * std_dev
+            effective_w = self._quantize_weights(raw_states)
+            self.register_buffer('frozen_weight', effective_w)
+            
+            # ダミー登録（互換性のため）
+            self.register_buffer('synapse_states', torch.zeros(1))
+            self.register_buffer('momentum_buffer', torch.zeros(1))
+            
         # 膜電位モニタリング用バッファ
         self.register_buffer('membrane_potential', torch.zeros(out_features))
         
@@ -48,16 +60,20 @@ class LogicGatedSNN(nn.Module):
     def states(self) -> torch.Tensor:
         return self.synapse_states
 
+    def _quantize_weights(self, x: torch.Tensor) -> torch.Tensor:
+        """3値量子化 (-1, 0, 1) * 0.5"""
+        w = torch.zeros_like(x)
+        threshold_val = 0.1 
+        w[x > threshold_val] = 1.0
+        w[x < -threshold_val] = -1.0
+        return w * 0.5
+
     def get_effective_weights(self) -> torch.Tensor:
         if self.mode == 'readout':
             return self.states
         else:
-            # 3値量子化重み
-            w = torch.zeros_like(self.states)
-            threshold_val = 0.1 
-            w[self.states > threshold_val] = 1.0
-            w[self.states < -threshold_val] = -1.0
-            return w * 0.5 
+            # 高速化: 事前に計算された固定重みを返す
+            return self.frozen_weight
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
         w = self.get_effective_weights()
@@ -76,7 +92,7 @@ class LogicGatedSNN(nn.Module):
             self.membrane_potential.copy_(v_mean)
 
         # 発火判定
-        spikes = (v_mem >= 1.0).float()
+        spikes = (v_mem >= self.threshold).float()
         
         return spikes
 
@@ -92,11 +108,19 @@ class LogicGatedSNN(nn.Module):
             elif reward.dim() == 1:
                 reward = reward.unsqueeze(1).expand(-1, self.out_features)
             
+            # ハイパーパラメータ
             lr = 0.05
+            momentum = 0.9
             
             # Delta Rule
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
             
-            self.states.add_(delta * lr)
+            # Momentum Update
+            self.momentum_buffer.mul_(momentum).add_(delta)
+            
+            # 重み更新
+            self.states.add_(self.momentum_buffer * lr)
+            
+            # 正則化 (Weight Decay equivalent)
             self.states.mul_(0.9995) 
             self.states.clamp_(-self.max_states, self.max_states)
