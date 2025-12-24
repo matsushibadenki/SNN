@@ -296,7 +296,9 @@ python scripts/runners/run\_brain\_simulation.py
 
 1.58ビット・ロジックゲート樹状突起を用いた、高精度な空間論理認識の自律学習テストです。接続密度の弾力的制御により、飽和を防ぎながら高い認識精度を達成します。
 
-python \-m snn\_research.run\_logic\_gated\_learning
+# プロジェクトルートで実行 (PYTHONPATHの設定が必要な場合があります)
+export PYTHONPATH\=\$PYTHONPATH:.
+python scripts\/run\_logic\_gated\_learning.py
 
 * **期待される結果**:  
   * Conn: 10% 〜 30% の間で安定。  
