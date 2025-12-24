@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 高精度達成版)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Surrogate Gradient版)
 
 import sys
 import os
@@ -12,8 +12,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from snn_research.core.hybrid_core import HybridNeuromorphicCore
 
 def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out_features: int = 10):
-    # ノイズを減らし、明確なシグナルにする
-    # 平均0, 分散1の正規分布 -> 0.0より大きければ1 (約50%の密度)
+    # バイナリ入力
     x = (torch.randn(num_samples, in_features) > 0.0).float()
     y = []
     for i in range(num_samples):
@@ -23,19 +22,18 @@ def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out
         y.append(val)
     
     y = torch.stack(y)
-    y_onehot = nn.functional.one_hot(y, out_features).float()
-    return x, y_onehot
+    # CrossEntropyLossはクラスインデックスを受け取るのでOne-hotにはしない
+    return x, y
 
 def run_simulation():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on Device: {device}")
 
-    # Hidden層: 2048 (容量を倍増して、表現力を確保)
+    # Hidden層: 2048 (十分な容量)
     core = HybridNeuromorphicCore(784, 2048, 10).to(device)
     
-    total_samples = 20000 # 学習データ量を倍増
-    # バッチサイズを64にして安定化
-    batch_size = 64
+    total_samples = 20000
+    batch_size = 128 # 安定した勾配計算のために大きめ
     
     print("\nGenerating Data...")
     x_train, y_train = generate_synthetic_data(num_samples=total_samples)
@@ -44,49 +42,36 @@ def run_simulation():
     dataset = TensorDataset(x_train, y_train)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     
-    print("\nStarting Autonomous Intelligence Integration (High-Density Init Mode)...")
+    print("\nStarting Autonomous Intelligence Integration (Surrogate Gradient Mode)...")
     
-    ma_error = 0.5
-    correct_avg = 0.1
-    epochs = 40 # じっくり学習
+    ma_acc = 0.1
+    epochs = 50
     
     for epoch in range(epochs):
+        core.train()
         epoch_correct = 0
         total_seen = 0
         
-        core.train()
-        
-        for i, (data, target_onehot) in enumerate(loader):
-            target_idx = target_onehot.argmax(dim=1)
-            metrics = core.autonomous_step(data, target_idx)
+        for i, (data, target) in enumerate(loader):
+            metrics = core.autonomous_step(data, target)
             
-            with torch.no_grad():
-                out = core(data)
-                pred = out.argmax(dim=1)
-                correct = (pred == target_idx).float().sum().item()
-                epoch_correct += correct
-                total_seen += data.size(0)
+            batch_acc = metrics["reward"]
+            ma_acc = ma_acc * 0.95 + batch_acc * 0.05
             
-            batch_acc = correct / data.size(0)
-            correct_avg = correct_avg * 0.95 + batch_acc * 0.05
+            epoch_correct += batch_acc * data.size(0)
+            total_seen += data.size(0)
             
             if i % 100 == 0:
-                w_hid = core.fast_process.get_ternary_weights()
-                conn_hid = float(w_hid.mean().item()) * 100
-                w_out = core.output_gate.get_ternary_weights()
-                conn_out = float(w_out.mean().item()) * 100
-                out_spikes = metrics["output_spike_count"]
-                
                 print(f"Epoch {epoch+1:2d} [{i*batch_size:5d}/{total_samples}] - "
+                      f"Loss: {metrics['prediction_error']:.4f} | "
                       f"Acc(Batch): {batch_acc*100:.1f}% | "
-                      f"Acc(MA): {correct_avg*100:.1f}% | "
-                      f"Conn(H): {conn_hid:.1f}% | "
-                      f"Spikes: {out_spikes:.1f}")
+                      f"Acc(MA): {ma_acc*100:.1f}% | "
+                      f"Spikes: {metrics['output_spike_count']:.1f}")
         
         epoch_acc = epoch_correct / total_seen * 100
         print(f"--- Epoch {epoch+1} Final Accuracy: {epoch_acc:.2f}% ---")
         
-        if epoch_acc > 92.0:
+        if epoch_acc > 95.0:
             print("Target Accuracy Reached. Early Stopping.")
             break
 
@@ -101,8 +86,7 @@ def run_simulation():
         test_dataset = TensorDataset(x_test, y_test)
         test_loader = DataLoader(test_dataset, batch_size=batch_size)
         
-        for data, target_onehot in test_loader:
-            target = target_onehot.argmax(dim=1)
+        for data, target in test_loader:
             out = core(data)
             pred = out.argmax(dim=1)
             correct_test += (pred == target).float().sum().item()
