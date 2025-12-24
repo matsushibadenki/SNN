@@ -203,7 +203,6 @@ def run_simulation():
             else:
                 status = "Suspiciously High" # 逆に高すぎるとデータリークの疑いあり
 
-        # 表示修正: 小数点2桁まで表示して 0.45 と 0.50 を区別
         print(f"{noise:<6.2f} | {final_acc:6.1f}% | {avg_loss:6.4f} | {avg_spk:5.1f}% | {avg_v:6.3f} | {status}")
     
     print("\nSimulation Complete.")
