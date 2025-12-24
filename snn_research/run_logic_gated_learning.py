@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (適応的生命維持版)
-# 内容: 接続飽和と活動停止の双方を回避し、持続的な自己組織化を実現する。
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (不応期・安定化版)
+# 内容: 不応期導入により過剰発火を防ぎ、意味のある論理構造を学習する。
 
 import torch
 import torch.nn as nn
@@ -13,9 +13,8 @@ def generate_synthetic_data(num_samples: int = 3000, in_features: int = 784, out
     
     y = []
     for i in range(num_samples):
-        # 空間的論理タスク
-        area = x[i, 200:250]
-        val = area.sum().long() % out_features
+        # 空間的論理: 200:250 のスパイク数に基づくクラス分類
+        val = x[i, 200:250].sum().long() % out_features
         y.append(val)
     
     y = torch.stack(y)
@@ -29,7 +28,7 @@ def run_simulation():
     dataset = TensorDataset(x_train, y_train)
     loader = DataLoader(dataset, batch_size=1, shuffle=True)
     
-    print("\nStarting Autonomous Intelligence Integration (Adaptive Survival Mode)...")
+    print("\nStarting Autonomous Intelligence Integration (Refractory Stability Mode)...")
     
     ma_error = 0.5
     correct_avg = 0.1
@@ -39,8 +38,8 @@ def run_simulation():
         for i, (data, target) in enumerate(loader):
             metrics = core.autonomous_step(data, target)
             
-            is_correct = 1.0 if metrics["reward"] > 0.5 else 0.0
-            correct_avg = correct_avg * 0.99 + is_correct * 0.01
+            is_correct = 1.0 if metrics["reward"] > 0.0 else 0.0
+            correct_avg = correct_avg * 0.995 + is_correct * 0.005
             epoch_correct += is_correct
                 
             e = metrics["prediction_error"]
@@ -53,7 +52,6 @@ def run_simulation():
                 v_avg = float(core.fast_process.membrane_potential.abs().mean().item())
                 v_th = float(core.fast_process.adaptive_threshold.mean().item())
                 
-                # ログの視認性向上
                 print(f"Epoch {epoch+1:2d} [{i:4d}/{total_samples}] - Err: {ma_error:.4f} | Conn: {conn:.1f}% | Acc(MA): {correct_avg*100:.1f}% | V_avg: {v_avg:.2f} | V_th: {v_th:.1f}")
         
         print(f"--- Epoch {epoch+1} Final Acc: {epoch_correct/total_samples*100:.2f}% | Conn: {conn:.1f}% ---")
