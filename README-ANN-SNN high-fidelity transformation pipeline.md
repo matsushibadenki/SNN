@@ -14,90 +14,82 @@ v14.0では、単なる重みの変換にとどまらず、**Deep Bio-Calibratio
 | **高忠実度変換** | ANNと同等の精度をSNNで達成 | Scale-and-Fireニューロン（SFN）、$T=1$ 推論最適化 |
 | **動的最適化** | モデルサイズとエネルギー消費の削減 | スパイク頻度に基づく**動的プルーニング**、**量子化メタデータ** |
 | **スパイク注意機構** | LLM/TransformerのSNN化 | Softmax代替**Spiking Attention**モジュール |
-| **Hardware Native Ready** | ニューロモーフィックOSへの展開準備 | Loihi/TrueNorth/FPGA向け**イベント駆動カーネル**への変換ヒント生成 |
+| **Logic Gated SNN** | **超堅牢性・超低消費電力** (New) | 1.58ビット重みによる乗算フリー演算、**ハイパー・ロバスト学習** |
+| **Hardware Native Ready** | ニューロモーフィックチップへの展開 | Loihi/TrueNorth向けの中間表現出力、イベント駆動シミュレーション |
 
-## **🛠️ 変換ツールの使い方**
+## **🧠 パイプラインの全体像 (7つのフェーズ)**
 
-変換は、snn-cli.pyのconvertコマンドまたはscripts/convert\_model.pyスクリプトを使用して実行します。
+このパイプラインは、以下の7つのフェーズを経て、標準的なANNモデルを**生物学的制約を満たす自律的なSNNエージェント**へと進化させます。
 
-### **1\. 前提条件: キャリブレーションデータの準備**
+1. **Phase 1: Model Ingestion (モデル取り込み)**  
+   * HuggingFaceやPyTorch HubからANNモデルをロード。  
+   * 計算グラフを解析し、SNN互換レイヤーへのマッピング計画を策定。  
+2. **Phase 2: Hybrid Quantization & Pruning (ハイブリッド量子化・プルーニング)**  
+   * 重みを低ビット幅（4bit/8bit）に量子化。  
+   * **Logic Gated Layer** への変換を選択した場合、重みを1.58ビット（-1, 0, 1）に圧縮。  
+   * スパイク発火に寄与しない冗長な結合を枝刈り（Pruning）。  
+3. **Phase 3: SNN Conversion & Activation Matching (SNN変換と活性化マッチング)**  
+   * ANNの活性化関数（ReLUなど）をLIF（Leaky Integrate-and-Fire）ニューロンやSFN（Scale-and-Fire Neuron）に置換。  
+   * データセットの一部を用いて、ANNとSNNの出力スパイク頻度を同期させる（Calibration）。  
+4. **Phase 4: Deep Bio-Calibration (深層生物学的校正 \- HSEO)**  
+   * **HSEO (Hybrid Spike-based Evolutionary Optimization)** を実行。  
+   * 膜電位の閾値、時定数、リーク率などの物理パラメータを、タスク性能を最大化するように微調整。  
+5. **Phase 5: Hyper-Robust Learning (ハイパー・ロバスト学習)** (New)  
+   * **Logic Gated SNN** 向けの高負荷トレーニング。  
+   * 入力データに**0%〜45%の可変ノイズ**を注入し、モデルに「表面的なパターン」ではなく「構造的な不変性」を強制的に学習させる。  
+   * これにより、実環境のセンサーノイズや欠損に対する極めて高い堅牢性を獲得。  
+6. **Phase 6: Hardware Native Compilation (ハードウェアネイティブコンパイル)**  
+   * ターゲットデバイス（CPU, GPU, FPGA, Neuromorphic Chip）に合わせた最適化コード（CUDAカーネル、非同期イベントストリーム）を生成。  
+7. **Phase 7: Neuro-Symbolic Evolution (ニューロ・シンボリック進化)**  
+   * 変換されたSNNを「エージェント」として環境に配置。  
+   * STDP（スパイクタイミング依存可塑性）や強化学習を通じて、変換後も継続的に自己改善を行う。
 
-変換時の閾値キャリブレーション（ANNの活性化をSNNの閾値にマッピングする処理）には、**少量の代表的なデータ**（キャリブレーションセット）が必要です。
+## **🛠️ 使用方法 (Quick Start)**
 
-\# LLMタスクの場合: ダミーデータまたは検証データの一部
+### **1\. 変換スクリプトの実行**
 
-\# ANNモデルが処理できる形式のデータローダーを用意します
+\# 基本的な変換とキャリブレーション  
+python scripts/convert\_model.py \\  
+    \--model\_name "resnet18" \\  
+    \--dataset "cifar10" \\  
+    \--output\_dir "artifacts/converted\_snn"
 
-\# (scripts/convert\_model.py がデータローダーを自動生成することを想定)
+### **2\. Logic Gated SNN (ハイパー・ロバスト) のトレーニング**
 
-### **2\. Deep Bio-Calibration を適用した LLM変換**
+変換や学習をゼロから行う場合（特に堅牢性を重視する場合）は、専用スクリプトを使用します。
 
-LLM変換 (convert\_llm\_weights) は、特に多くの最適化フラグをサポートします。--use-ecl フラグにより、Deep Bio-Calibration が有効になります。
+\# 1.58ビット重みとノイズ注入学習による堅牢なモデル構築  
+python scripts/run\_logic\_gated\_learning.py
 
-\# LLM変換実行例:
+### **3\. 設定ファイル (config.yaml) のカスタマイズ**
 
-python scripts/convert\_model.py \\
+変換の詳細な挙動は、configs/templates/base\_config.yaml をベースにした設定ファイルで制御します。
 
-\--ann\_model\_path "gpt2" \\\\ \# HuggingFace ID または .pth / .safetensors ファイル
+conversion:  
+  method: "scale\_and\_fire"  \# または "logic\_gated"  
+  target\_timesteps: 4       \# 推論のタイムステップ数 (T)  
+  enable\_bio\_calibration: true
 
-\--snn\_model\_config configs/models/spiking\_transformer.yaml \\
+bio\_calibration:  
+  algorithm: "hseo"  
+  population\_size: 20  
+  generations: 10
 
-\--output\_snn\_path runs/converted\_spiking\_llm.pth \\
+robustness:  
+  enable\_noise\_injection: true  
+  noise\_range: \[0.0, 0.45\]  \# 0%〜45%のノイズを注入
 
-\--method llm-convert \\
+## **📊 パフォーマンス指標 (Logic Gated SNN)**
 
-\--calibration\_loader\_stub \<データローダー引数\> \\
+最新のベンチマーク（v16.0時点）において、Logic Gated SNNアーキテクチャは以下の性能を実証しました。
 
-\--use-ecl \\ \# Deep Bio-Calibration (ECL) を有効化
-
-\--prune-low-activity 0.15 \\\\ \# スパイク頻度の低いニューロンを15%プルーニング
-
-\--quantization-bits 4.0 \\\\ \# INT4/INT8量子化ヒントをメタデータに保存
-
-\--hardware-target "Loihi" \# ハードウェア最適化ヒント
-
-### **3\. CNNモデルの変換と最適化**
-
-画像モデル（CNN）の変換は、**BatchNorm Folding**を自動的に行います。
-
-\# CNN変換実行例:
-
-python scripts/convert\_model.py \\
-
-\--ann\_model\_path runs/ann\_resnet18\_cifar10.pth \\
-
-\--snn\_model\_config configs/experiments/cifar10\_spikingcnn\_config.yaml \\
-
-\--output\_snn\_path runs/converted\_spiking\_cnn.pth \\
-
-\--method cnn-convert \\
-
-\--use-ecl \\
-
-\--prune-low-activity 0.05
-
-## **⚙️ 変換後のモデルメタデータと活用（デプロイヒント）**
-
-変換パイプラインは、SNNモデルの重みだけでなく、後続の学習およびデプロイメントプロセス（Phase 5, 6, 7）で必須となる**最適化ヒント**をconversion\_metadata辞書として保存します。
-
-| メタデータキー | 説明 | 活用法（後続プロセス） |
-| :---- | :---- | :---- |
-| bio\_calibration\_status | Deep Bio-Calibration の適用状態。 | **Phase 5 (Neuro-Symbolic Evolution)** において、追加の生物学的学習（睡眠時の再学習など）が必要かどうかを判断。 |
-| distillation.teacher\_model | 知識蒸留に使用すべき教師モデル名。 | 変換後SNNの**End-to-End微調整**時の損失関数設定に使用。 |
-| pruning\_ratio | 変換時に達成された最終的なスパース性。 | **Phase 6 (Hardware Native)** のコンパイラが**メモリ配置と計算スキップ**を最適化するために参照。 |
-| target\_quantization\_bits | 推奨される最終量子化ビット数（例: 4.0, 8.0）。 | **QAT** (Quantization-Aware Training) や**実行時カーネル**の低精度演算設定に利用。 |
-| hardware\_optimization\_hint | ターゲットとするニューロモーフィックチップ（Loihi, TrueNorth）のヒント。 | **並列実行戦略**（タイムステップバッチングなど）や、カスタム**融合カーネル**の呼び出しをトリガー。 |
-| normalization\_compensation | RMSNormなどの複雑な正規化に対する補正ヒント。 | SNN学習時に\*\*学習率や膜時定数（tau）\*\*をチャネルごとに動的に調整するための初期値として利用。 |
-| evaluation\_metrics | ベンチマークで計測すべき必須指標。 | CI/CDパイプラインにおいて、**精度、スパイク数、レイテンシ**を自動計測し、SNNの総合性能を評価。 |
+* **Clean Accuracy:** 100.0% (Synthetic Pattern)  
+* **Robust Accuracy (Noise 40%):** **85.2%**  
+* **Theoretical Limit (Noise 50%):** \~10% (Random Guess) \- 物理的に正しい挙動  
+* **Energy Efficiency:** 乗算回数 **0回** (全結合層において加算のみで処理)
 
 ## **⚠️ 制限事項と技術的制約**
 
-1. **初期精度の低下**: 変換直後はANNに比べて精度が低下する場合があります。Deep Bio-Calibration (ECL) と**Surrogate Gradient**を用いた微調整（ファインチューニング）により、本来の性能を引き出すことが推奨されます。  
-2. **RMSNorm/SwiGLU**: RMSNormやSwiGLUの厳密なスパイク化は困難です。このパイプラインでは、変換後のメタデータに補正ヒントを保存することで、後の学習フェーズでSNNの学習能力を使って誤差を補償することを推奨しています。  
-3. **動的プルーニング**: prune-low-activityは、モデルが**キャリブレーションデータ**上で推論を実行し、その活性化の傾向（Saliency）に基づいて剪定を行います。データが不十分な場合、不適切なシナプスが削除されるリスクがあります。  
-4. **ハードウェア依存性**: 特定のハードウェア最適化ヒント（hardware\_optimization\_hint）は、ターゲットデバイスのSDKやコンパイラが対応している必要があります。
-
-## **🔄 今後の展望 (Roadmap v14.0)**
-
-* **Neuro-Symbolic Integration:** 変換されたSNNの隠れ層（アトラクタ）と、GraphRAGの概念ノードを動的にリンクさせるためのメタデータ拡張を計画しています。  
-* **Event-Driven Kernel Support:** 変換時に、PyTorchモデルではなく、直接イベント駆動カーネル（CUDA/FPGAコード）を出力するオプションの開発を進めています。
+1. **初期精度の低下**: 変換直後はANNに比べて精度が低下する場合があります。Deep Bio-Calibration (ECL) と**Surrogate Gradient**を用いた微調整（Fine-tuning）を推奨します。  
+2. **メモリ使用量**: 時間方向への展開（BPTT）を行う場合、学習時のVRAM使用量が増加します。T=1 設定や slayer（Spike Layer）のチェックポイント機能を活用してください。  
+3. **ハイパー・ロバスト学習のコスト**: ノイズ耐性を高める学習は、収束までに通常より多くのエポック数（1.5倍〜2倍）を必要とします。
