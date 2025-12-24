@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Fix: マルチノイズ学習による堅牢化版)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Fix: ハイパー・ロバスト版)
 
 import sys
 import os
@@ -17,6 +17,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from snn_research.core.hybrid_core import HybridNeuromorphicCore
 
 def set_seed(seed: int = 42):
+    """再現性のためにSeedを固定"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -30,7 +31,7 @@ def generate_synthetic_data(num_samples: int = 5000,
                           prototypes=None, 
                           noise_level: Union[float, Tuple[float, float]] = 0.1):
     """
-    パターン認識タスクデータ生成 (Fix: 可変ノイズ対応)
+    パターン認識タスクデータ生成
     Args:
         noise_level: floatなら固定値、tupleなら(min, max)の範囲でランダム
     """
@@ -74,16 +75,18 @@ def run_simulation():
     OUT_FEATURES = 10
     BATCH_SIZE = 128
     TOTAL_SAMPLES = 20000
-    EPOCHS = 10
     
-    # 修正: 学習時のノイズを範囲指定にして、多様なデータで鍛える
-    TRAIN_NOISE_RANGE = (0.0, 0.4) 
+    # 修正: 難易度上昇に伴いエポック数を増加
+    EPOCHS = 15 
+    
+    # 修正: ノイズ範囲を0.6まで拡大 (Extreme Noise Training)
+    TRAIN_NOISE_RANGE = (0.0, 0.6) 
 
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons (Liquid State Machine).")
     
     print(f"Generating Training Data (Noise Range: {TRAIN_NOISE_RANGE})...")
-    # ここで範囲指定のノイズを渡す
+    
     x_train, y_train, shared_prototypes = generate_synthetic_data(
         num_samples=TOTAL_SAMPLES, 
         in_features=IN_FEATURES, 
@@ -96,7 +99,7 @@ def run_simulation():
     dataset = TensorDataset(x_train, y_train)
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     
-    print("\nStarting Readout Training Phase (Robustness Training)...")
+    print("\nStarting Readout Training Phase (Hyper-Robust Training)...")
     print(f"{'Epoch':<6} | {'Progress':<13} | {'Acc':<6} | {'Loss':<6} | {'R_Spk%':<6} | {'O_Spk%':<6} | {'V_Mean':<6} | {'V_Max':<6} | {'Time'}")
     print("-" * 95)
     
@@ -131,16 +134,16 @@ def run_simulation():
         epoch_acc = epoch_correct / total_seen * 100
         print(f"--- Epoch {epoch+1} Final Accuracy: {epoch_acc:.2f}% ---")
         
-        # 修正: 難易度が上がったため、ターゲット精度も少し現実的に設定（それでも99%は目指せる）
-        if epoch_acc > 99.0:
+        # ターゲット精度判定
+        if epoch_acc > 99.5:
             print(">>> Target Accuracy Reached. Optimization Complete.")
             break
     
     print("\n=== Running Robustness Evaluation (Detailed Stress Test) ===")
     core.eval()
     
-    # テスト範囲をさらに広げて限界を確認する
-    noise_levels = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    # テスト範囲: 0.1 ~ 0.6
+    noise_levels = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
     TEST_SAMPLES = 2000
     
     print(f"{'Noise':<6} | {'Acc':<7} | {'Loss':<6} | {'O_Spk%':<6} | {'V_Mean':<6} | {'Status'}")
@@ -152,7 +155,7 @@ def run_simulation():
             in_features=IN_FEATURES,
             out_features=OUT_FEATURES,
             prototypes=shared_prototypes,
-            noise_level=noise # テスト時は固定値で評価
+            noise_level=noise
         )
         x_test, y_test = x_test.to(device), y_test.to(device)
         
@@ -188,7 +191,6 @@ def run_simulation():
         avg_spk = (total_spikes / TEST_SAMPLES) * 100
         avg_v = total_v_mean / TEST_SAMPLES
         
-        # 評価基準: 80%以上なら実用圏内
         status = "Robust" if final_acc > 80.0 else "Weak"
         if final_acc > 95.0: status = "Excellent"
             
