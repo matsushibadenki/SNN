@@ -285,6 +285,45 @@ python scripts/runners/run\_brain\_v14.py
 \# Brain Simulation  
 python scripts/runners/run\_brain\_simulation.py
 
+
+
+# **1.58ビット・ロジックゲート樹状突起自律学習テスト**
+
+プロジェクトの各コンポーネントを検証するためのコマンド一覧です。
+
+## **1\. コア・シミュレーション**
+
+### **論理ゲート駆動・自律学習 (Logic Gated Learning)**
+
+1.58ビット・ロジックゲート樹状突起を用いた、高精度な空間論理認識の自律学習テストです。接続密度の弾力的制御により、飽和を防ぎながら高い認識精度を達成します。
+
+python \-m snn\_research.run\_logic\_gated\_learning
+
+* **期待される結果**:  
+  * Conn: 10% 〜 30% の間で安定。  
+  * Acc(MA): 学習が進むにつれ 80% 〜 90% 以上に到達。  
+  * Prof: 0.8 以上への着実な上昇。
+
+## **2\. ユニットテスト**
+
+### **基本コンポーネントの検証**
+
+python \-m pytest tests/test\_smoke\_all\_paradigms.py
+
+### **認知アーキテクチャの検証**
+
+python \-m pytest tests/cognitive\_architecture/test\_artificial\_brain.py
+
+## **3\. ベンチマーク実行**
+
+### **CIFAR-10 ANN-SNN 変換パイプライン**
+
+python scripts/run\_benchmark\_suite.py \--task cifar10
+
+*注: 全てのコマンドはプロジェクトのルートディレクトリから実行してください。*
+
+
+
 ### **Others**
 
 \# Visual Cortex (Industrial Eye) \- 旧デモ  
