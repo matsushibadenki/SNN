@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 成長型学習検証版)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 低速着実成長版)
 
 import sys
 import os
@@ -17,8 +17,7 @@ def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out
     """
     パターン認識タスク (プロトタイプ + ノイズ)
     """
-    # 1. プロトタイプ作成 (各クラスの理想的なパターン)
-    # 密度20%程度の疎なパターン
+    # プロトタイプ作成 (密度20%)
     prototypes = (torch.randn(out_features, in_features) > 1.0).float()
     
     x_data = []
@@ -28,8 +27,7 @@ def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out
         label = torch.randint(0, out_features, (1,)).item()
         pattern = prototypes[label].clone()
         
-        # 2. ノイズ注入
-        # 15%のビットを反転
+        # ノイズ注入 (15%反転)
         noise = (torch.rand(in_features) < 0.15).float()
         noisy_pattern = torch.abs(pattern - noise)
         
@@ -51,7 +49,8 @@ def run_simulation():
     OUT_FEATURES = 10
     BATCH_SIZE = 64
     TOTAL_SAMPLES = 10000
-    EPOCHS = 15 # 成長が早いため少なめでOK
+    # 学習率を下げたので、エポック数を増やしてじっくり育てます
+    EPOCHS = 30 
 
     # モデル構築
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
@@ -65,7 +64,7 @@ def run_simulation():
     dataset = TensorDataset(x_train, y_train)
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     
-    print("\nStarting Tabula Rasa Learning Phase...")
+    print("\nStarting Selective Growth Learning Phase...")
     print(f"Target: >90% Accuracy. Max Epochs: {EPOCHS}")
     
     moving_avg_acc = 0.1
@@ -88,10 +87,10 @@ def run_simulation():
                 total_seen += data.size(0)
             
             batch_acc = correct / data.size(0)
-            moving_avg_acc = moving_avg_acc * 0.9 + batch_acc * 0.1
+            moving_avg_acc = moving_avg_acc * 0.95 + batch_acc * 0.05
             
             if i % 50 == 0:
-                # 接続率の確認 (最初は0%付近からスタートするはず)
+                # 接続率の確認
                 w_hid = core.fast_process.get_ternary_weights()
                 conn_hid = (w_hid != 0).float().mean().item() * 100
                 
@@ -108,7 +107,7 @@ def run_simulation():
         if epoch_acc > 95.0:
             print(">>> Target Accuracy (95%) Reached. Optimization Complete.")
             break
-            
+    
     print("\nRunning Final Evaluation...")
     core.eval()
     
