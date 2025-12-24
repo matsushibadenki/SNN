@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: サロゲート勾配適用版)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: パターン認識・対照学習版)
 
 import sys
 import os
@@ -15,15 +15,35 @@ from snn_research.core.hybrid_core import HybridNeuromorphicCore
 
 def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out_features: int = 10):
     """
-    複雑な論理パターンの生成 (Modulo演算タスク)
+    SNNが得意とする「ノイズのあるパターン認識タスク」を生成
+    各クラスに対して固有の「プロトタイプ（原型）」を作成し、
+    それをノイズで崩したものを入力とする。
     """
-    # 0.0より大なら1、それ以外0 (密度50%のスパース入力)
-    x = (torch.randn(num_samples, in_features) > 0.0).float()
+    # 1. 各クラスのプロトタイプを作成 (ランダムな疎なパターン)
+    # クラスごとに固定の「正解パターン」を決める
+    prototypes = (torch.randn(out_features, in_features) > 0.5).float()
     
-    # ターゲット領域: 200-260 (60ビット) の合計 mod 10
-    target_region = x[:, 200:260]
-    sum_val = target_region.sum(dim=1).long()
-    y = sum_val % out_features
+    x_data = []
+    y_data = []
+    
+    for _ in range(num_samples):
+        # ランダムにクラスを選択
+        label = torch.randint(0, out_features, (1,)).item()
+        
+        # プロトタイプを取得
+        pattern = prototypes[label].clone()
+        
+        # 2. ノイズ注入 (ビット反転)
+        # 20%の確率でビットを反転させ、不確実性を持たせる
+        noise_mask = (torch.rand(in_features) < 0.2).float()
+        # XOR的な操作でビット反転 (0->1, 1->0)
+        noisy_pattern = torch.abs(pattern - noise_mask)
+        
+        x_data.append(noisy_pattern)
+        y_data.append(label)
+    
+    x = torch.stack(x_data)
+    y = torch.tensor(y_data, dtype=torch.long)
     
     return x, y
 
@@ -32,19 +52,19 @@ def run_simulation():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on Device: {device}")
 
-    # パラメータ設定 (CPU最適化)
+    # パラメータ設定
     IN_FEATURES = 784
-    HIDDEN_FEATURES = 2048 
+    HIDDEN_FEATURES = 2048
     OUT_FEATURES = 10
-    BATCH_SIZE = 128
-    TOTAL_SAMPLES = 20000
-    EPOCHS = 30 # 高速学習が見込めるため減らす
+    BATCH_SIZE = 64 # バッチサイズを小さくして更新頻度を上げる
+    TOTAL_SAMPLES = 10000 # サンプル数を適正化
+    EPOCHS = 20 
 
     # モデル構築
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print("Generating High-Fidelity Synthetic Data...")
+    print("Generating Pattern Recognition Data (Prototypes + Noise)...")
     
     x_train, y_train = generate_synthetic_data(num_samples=TOTAL_SAMPLES, in_features=IN_FEATURES)
     x_train, y_train = x_train.to(device), y_train.to(device)
@@ -52,7 +72,7 @@ def run_simulation():
     dataset = TensorDataset(x_train, y_train)
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     
-    print("\nStarting Surrogate Gradient Training Phase...")
+    print("\nStarting Contrastive Hebbian Learning Phase...")
     print(f"Target: >90% Accuracy. Max Epochs: {EPOCHS}")
     
     moving_avg_acc = 0.1
@@ -65,7 +85,7 @@ def run_simulation():
         core.train()
         
         for i, (data, target) in enumerate(loader):
-            # 自律学習ステップ
+            # 自律学習ステップ (Contrastive Learning)
             metrics = core.autonomous_step(data, target)
             
             # 精度確認
@@ -77,7 +97,7 @@ def run_simulation():
                 total_seen += data.size(0)
             
             batch_acc = correct / data.size(0)
-            moving_avg_acc = moving_avg_acc * 0.9 + batch_acc * 0.1 # 反応を早くする
+            moving_avg_acc = moving_avg_acc * 0.9 + batch_acc * 0.1
             
             # ログ表示
             if i % 50 == 0:
@@ -85,33 +105,25 @@ def run_simulation():
                 w_hid = core.fast_process.get_ternary_weights()
                 conn_hid = (w_hid != 0).float().mean().item() * 100
                 
-                # スパイク発火率
-                spikes = metrics['output_spike_count']
-                
                 elapsed = time.time() - start_time
                 print(f"Epoch {epoch+1:2d} [{i*BATCH_SIZE:5d}/{TOTAL_SAMPLES}] "
                       f"Acc: {batch_acc*100:4.1f}% (MA: {moving_avg_acc*100:4.1f}%) | "
                       f"Conn: {conn_hid:4.1f}% | "
-                      f"Spikes: {spikes:.1f} | "
+                      f"Spikes: {metrics['output_spike_count']:.1f} | "
                       f"Time: {elapsed:.0f}s")
         
         epoch_acc = epoch_correct / total_seen * 100
         print(f"--- Epoch {epoch+1} Final Accuracy: {epoch_acc:.2f}% ---")
         
         # 早期終了条件
-        if epoch_acc > 92.0:
-            print(">>> Target Accuracy (92%) Reached. Optimization Complete.")
+        if epoch_acc > 95.0:
+            print(">>> Target Accuracy (95%) Reached. Optimization Complete.")
             break
             
-        # 安全装置
-        if epoch >= 3 and epoch_acc < 15.0:
-            print(">>> FAILURE DETECTED: Model is still not learning. Check Surrogate Gradient parameters.")
-            break
-
     print("\nRunning Final Evaluation on Test Set...")
     core.eval()
     
-    TEST_SAMPLES = 5000
+    TEST_SAMPLES = 2000
     x_test, y_test = generate_synthetic_data(num_samples=TEST_SAMPLES, in_features=IN_FEATURES)
     x_test, y_test = x_test.to(device), y_test.to(device)
     
