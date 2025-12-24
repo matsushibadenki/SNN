@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/models/adapters/async_mamba_adapter.py
-# 日本語タイトル: AsyncBitSpikeMamba アダプター (Fix: Dict Input Support)
-# 目的: Brain Kernelからの辞書型入力(Visual Cortex出力等)に対応し、エラーを回避する。
+# 日本語タイトル: AsyncBitSpikeMamba アダプター (Fix: Tuple/Tensor Return)
+# 目的: モデルからの戻り値の型をチェックし、タプルであれば要素を取り出して処理を継続する。
 
 import torch
 import torch.nn as nn
@@ -29,7 +29,6 @@ class AsyncBitSpikeMambaAdapter(nn.Module):
             
         self.device = device
         
-        # BitSpikeMambaの初期化
         from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
         
         model_params = {
@@ -71,9 +70,7 @@ class AsyncBitSpikeMambaAdapter(nn.Module):
     async def process(self, input_data: Union[torch.Tensor, str, Dict[str, Any]]) -> Any:
         """
         Brain Kernelから呼び出される非同期処理のエントリーポイント。
-        入力の型に応じて前処理を行い、推論を実行する。
         """
-        # シミュレーション用遅延
         await asyncio.sleep(0.01)
         
         tensor_input = None
@@ -81,62 +78,53 @@ class AsyncBitSpikeMambaAdapter(nn.Module):
         # 1. 入力の型判定と変換
         if isinstance(input_data, torch.Tensor):
             tensor_input = input_data
-        
         elif isinstance(input_data, str):
-            # 文字列の場合はトークナイズが必要だが、ここでは簡易的にダミーテンソル化
-            # 本来はTokenizerを使用する
-            # logger.info(f"🗣️ Processing text input: {input_data}")
-            tensor_input = torch.randint(0, 100, (1, 10)).to(self.device) # Dummy token ids
-            
+            # 簡易トークナイズ (本来はTokenizer使用)
+            tensor_input = torch.randint(0, 100, (1, 10)).to(self.device)
         elif isinstance(input_data, dict):
-            # 視覚野などからのメタデータ付き入力
-            # logger.info(f"🧠 Processing multimodal input: {input_data.keys()}")
-            
-            # 特徴量が来ていればそれを使う、なければ分類結果などをテキスト化して処理
             if "features" in input_data and isinstance(input_data["features"], list):
-                # 特徴量をTensorに戻す (リスト経由の場合)
                 tensor_input = torch.tensor(input_data["features"]).to(self.device)
                 if tensor_input.dim() == 1: tensor_input = tensor_input.unsqueeze(0)
             elif "classification" in input_data:
-                # 分類IDをトークンIDとして扱う簡易実装
-                cls_id = input_data["classification"]
-                tensor_input = torch.tensor([[cls_id]]).to(self.device)
+                tensor_input = torch.tensor([[input_data["classification"]]]).to(self.device)
             else:
-                # 何もなければダミー
                 tensor_input = torch.randint(0, 100, (1, 5)).to(self.device)
 
         if tensor_input is None:
             return {"error": "Invalid input format"}
 
-        # 2. 推論実行 (同期メソッド呼び出し)
-        with torch.no_grad():
-            output = self.forward(tensor_input)
+        # 2. 推論実行
+        try:
+            with torch.no_grad():
+                output_raw = self.forward(tensor_input)
             
-        # 3. 結果整形 (Logits -> 次のトークン予測など)
-        # SNN出力は (Batch, Time, Vocab) または (Batch, Vocab)
-        if output.dim() == 3:
-            output = output.mean(dim=1) # 時間平均
+            # 【重要】タプル戻り値への対応
+            if isinstance(output_raw, tuple):
+                output = output_raw[0] # 最初の要素(logits)を使用
+            else:
+                output = output_raw
             
-        probs = torch.softmax(output, dim=-1)
-        pred_token = torch.argmax(probs, dim=-1).item()
-        
-        return {
-            "thought": f"Generated token {pred_token}",
-            "confidence": probs.max().item(),
-            "metadata": {"source": "System1_BitSpike"}
-        }
+            # 3. 結果整形
+            if output.dim() == 3:
+                output = output.mean(dim=1) # 時間平均
+                
+            probs = torch.softmax(output, dim=-1)
+            pred_token = torch.argmax(probs, dim=-1).item()
+            
+            return {
+                "thought": f"Generated token {pred_token}",
+                "confidence": probs.max().item(),
+                "metadata": {"source": "System1_BitSpike"}
+            }
+        except Exception as e:
+            logger.error(f"Inference error in System 1: {e}")
+            return {"error": str(e)}
 
-    def forward(self, x: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, **kwargs: Any) -> Any:
         """PyTorch標準のForward"""
         x = x.to(self.device)
-        
-        # 次元調整: (Batch, Seq) -> (Batch, Time, Seq) or similar depends on model
-        # BitSpikeMambaが時間次元をどう扱うかに依存。
-        # ここでは入力が (Batch, Seq) または (Batch, Dim) と仮定し、時間方向に拡張
         if x.dim() == 2:
             time_steps = self.config_dict.get("time_steps", 16)
-            # Token ID (Long) なら Embedding層で処理されるのでそのまま渡す場合もあるが
-            # SNNの場合は入力を時間的に繰り返すのが一般的
             x = x.unsqueeze(1).repeat(1, time_steps, 1)
             
         return self.model(x, **kwargs)
