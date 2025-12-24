@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: タブラ・ラサ成長戦略版)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 選択的徐放成長版)
 
 import torch
 import torch.nn as nn
@@ -12,20 +12,19 @@ class LogicGatedSNN(nn.Module):
         self.out_features = out_features
         self.max_states = max_states
         
-        # 閾値を低く設定し、成長しやすくする
+        # 閾値: ここを超えると接続がONになる
+        # 高すぎると何も学習せず、低すぎると爆発する。
         self.threshold = 1.0
         
-        # --- 決定的な変更: タブラ・ラサ初期化 ---
-        # 以前は大きな値で初期化していたため、間違った接続が消えませんでした。
-        # 今回は「0.0」付近の小さなノイズで初期化し、初期状態では「ほぼ接続なし」にします。
-        # 学習が進むにつれて、重要な接続だけが閾値(1.0)を超えて成長します。
-        states = torch.randn(out_features, in_features) * 0.1
+        # --- 初期化: 完全な静寂 ---
+        # 重みの種（seeds）を非常に小さな値で初期化します。
+        # ノイズレベルを閾値の1/10以下に抑え、偶然の接続を防ぎます。
+        states = torch.randn(out_features, in_features) * 0.05
         self.register_buffer('synapse_states', states.clamp(-max_states, max_states))
         
-        # 膜電位等はリセット
         self.register_buffer('membrane_potential', torch.zeros(out_features))
-        # 閾値も最初は低くして、弱い入力でも学習のきっかけを作れるようにする
-        self.register_buffer('adaptive_threshold', torch.full((out_features,), 0.5))
+        # 初期閾値: 最初は少し反応しやすくしておく
+        self.register_buffer('adaptive_threshold', torch.full((out_features,), 0.8))
         self.register_buffer('refractory_count', torch.zeros(out_features))
         self.register_buffer('proficiency', torch.zeros(1))
 
@@ -34,8 +33,6 @@ class LogicGatedSNN(nn.Module):
         return cast(torch.Tensor, self.synapse_states)
 
     def get_ternary_weights(self) -> torch.Tensor:
-        # 重み: 閾値を超えたら1、下回ったら-1
-        # 初期状態ではほぼ全て0になる
         w = torch.zeros_like(self.states)
         w[self.states > self.threshold] = 1.0
         w[self.states < -self.threshold] = -1.0
@@ -55,10 +52,9 @@ class LogicGatedSNN(nn.Module):
         is_refractory = (ref_count > 0).float().unsqueeze(0)
         effective_current = current * (1.0 - is_refractory)
         
-        # 膜電位更新 (リークあり)
-        # 接続が少ない初期は減衰を弱めにして信号を保つ
-        decay_factor = 0.8
-        new_v_mem = v_mem.unsqueeze(0) * decay_factor + effective_current
+        # 膜電位更新
+        # リークを少し強めて(0.7)、古い情報を消しやすくする
+        new_v_mem = v_mem.unsqueeze(0) * 0.7 + effective_current
         
         # 発火
         spikes = (new_v_mem >= v_th.unsqueeze(0)).float()
@@ -73,16 +69,16 @@ class LogicGatedSNN(nn.Module):
         
         # 閾値調整 (Homeostasis)
         with torch.no_grad():
-            target_activity = 0.15 # 目標発火率
-            th_update = (mean_spikes - target_activity) * 0.05
+            target_activity = 0.15 
+            th_update = (mean_spikes - target_activity) * 0.02
             self.adaptive_threshold.add_(th_update)
-            self.adaptive_threshold.clamp_(0.1, 10.0) # 下限を下げて反応しやすくする
+            self.adaptive_threshold.clamp_(0.5, 5.0) 
         
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor]) -> None:
         """
-        成長型学習則
+        選択的成長学習則 (Selective Growth Rule)
         """
         with torch.no_grad():
             batch_size = pre_spikes.size(0)
@@ -92,29 +88,38 @@ class LogicGatedSNN(nn.Module):
             elif reward.dim() == 1:
                 reward = reward.unsqueeze(1).expand(-1, self.out_features)
             
-            # 1. Delta Rule / Hebbian Update
-            # reward (Error Signal) * Input
-            # 正しい入力には結合を強め(正の方向へ成長)、間違いには弱める(負の方向へ)
+            # --- 決定的な修正: 学習率の大幅な抑制 ---
+            # 以前は 2.0 でしたが、これを 0.02 に下げます。
+            # これにより、1回のバッチで接続がいきなりONになることを防ぎ、
+            # 「何度も繰り返し正しいと判断された接続」だけが閾値(1.0)を超えて成長します。
+            lr = 0.02 * (1.0 - self.proficiency.item() * 0.5)
             
-            # 初期は学習率を高くして、一気に成長させる
-            lr = 2.0 * (1.0 - self.proficiency.item() * 0.5)
-            
+            # 相関の計算 (Delta Rule)
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
             
             # 更新
             self.states.add_(delta * lr)
             
-            # 2. 忘却 (Decay) - 不要な結合を自然消滅させる
-            # 0に向かって常に少しずつ減衰させる
-            self.states.mul_(0.995)
+            # --- 構造的恒常性 (Decay) ---
+            # 接続率が高すぎる場合、強力に減衰させて「剪定」する
+            active_links = (self.states.abs() > self.threshold).float()
+            conn_ratio = active_links.mean()
             
-            # 3. ノイズ (探索)
-            # 停滞を防ぐための微小な揺らぎ
-            self.states.add_(torch.randn_like(self.states) * 0.02)
+            # 目標接続率 20% (以前の80%は多すぎました)
+            target_conn = 0.20 
             
-            # クランプ
+            if conn_ratio > target_conn:
+                # 目標を超えたら減衰を強くする (ペナルティ)
+                decay = 0.99 
+            else:
+                # 目標以下なら自然減衰のみ (忘却)
+                decay = 0.9999
+            
+            self.states.mul_(decay)
+            
+            # ノイズ (非常に小さく)
+            self.states.add_(torch.randn_like(self.states) * 0.001)
+            
             self.states.clamp_(-self.max_states, self.max_states)
-            
-            # 熟練度
-            self.proficiency.add_(0.001)
+            self.proficiency.add_(0.0005)
             self.proficiency.clamp_(0.0, 1.0)
