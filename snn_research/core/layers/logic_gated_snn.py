@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: FA対応安定版)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: バッチ行列演算・スパース強化版)
 
 import torch
 import torch.nn as nn
@@ -34,7 +34,6 @@ class LogicGatedSNN(nn.Module):
         w = self.get_ternary_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # ゲイン
         conn_count = w.sum(dim=1).clamp(min=1.0)
         gain = 8.0 / torch.log1p(conn_count * 0.5)
         
@@ -70,49 +69,55 @@ class LogicGatedSNN(nn.Module):
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor] = 0.0) -> None:
         """ 
-        FA対応学習則: 
-        Rewardがベクトルの場合、それは「誤差信号」とみなされ、
-        自身の発火状態に関わらず重みを修正する (Delta Rule / Feedback Alignment)
+        バッチ対応学習則 
+        pre_spikes: (Batch, In)
+        reward: (Batch, Out) or (Batch,)
         """
         with torch.no_grad():
+            # バッチ次元の処理
+            batch_size = pre_spikes.size(0)
+            
             if isinstance(reward, torch.Tensor):
                 avg_reward = reward.mean().item()
             else:
                 avg_reward = reward
-                
+                # スカラ報酬の場合はバッチサイズ分拡張 (Batch, 1)
+                reward = torch.full((batch_size, 1), reward, device=pre_spikes.device)
+
             is_success = 1.0 if avg_reward > 0.0 else 0.0
             self.proficiency.copy_(self.proficiency * 0.99 + is_success * 0.01)
             prof = float(self.proficiency.item())
             
             lr = 4.0 * (1.0 - prof * 0.5)
+
+            # 行列演算による高速なバッチ学習 (Matrix Hebbian/Delta)
+            if reward.ndim == 1:
+                reward = reward.unsqueeze(1) # (Batch, 1) or (Batch, Out) depends on usage
             
-            pre_activity = pre_spikes.unsqueeze(0) if pre_spikes.dim() == 1 else pre_spikes.mean(dim=0, keepdim=True)
-
-            if isinstance(reward, torch.Tensor) and reward.ndim == 1:
-                # 【ベクトルモード】: 強制学習 (FA / Delta)
-                # reward contains (Target - Output) or (Projected Error)
-                modulation = reward.unsqueeze(1) # (out, 1)
-                
-                # delta = Error * Input
-                # 誤差がプラス(もっと発火すべき)なら、入力があったシナプスを強化
-                # 誤差がマイナス(抑制すべき)なら、入力があったシナプスを抑制
-                delta = modulation * pre_activity * lr
-
+            # 1. Output Layer Mode (Vector Reward): Reward shape (Batch, Out)
+            # Delta = (Reward.T @ Pre) / Batch
+            # (Out, Batch) @ (Batch, In) -> (Out, In)
+            if reward.shape[1] == self.out_features:
+                 delta = torch.matmul(reward.t(), pre_spikes) / batch_size
+                 delta *= lr
+            
+            # 2. Hidden Layer Mode (Scalar-like Reward): Reward shape (Batch, 1) or similar
+            # 従来の強化学習: Delta = ( (Reward * Post).T @ Pre ) / Batch
+            # Reward: (Batch, 1), Post: (Batch, Out) -> Mod: (Batch, Out)
             else:
-                # 【スカラモード】: 従来型強化学習 (予備)
-                modulation = reward
-                post_mean = post_spikes if post_spikes.dim() == 1 else post_spikes.mean(dim=0)
-                post_activity = post_mean.unsqueeze(1)
-                delta = modulation * post_activity * pre_activity * lr
+                 modulation = reward * post_spikes # (Batch, Out)
+                 delta = torch.matmul(modulation.t(), pre_spikes) / batch_size
+                 delta *= lr
 
-            if isinstance(reward, torch.Tensor):
-                 delta = delta.clamp(min=-5.0, max=15.0)
+            # 罰の緩和
+            delta = delta.clamp(min=-5.0, max=15.0)
             
             self.states.add_(delta)
             
-            # 構造恒常性
+            # 構造恒常性 (Sparsity Target)
+            # 修正: 0.20 -> 0.10 に下げて、より重要な特徴だけを選別させる
             current_conn = (self.states > self.threshold).float().mean(dim=1, keepdim=True)
-            target_conn = 0.20
+            target_conn = 0.10 
             conn_error = target_conn - current_conn
             self.states.add_(conn_error * 5.0)
             
