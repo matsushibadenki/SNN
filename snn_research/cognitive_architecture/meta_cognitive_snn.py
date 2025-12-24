@@ -1,85 +1,55 @@
 # ファイルパス: snn_research/cognitive_architecture/meta_cognitive_snn.py
-# Title: Meta-Cognitive SNN v2.2 - Correct Normalization
-# Description: エントロピー計算の正規化ロジックを修正し、System 2トリガーを正常化。
+# 日本語タイトル: メタ認知SNNモジュール
+# 役割: 自身の推論結果をモニタリングし、System 2（世界モデル）の起動要否を判断する。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
-from typing import Dict, Any, Optional, List
-import logging
-
-logger = logging.getLogger(__name__)
+from typing import Dict, Any
 
 class MetaCognitiveSNN(nn.Module):
     """
-    メタ認知モニター。
-    - Uncertainty (Entropy): 何をすべきかわからない度合い。 -> System 2 Trigger
+    自己監視モジュール。
+    - Uncertainty Monitoring: エントロピーに基づく不確実性の検知
+    - Surprise Detection: 予測と現実の乖離（驚き）の検知
     """
-    def __init__(
-        self, 
-        d_model: int = 128,
-        uncertainty_threshold: float = 0.6,
-        surprise_threshold: float = 0.5
-    ):
+    def __init__(self, d_model: int, entropy_threshold: float = 1.5):
         super().__init__()
         self.d_model = d_model
-        self.uncertainty_threshold = uncertainty_threshold
-        self.surprise_threshold = surprise_threshold
+        self.entropy_threshold = entropy_threshold
         
-        # 状態評価用の軽量ネットワーク
-        self.value_net = nn.Sequential(
-            nn.Linear(d_model, 64),
+        # 簡易的な「確信度評価ネットワーク」
+        # (実際には前頭前野の働きを模したSNN層が入るが、ここでは軽量なMLPで実装)
+        self.confidence_estimator = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
             nn.ReLU(),
-            nn.Linear(64, 1)
+            nn.Linear(d_model // 2, 1),
+            nn.Sigmoid()
         )
-        
-        self.uncertainty_history: List[float] = []
-        self.surprise_history: List[float] = []
-        
-        logger.info("🧐 Meta-Cognitive SNN v2.2 initialized.")
 
     def monitor_system1_output(self, logits: torch.Tensor) -> Dict[str, Any]:
         """
-        System 1 (SFormer) の出力分布(logits)を監視し、不確実性を評価する。
+        System 1 (直感) の出力を監視する。
         """
-        # logits: (Batch, ActionDim)
+        # 1. エントロピー計算 (不確実性の尺度)
         probs = F.softmax(logits, dim=-1)
         log_probs = F.log_softmax(logits, dim=-1)
-        
-        # エントロピー計算: H(p) = -sum(p * log p)
         entropy = -(probs * log_probs).sum(dim=-1).mean()
         
-        # 正規化: 0.0 - 1.0 の範囲にするため、最大エントロピー log(N) で割る
-        num_classes = logits.size(-1)
-        max_entropy = math.log(num_classes) if num_classes > 1 else 1.0
-        normalized_entropy = entropy / max_entropy
-        
-        self.uncertainty_history.append(normalized_entropy.item())
-        if len(self.uncertainty_history) > 100: self.uncertainty_history.pop(0)
-        
-        # 閾値を超えたらSystem 2 (熟慮) を要請
-        trigger_system2 = normalized_entropy.item() > self.uncertainty_threshold
+        # 2. 閾値判定
+        is_uncertain = entropy.item() > self.entropy_threshold
         
         return {
-            "entropy": normalized_entropy.item(),
-            "trigger_system2": trigger_system2,
-            "confidence": 1.0 - normalized_entropy.item()
+            "entropy": entropy.item(),
+            "trigger_system2": is_uncertain,
+            "max_prob": probs.max().item()
         }
 
     def evaluate_surprise(self, predicted_state: torch.Tensor, actual_state: torch.Tensor) -> float:
-        """予測誤差(Surprise)の計算"""
-        with torch.no_grad():
-            mse = F.mse_loss(predicted_state, actual_state).item()
-            is_surprised = mse > self.surprise_threshold
-            
-            self.surprise_history.append(mse)
-            if len(self.surprise_history) > 100: self.surprise_history.pop(0)
-            
-            if is_surprised:
-                logger.info(f"😲 Surprise detected! (Error: {mse:.4f})")
-            return mse
-
-    def update_metadata(self, loss: float, step_time: float, accuracy: float) -> None:
-        self.surprise_history.append(loss)
-        if len(self.surprise_history) > 100: self.surprise_history.pop(0)
+        """
+        予測された未来と、実際の観測との「驚き（Surprise）」を計算する。
+        """
+        # MSE (Mean Squared Error) を基本とするが、
+        # 実際にはKLダイバージェンスや自由エネルギー(Free Energy)を用いる
+        mse = F.mse_loss(predicted_state, actual_state)
+        return mse.item()
