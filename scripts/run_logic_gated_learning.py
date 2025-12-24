@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Fix: データ一貫性確保版)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Fix: 再現性・堅牢性評価版)
 
 import sys
 import os
@@ -7,22 +7,29 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 import time
+import random
+import numpy as np
 
 # パス設定
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from snn_research.core.hybrid_core import HybridNeuromorphicCore
 
-def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out_features: int = 10, prototypes=None):
+def set_seed(seed: int = 42):
+    """再現性のためにSeedを固定"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    print(f"Seed set to: {seed}")
+
+def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out_features: int = 10, prototypes=None, noise_level: float = 0.1):
     """
-    パターン認識タスク (高密度プロトタイプ + ノイズ)
-    
+    パターン認識タスクデータ生成
     Args:
-        prototypes: 学習時とテスト時で同じパターンを使うために、外部から受け取れるようにする
-    Returns:
-        x, y, prototypes: 生成データと、使用したプロトタイプを返す
+        noise_level: ノイズの強度 (ビット反転確率)
     """
-    # プロトタイプが指定されていない場合（初回）のみ生成
     if prototypes is None:
         # 密度50%のランダムパターンを「正解」として定義
         prototypes = (torch.randn(out_features, in_features) > 0.0).float()
@@ -34,9 +41,8 @@ def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out
         label = torch.randint(0, out_features, (1,)).item()
         pattern = prototypes[label].clone()
         
-        # ノイズ注入 (10%反転)
-        # 学習データとテストデータで異なるノイズが乗るが、原型は同じ
-        noise = (torch.rand(in_features) < 0.1).float()
+        # ノイズ注入
+        noise = (torch.rand(in_features) < noise_level).float()
         noisy_pattern = torch.abs(pattern - noise)
         
         x_data.append(noisy_pattern)
@@ -48,6 +54,8 @@ def generate_synthetic_data(num_samples: int = 5000, in_features: int = 784, out
     return x, y, prototypes
 
 def run_simulation():
+    set_seed(42)  # 再現性確保
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on Device: {device}")
 
@@ -57,21 +65,21 @@ def run_simulation():
     OUT_FEATURES = 10
     BATCH_SIZE = 128
     TOTAL_SAMPLES = 20000
-    EPOCHS = 10 # 収束が早いため短縮
+    EPOCHS = 10
+    TRAIN_NOISE = 0.1
 
     # モデル構築
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
-    
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons (Liquid State Machine).")
     
-    # --- 重要: 学習データの生成 ---
-    print("Generating Training Data...")
-    # ここで prototypes を受け取る
+    # --- 学習データ生成 ---
+    print(f"Generating Training Data (Noise Level: {TRAIN_NOISE})...")
     x_train, y_train, shared_prototypes = generate_synthetic_data(
         num_samples=TOTAL_SAMPLES, 
         in_features=IN_FEATURES, 
         out_features=OUT_FEATURES,
-        prototypes=None # 初回なのでNone
+        prototypes=None,
+        noise_level=TRAIN_NOISE
     )
     x_train, y_train = x_train.to(device), y_train.to(device)
     
@@ -79,7 +87,6 @@ def run_simulation():
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     
     print("\nStarting Readout Training Phase...")
-    print(f"Target: >95% Accuracy. Max Epochs: {EPOCHS}")
     
     moving_avg_acc = 0.1
     start_time = time.time()
@@ -88,12 +95,13 @@ def run_simulation():
         epoch_correct = 0
         total_seen = 0
         
-        core.train()
+        core.train() # 学習モード
         
         for i, (data, target) in enumerate(loader):
-            # 自律学習 (Output層の重み更新)
+            # 自律学習
             metrics = core.autonomous_step(data, target)
             
+            # 評価用 (重み更新後)
             with torch.no_grad():
                 out = core(data)
                 pred = out.argmax(dim=1)
@@ -105,10 +113,8 @@ def run_simulation():
             moving_avg_acc = moving_avg_acc * 0.9 + batch_acc * 0.1
             
             if i % 50 == 0:
-                # 重みの平均値
                 w_out = core.output_gate.get_effective_weights()
                 w_mean = w_out.abs().mean().item()
-                
                 elapsed = time.time() - start_time
                 print(f"Epoch {epoch+1:2d} [{i*BATCH_SIZE:5d}/{TOTAL_SAMPLES}] "
                       f"Acc: {batch_acc*100:4.1f}% (MA: {moving_avg_acc*100:4.1f}%) | "
@@ -118,39 +124,48 @@ def run_simulation():
         epoch_acc = epoch_correct / total_seen * 100
         print(f"--- Epoch {epoch+1} Final Accuracy: {epoch_acc:.2f}% ---")
         
-        if epoch_acc > 99.0:
+        if epoch_acc > 99.5:
             print(">>> Target Accuracy Reached. Optimization Complete.")
             break
     
-    print("\nRunning Final Evaluation...")
+    print("\n=== Running Robustness Evaluation (Stress Test) ===")
     core.eval()
     
-    TEST_SAMPLES = 5000
-    # --- 重要: テストデータの生成 ---
-    # 学習時と同じ shared_prototypes を渡す！これで同じルールでのテストになる
-    x_test, y_test, _ = generate_synthetic_data(
-        num_samples=TEST_SAMPLES, 
-        in_features=IN_FEATURES,
-        out_features=OUT_FEATURES,
-        prototypes=shared_prototypes 
-    )
-    x_test, y_test = x_test.to(device), y_test.to(device)
+    # 複数のノイズレベルでテストを行い、堅牢性を確認する
+    noise_levels = [0.1, 0.2, 0.3, 0.4, 0.5]
+    TEST_SAMPLES = 2000
     
-    test_correct = 0
-    with torch.no_grad():
-        test_dataset = TensorDataset(x_test, y_test)
-        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
+    print(f"{'Noise Level':<15} | {'Accuracy':<10} | {'Status':<10}")
+    print("-" * 40)
+    
+    for noise in noise_levels:
+        x_test, y_test, _ = generate_synthetic_data(
+            num_samples=TEST_SAMPLES, 
+            in_features=IN_FEATURES,
+            out_features=OUT_FEATURES,
+            prototypes=shared_prototypes,
+            noise_level=noise
+        )
+        x_test, y_test = x_test.to(device), y_test.to(device)
         
-        for data, target in test_loader:
-            out = core(data)
-            pred = out.argmax(dim=1)
-            test_correct += (pred == target).float().sum().item()
-                
-    final_acc = test_correct / TEST_SAMPLES * 100
-    print(f"Final Test Accuracy: {final_acc:.2f}%")
+        test_correct = 0
+        with torch.no_grad():
+            test_dataset = TensorDataset(x_test, y_test)
+            test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
+            
+            for data, target in test_loader:
+                out = core(data)
+                pred = out.argmax(dim=1)
+                test_correct += (pred == target).float().sum().item()
+                    
+        final_acc = test_correct / TEST_SAMPLES * 100
+        status = "Robust" if final_acc > 80.0 else "Weak"
+        if noise == TRAIN_NOISE and final_acc > 95.0:
+            status = "Excellent"
+            
+        print(f"{noise:<15.1f} | {final_acc:6.2f}%   | {status}")
     
-    if final_acc > 90.0:
-        print("SUCCESS: 90% Accuracy Barrier Broken!")
+    print("\nSimulation Complete.")
 
 if __name__ == "__main__":
     run_simulation()
