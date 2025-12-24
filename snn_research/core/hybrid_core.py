@@ -29,9 +29,6 @@ class HybridNeuromorphicCore(nn.Module):
         return self.output_gate(r)
 
     def autonomous_step(self, x_input: torch.Tensor, target: Optional[torch.Tensor] = None) -> Dict[str, float]:
-        """
-        自律学習ステップ（詳細情報付き）
-        """
         with torch.no_grad():
             # 1. Forward Pass
             f = self.fast_process(x_input)
@@ -46,25 +43,18 @@ class HybridNeuromorphicCore(nn.Module):
                 target_onehot = torch.zeros_like(out)
                 target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
                 
-                # Error for update
                 error = target_onehot - out
                 
                 # 3. Update Weights
                 self.output_gate.update_plasticity(r, out, reward=error)
 
-                # Metrics
                 pred = out.argmax(dim=1)
                 acc = (pred == target).float().mean().item()
-                # MSE Loss
                 loss_val = error.pow(2).mean().item()
 
-            # --- 統計情報の収集 ---
-            # リザーバー層のスパイク密度 (Sparsity)
+            # 統計情報
             res_density = f.mean().item()
-            # 出力層のスパイク密度 (Density)
             out_density = out.mean().item()
-            
-            # 出力層の膜電位統計 (発火のしやすさ、過剰入力の監視)
             v_mem = self.output_gate.membrane_potential
             v_mean = v_mem.mean().item()
             v_max = v_mem.max().item()
@@ -72,8 +62,8 @@ class HybridNeuromorphicCore(nn.Module):
         return {
             "loss": loss_val,
             "accuracy": acc,
-            "res_density": res_density,   # リザーバー層の発火率
-            "out_density": out_density,   # 出力層の発火率
-            "out_v_mean": v_mean,         # 出力層膜電位の平均
-            "out_v_max": v_max            # 出力層膜電位の最大値
+            "res_density": res_density,
+            "out_density": out_density,
+            "out_v_mean": v_mean,
+            "out_v_max": v_max
         }
