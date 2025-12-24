@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: 完成版)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 型安全性向上版)
 
 import torch
 import torch.nn as nn
@@ -7,6 +7,10 @@ import math
 from typing import cast, Union, Optional
 
 class LogicGatedSNN(nn.Module):
+    # バッファの型ヒントを明示
+    membrane_potential: torch.Tensor
+    synapse_states: torch.Tensor
+
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         mode: 
@@ -26,8 +30,7 @@ class LogicGatedSNN(nn.Module):
             self.threshold = 1.0 
             trainable = True
         else:
-            # リザーバー層: 入力次元数に応じたスケーリング (He initialization / sqrt(n))
-            # これによりニューロンの飽和を防ぎ、情報の伝達効率を最大化する
+            # リザーバー層: 入力次元数に応じたスケーリング
             std_dev = 2.0 / math.sqrt(in_features)
             self.threshold = 1.0
             trainable = False
@@ -43,19 +46,17 @@ class LogicGatedSNN(nn.Module):
 
     @property
     def states(self) -> torch.Tensor:
-        return cast(torch.Tensor, self.synapse_states)
+        return self.synapse_states
 
     def get_effective_weights(self) -> torch.Tensor:
         if self.mode == 'readout':
-            # 連続値重み
             return self.states
         else:
             # 3値量子化重み
             w = torch.zeros_like(self.states)
-            threshold_val = 0.1 # 量子化の閾値
+            threshold_val = 0.1 
             w[self.states > threshold_val] = 1.0
             w[self.states < -threshold_val] = -1.0
-            # リザーバー層の出力を安定させるためのゲイン調整
             return w * 0.5 
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
@@ -66,12 +67,13 @@ class LogicGatedSNN(nn.Module):
         current = torch.matmul(x, w.t())
         
         # 膜電位 (Stateless)
-        # バッチ間の独立性を保つため、内部状態を持ち越さない
         v_mem = current 
         
-        # モニタリング用に保存 (学習グラフには影響させない)
+        # モニタリング用に保存
+        # Mypyエラー回避のため、torch関数を使用し、明示的にTensorとして扱う
         if self.training or not self.training:
-            self.membrane_potential.copy_(v_mem.mean(dim=0).detach())
+            v_mean = torch.mean(v_mem, dim=0).detach()
+            self.membrane_potential.copy_(v_mean)
 
         # 発火判定
         spikes = (v_mem >= 1.0).float()
@@ -96,5 +98,5 @@ class LogicGatedSNN(nn.Module):
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
             
             self.states.add_(delta * lr)
-            self.states.mul_(0.9995) # Weight Decay
+            self.states.mul_(0.9995) 
             self.states.clamp_(-self.max_states, self.max_states)
