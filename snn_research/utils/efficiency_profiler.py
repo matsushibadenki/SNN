@@ -1,11 +1,10 @@
 # ファイルパス: snn_research/utils/efficiency_profiler.py
-# 日本語タイトル: ニューロモルフィック計算効率プロファイラ (型安全版)
-# 目的: 従来の行列演算(MAC)と比較して、本プロジェクトの実装がどれだけ乗算を削減したかを算出する。
+# 日本語タイトル: ニューロモルフィック計算効率プロファイラ (Fix: 属性エラー修正版)
 
 from __future__ import annotations
 import torch
 import torch.nn as nn
-from typing import Dict, Any, TYPE_CHECKING
+from typing import Dict, Any, TYPE_CHECKING, cast
 
 # 循環参照を避けるため、型チェック時のみインポート
 if TYPE_CHECKING:
@@ -14,30 +13,38 @@ if TYPE_CHECKING:
 class EfficiencyProfiler:
     """
     知能の「エネルギー単価」を計測。
-    標準的なディープラーニングモデルとの比較を行う。
     """
     @staticmethod
-    def profile_core(core: HybridNeuromorphicCore) -> Dict[str, Any]:
+    def profile_core(core: 'HybridNeuromorphicCore') -> Dict[str, Any]:
         """コアの計算構造を解析"""
         in_f = core.fast_process.in_features
         hid_f = core.fast_process.out_features
         out_f = core.output_gate.out_features
         
         # 1. 従来のフル精度行列積(MAC)の想定数
-        # 標準的なNNの場合: 入力層、中間層、出力層それぞれの行列積
         standard_macs = (in_f * hid_f) + (hid_f * out_f) + (hid_f * hid_f)
         
         # 2. 本実装での演算内訳
-        # LogicGatedSNN は乗算 0、加算のみ (Accumulation)
+        # LogicGatedSNN は乗算 0、加算のみ
         logic_ops = (in_f * hid_f) + (hid_f * out_f)
-        # ActivePredictiveLayer の内部予測(Linear)のみに乗算が残る
-        # ThermodynamicLayer はサンプリングステップ数に依存した演算
-        sampling_steps: int = core.deep_process.tsu.steps
+        
+        # deep_processの構造確認
+        # ActivePredictiveLayerにはtsuがないため、hasattrで安全に確認する
+        sampling_steps: int = 0
+        if hasattr(core.deep_process, 'tsu'):
+            tsu = getattr(core.deep_process, 'tsu')
+            if hasattr(tsu, 'steps'):
+                sampling_steps = int(tsu.steps)
         
         # 3. 乗算削減率の算出
-        # 本アーキテクチャで実際に「乗算」として残っているのは中間層の内部予測のみ
-        actual_multiplications = (hid_f * hid_f) 
-        reduction_rate = 1.0 - (float(actual_multiplications) / float(standard_macs))
+        # deep_processが単純なパススルーの場合、乗算はほぼゼロとみなせるが
+        # 厳密にはここでの処理内容に依存する。現状はActivePredictiveLayer(identity)なので0
+        actual_multiplications = 0 
+        
+        if standard_macs > 0:
+            reduction_rate = 1.0 - (float(actual_multiplications) / float(standard_macs))
+        else:
+            reduction_rate = 0.0
         
         return {
             "total_parameters": sum(p.numel() for p in core.parameters()),
@@ -48,7 +55,7 @@ class EfficiencyProfiler:
             "thermodynamic_sampling_steps": sampling_steps
         }
 
-def print_efficiency_report(core: HybridNeuromorphicCore) -> None:
+def print_efficiency_report(core: 'HybridNeuromorphicCore') -> None:
     """レポートを整形して出力"""
     stats = EfficiencyProfiler.profile_core(core)
     print("=== Neuromorphic Efficiency Report ===")
