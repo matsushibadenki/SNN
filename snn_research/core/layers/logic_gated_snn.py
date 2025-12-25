@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Temperature Soft-WTA)
-# 内容: 中心化コサイン類似度と温度付きソフトマックスによるロバスト学習
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Delta Rule & Adaptive Temperature)
+# 内容: 教師ありデルタ則による直接誤差学習、適応型温度スケーリング、チャネル中心化
 
 import torch
 import torch.nn as nn
@@ -25,9 +25,8 @@ class LogicGatedSNN(nn.Module):
         self.mode = mode
         
         if self.mode == 'readout':
-            # 読み出し層
+            # 読み出し層 (学習可能)
             std_dev = 0.05
-            self.base_threshold = 0.5 
             trainable = True
             
             # 直交初期化
@@ -37,12 +36,13 @@ class LogicGatedSNN(nn.Module):
             
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
-            # 今回はSoftmaxベースなので適応閾値は補助的な役割
-            self.register_buffer('adaptive_threshold', torch.ones(out_features) * self.base_threshold)
+            
+            # Adaptive Thresholdの代わりに Temperature parameter として使用
+            # 初期温度は高め(50.0)に設定し、学習とともに調整可能にする
+            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 50.0)
         else:
-            # リザーバー層
+            # リザーバー層 (固定)
             std_dev = 3.0 / math.sqrt(in_features)
-            self.base_threshold = 1.0
             trainable = False
             
             if out_features >= in_features:
@@ -85,45 +85,37 @@ class LogicGatedSNN(nn.Module):
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
         if self.mode == 'readout':
-            # 1. Cosine Similarity (Normalized Dot Product)
-            # ノイズ環境下での方向一致度を測るための最良の指標
+            # 1. Centered Cosine Similarity
+            # ノイズ耐性の要。クラス間の平均を引き、相対的な信号強度を取り出す。
             x_norm = F.normalize(x, p=2, dim=1, eps=1e-8)
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             cosine_sim = torch.matmul(x_norm, w_norm.t()) # [Batch, Out]
             
-            # 2. Centering (Lateral Inhibition)
-            # 全クラスの平均類似度を引き、相対的な勝ち負けを明確にする
-            # 0.45ノイズ環境では全ての類似度が低くなるため、この処理が必須
             mean_sim = cosine_sim.mean(dim=1, keepdim=True)
             centered_sim = cosine_sim - mean_sim
             
-            # 3. Temperature Scaling
-            # 逆温度パラメータ(Beta)。値を大きくするほど分布が尖る(Argmaxに近づく)。
-            # ノイズに強い「確信」を生むために高めの値を設定。
-            temperature = 50.0 
+            # 2. Temperature Scaling
+            # 学習可能な温度パラメータを使用
+            temperature = self.adaptive_threshold.mean() # 全ニューロン共通温度とする
             scaled_sim = centered_sim * temperature
             
-            # 4. Activation Logic (Soft-WTA)
+            # 3. Activation (Softmax or Hard WTA)
             if self.training:
-                # 学習時はSoftmaxを使い、微分可能な確率分布として出力
-                # これにより、「僅差の勝利」でも明確な勾配が発生する
+                # 学習時はSoftmaxで微分可能な確率分布にする
                 spikes = F.softmax(scaled_sim, dim=1)
             else:
-                # 推論時はHard WTA (Argmax) で明確な判定
-                # One-hot形式で返す
+                # 推論時はArgmaxで明確な判定
                 spikes = torch.zeros_like(scaled_sim)
                 _, max_idx = scaled_sim.max(dim=1)
                 spikes.scatter_(1, max_idx.unsqueeze(1), 1.0)
             
-            # 膜電位モニタリング用 (スケーリング前の値を記録)
             v_mem = scaled_sim
             
         else:
-            # リザーバー層 (従来通り)
+            # リザーバー層
             v_mem = torch.matmul(x, w.t())
-            spikes = (v_mem >= self.base_threshold).float()
+            spikes = (v_mem >= 1.0).float()
         
-        # 統計記録
         with torch.no_grad():
             v_mean = torch.mean(v_mem, dim=0).detach()
             self.membrane_potential.copy_(v_mean)
@@ -137,17 +129,26 @@ class LogicGatedSNN(nn.Module):
         with torch.no_grad():
             batch_size = pre_spikes.size(0)
             
-            if isinstance(reward, float):
-                reward_tensor = torch.full((batch_size, self.out_features), reward, device=pre_spikes.device)
-            elif reward.dim() == 1:
-                reward_tensor = reward.unsqueeze(1).expand(-1, self.out_features)
+            # Reward引数を柔軟に処理
+            # Tensorかつ形状が[Batch, Out]の場合、それは「誤差信号 (Error Signal)」として扱う
+            if isinstance(reward, torch.Tensor) and reward.shape == post_spikes.shape:
+                error_signal = reward
+                # Delta Rule: Error * Input
+                # Batch平均をとる
+                delta = torch.matmul(error_signal.t(), pre_spikes) / batch_size
+            
             else:
-                reward_tensor = reward
-            
-            # デルタ則: (Reward * Output) * Input
-            # post_spikesがSoftmax出力(確率)なので、確信度に応じた重み付けになる
-            delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes) / batch_size
-            
+                # 従来のスカラー報酬の場合（後方互換性）
+                if isinstance(reward, float):
+                    reward_tensor = torch.full((batch_size, self.out_features), reward, device=pre_spikes.device)
+                elif reward.dim() == 1:
+                    reward_tensor = reward.unsqueeze(1).expand(-1, self.out_features)
+                else:
+                    reward_tensor = reward
+                
+                # Hebbian-like update scaled by reward * prob
+                delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes) / batch_size
+
             # モメンタム更新
             momentum_factor = 0.95
             self.momentum_buffer.mul_(momentum_factor).add_(delta)
@@ -156,16 +157,24 @@ class LogicGatedSNN(nn.Module):
             self.states.add_(self.momentum_buffer * learning_rate)
             
             # --- Constraints ---
-            # 1. Centering (平均除去)
+            # 1. Centering (平均除去) - コサイン類似度のために重要
             mean_weight = self.states.mean(dim=1, keepdim=True)
             self.states.sub_(mean_weight)
             
             # 2. Norm Scaling (球面射影)
-            # Cosine類似度の学習においてノルム一定化は必須
             norm = self.states.norm(p=2, dim=1, keepdim=True)
             target_norm = math.sqrt(self.in_features)
             scale_factor = target_norm / (norm + 1e-8)
             self.states.mul_(scale_factor)
             
-            # 値の爆発を防ぐClamp
             self.states.clamp_(-20.0, 20.0)
+            
+            # 温度調整 (Automatic Temperature Scaling)
+            # 予測分布が極端（全部0または1）にならないように、エントロピーに基づいて温度を微調整
+            if self.mode == 'readout':
+                # post_spikesはSoftmax出力
+                entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
+                target_entropy = 0.5 # 適度な分散を維持
+                temp_delta = 0.1 * (entropy - target_entropy)
+                self.adaptive_threshold.add_(temp_delta)
+                self.adaptive_threshold.clamp_(10.0, 100.0) # 温度範囲制限
