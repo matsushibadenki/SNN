@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: ゲインブースト3.0)
+# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: 標準化Top-K & シンプルパイプライン)
 
 import torch
 import torch.nn as nn
@@ -7,7 +7,7 @@ from typing import Dict, Optional, cast
 from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
 
 class TopKActivation(nn.Module):
-    def __init__(self, sparsity: float = 0.20, gain: float = 3.0) -> None:
+    def __init__(self, sparsity: float = 0.20, gain: float = 2.0) -> None:
         super().__init__()
         self.sparsity = sparsity
         self.gain = gain
@@ -26,8 +26,8 @@ class ActivePredictiveLayer(nn.Module):
     def __init__(self, features: int) -> None: 
         super().__init__()
         self.norm = nn.LayerNorm(features)
-        # 【修正】gain 2.5 -> 3.0: 信号を強力にブーストし、負のバイアスに対抗する
-        self.activation = TopKActivation(sparsity=0.20, gain=3.0)
+        # sparsity 0.20 (2000 neurons), gain 2.0 (standard boost)
+        self.activation = TopKActivation(sparsity=0.20, gain=2.0)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
         x = self.norm(x)
@@ -45,7 +45,7 @@ class HybridNeuromorphicCore(nn.Module):
         r = self.deep_process(f)
         return self.output_gate(r)
 
-    def autonomous_step(self, x_input: torch.Tensor, target: Optional[torch.Tensor] = None, learning_rate: float = 0.02) -> Dict[str, float]:
+    def autonomous_step(self, x_input: torch.Tensor, target: Optional[torch.Tensor] = None, learning_rate: float = 0.05) -> Dict[str, float]:
         with torch.no_grad():
             f = self.fast_process(x_input)
             r = self.deep_process(f)
@@ -58,8 +58,8 @@ class HybridNeuromorphicCore(nn.Module):
                 target_onehot = torch.zeros_like(out)
                 target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
                 
-                # マージン学習
-                error = (target_onehot - out) * 1.5 
+                # 標準的な誤差信号 (余計なブーストなし)
+                error = (target_onehot - out)
                 
                 self.output_gate.update_plasticity(r, out, reward=error, learning_rate=learning_rate)
 
