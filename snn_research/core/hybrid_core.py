@@ -1,46 +1,28 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (Final: Hard Top-K & Adaptive)
-# 内容: 厳格なTop-Kフィルタリングと適応型閾値SNNの統合
+# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: LSM構成・連続読み出し版)
 
 import torch
 import torch.nn as nn
-from typing import Dict, Optional, cast
+from typing import Dict, Optional
 from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
 
-class TopKActivation(nn.Module):
-    def __init__(self, sparsity: float = 0.15, gain: float = 3.0) -> None:
-        super().__init__()
-        self.sparsity = sparsity
-        self.gain = gain
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        k = int(x.shape[1] * self.sparsity)
-        if k < 1: k = 1
-        
-        topk_values, topk_indices = torch.topk(x, k, dim=1)
-        
-        # Hard Mask: 下位は完全にゼロ (ノイズ遮断)
-        mask = torch.zeros_like(x)
-        mask.scatter_(1, topk_indices, 1.0)
-        
-        return x * mask * self.gain
-
 class ActivePredictiveLayer(nn.Module):
-    def __init__(self, features: int) -> None: 
-        super().__init__()
-        self.norm = nn.LayerNorm(features)
-        # sparsity 0.15, gain 3.0 (最も安定した設定)
-        self.activation = TopKActivation(sparsity=0.15, gain=3.0)
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor: 
-        x = self.norm(x)
-        return self.activation(x)
+    def __init__(self, features): super().__init__()
+    def forward(self, x): return x
 
 class HybridNeuromorphicCore(nn.Module):
     def __init__(self, in_features: int, hidden_features: int, out_features: int) -> None:
         super().__init__()
+        
+        # 隠れ層: 'reservoir' モード (固定・量子化重み)
+        # 入力を高次元特徴空間へ非線形変換する
         self.fast_process = LogicGatedSNN(in_features, hidden_features, mode='reservoir')
+        
+        # パススルー
         self.deep_process = ActivePredictiveLayer(hidden_features)
+        
+        # 出力層: 'readout' モード (学習・連続値重み)
+        # 高精度な線形分離を行う
         self.output_gate = LogicGatedSNN(hidden_features, out_features, mode='readout')
 
     def forward(self, x_input: torch.Tensor) -> torch.Tensor:
@@ -48,39 +30,36 @@ class HybridNeuromorphicCore(nn.Module):
         r = self.deep_process(f)
         return self.output_gate(r)
 
-    def autonomous_step(self, x_input: torch.Tensor, target: Optional[torch.Tensor] = None, learning_rate: float = 0.02) -> Dict[str, float]:
+    def autonomous_step(self, x_input: torch.Tensor, target: Optional[torch.Tensor] = None) -> Dict[str, float]:
         with torch.no_grad():
+            # 1. Forward Pass
             f = self.fast_process(x_input)
             r = self.deep_process(f)
             out = self.output_gate(r)
             
-            loss_val = 0.0
-            acc = 0.0
+            reward_scalar_val = 0.0
             
             if target is not None:
+                # 2. Compute Error (Target - Output)
+                # 教師あり学習信号
                 target_onehot = torch.zeros_like(out)
                 target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
                 
-                # 標準エラー信号
-                error = (target_onehot - out)
+                # 単純な誤差: 正解ラベルなら+1したい、不正解なら-1したい
+                error = target_onehot - out
                 
-                self.output_gate.update_plasticity(r, out, reward=error, learning_rate=learning_rate)
+                # 3. Update Output Layer ONLY
+                # 連続値重みを更新する
+                self.output_gate.update_plasticity(r, out, reward=error)
 
+                # 精度計測
                 pred = out.argmax(dim=1)
                 acc = (pred == target).float().mean().item()
-                loss_val = error.pow(2).mean().item()
-
-            res_density = torch.mean(f).item()
-            out_density = torch.mean(out).item()
-            v_mem = cast(torch.Tensor, self.output_gate.membrane_potential)
-            v_mean = torch.mean(v_mem).item()
-            v_max = torch.max(v_mem).item()
+                reward_scalar_val = acc
 
         return {
-            "loss": loss_val,
-            "accuracy": acc,
-            "res_density": res_density,
-            "out_density": out_density,
-            "out_v_mean": v_mean,
-            "out_v_max": v_max
+            "prediction_error": 0.0,
+            "reward": reward_scalar_val,
+            "output_spike_count": float(out.sum().item() / x_input.size(0)),
+            "proficiency": 0.0
         }
