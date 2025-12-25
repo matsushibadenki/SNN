@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Bipolar Signal Processing)
-# 内容: バイポーラ変換(-1/+1)によるノイズ相殺効果で、限界ノイズ(0.48)を完全攻略
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Supervised Prototype Aggregation)
+# 内容: 教師ありヘブ学習によるプロトタイプ凝集、限界ノイズ(0.48)での理論限界突破
 
 import sys
 import os
@@ -48,7 +48,7 @@ def generate_synthetic_data(num_samples: int = 5000,
     
     noise_mask = (torch.rand(num_samples, in_features, device=device) < probs).float()
     
-    # 0/1 データとして生成 (後でレイヤー内でバイポーラ化する)
+    # 0/1 データとして生成
     x = torch.abs(patterns - noise_mask)
     y = labels
     
@@ -61,18 +61,18 @@ def run_simulation():
 
     IN_FEATURES = 784
     OUT_FEATURES = 10
-    # バイポーラ効果を最大化するためにバッチサイズを大きく取る
+    # プロトタイプ凝集には大数法則が効くため、バッチサイズは大きいほど良い
     BATCH_SIZE = 2048 
     TOTAL_SAMPLES = 60000
-    EPOCHS = 35 
+    EPOCHS = 30 
     
-    INITIAL_LR = 0.01
+    # 移動平均の更新率に相当。ノイズが大きい場合は小さく設定して平均化を強める。
+    INITIAL_LR = 0.02
     
-    # バイポーラモードで初期化
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
-    print(f"\nModel initialized: LogicGatedSNN (Bipolar Mode)")
-    print(f"Training Logic: Bipolar Transform (-1/1), Noise Cancellation, Delta Rule.")
+    print(f"\nModel initialized: LogicGatedSNN (Prototype Aggregation Mode)")
+    print(f"Training Logic: Supervised Hebbian Averaging (Noise Cancellation).")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -85,18 +85,21 @@ def run_simulation():
     current_lr = INITIAL_LR
     
     for epoch in range(EPOCHS):
-        # カリキュラム: 最初からある程度のノイズを入れて、バイポーラの恩恵を学習させる
-        if epoch < 10:
-            current_noise_range = (0.10, 0.40)
+        # カリキュラム: 早期に高ノイズに晒し、頑健な「骨格」を作る
+        if epoch < 5:
+            current_noise_range = (0.0, 0.30)
             current_lr = INITIAL_LR
-        elif epoch < 25:
-            # 難易度アップ
-            current_noise_range = (0.30, 0.48)
+        elif epoch < 15:
+            current_noise_range = (0.20, 0.45)
             current_lr = INITIAL_LR * 0.8
-        else:
-            # 極限環境
-            current_noise_range = (0.45, 0.50)
+        elif epoch < 25:
+            # 高ノイズ特化
+            current_noise_range = (0.40, 0.49)
             current_lr = INITIAL_LR * 0.5
+        else:
+            # 最終調整 (学習率を下げて重みを固定化)
+            current_noise_range = (0.45, 0.50)
+            current_lr = INITIAL_LR * 0.1
             
         x_train, y_train, _ = generate_synthetic_data(
             num_samples=TOTAL_SAMPLES, 
@@ -119,20 +122,18 @@ def run_simulation():
         for data, target in loader:
             data, target = data.to(device, non_blocking=True), target.to(device, non_blocking=True)
             
-            # Forward (内部でバイポーラ変換)
+            # Forward
             out = layer(data)
             
-            # Target One-Hot
+            # Target One-Hot (これが「正解の型」となる)
             target_onehot = torch.zeros_like(out)
             target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
             
-            # Error Signal
-            error_signal = target_onehot - out
+            # Update Weights: 誤差ではなく「ターゲットそのもの」を渡して、重みをそちらへ引き寄せる
+            layer.update_plasticity(data, out, target_onehot, learning_rate=current_lr)
             
-            # Update (Bipolar input is used internally for update too)
-            layer.update_plasticity(data, out, error_signal, learning_rate=current_lr)
-            
-            loss = error_signal.pow(2).mean().item()
+            # Loss (MSE) - モニタリング用
+            loss = (target_onehot - out).pow(2).mean().item()
             pred = out.argmax(dim=1)
             acc = (pred == target).float().sum().item()
             
