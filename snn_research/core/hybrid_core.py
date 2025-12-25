@@ -1,45 +1,36 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: Leaky Top-K)
+# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: Hard Top-K & Adaptive Support)
 
 import torch
 import torch.nn as nn
 from typing import Dict, Optional, cast
 from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
 
-class LeakyTopKActivation(nn.Module):
-    """
-    Leaky Top-K Activation:
-    上位k%はそのまま通し、それ以外も完全にゼロにはせず、
-    leak_factor倍して通す。ReLUに対するLeaky ReLUのような関係。
-    """
-    def __init__(self, sparsity: float = 0.15, gain: float = 3.0, leak_factor: float = 0.1) -> None:
+class TopKActivation(nn.Module):
+    def __init__(self, sparsity: float = 0.15, gain: float = 3.0) -> None:
         super().__init__()
         self.sparsity = sparsity
         self.gain = gain
-        self.leak_factor = leak_factor
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         k = int(x.shape[1] * self.sparsity)
         if k < 1: k = 1
         
-        # 上位k個のインデックスを取得
         topk_values, topk_indices = torch.topk(x, k, dim=1)
         
-        # マスク作成: 上位は1.0, 下位はleak_factor
-        mask = torch.full_like(x, self.leak_factor)
+        # Hard Mask: 下位は完全にゼロ
+        mask = torch.zeros_like(x)
         mask.scatter_(1, topk_indices, 1.0)
         
-        # 信号増幅
         return x * mask * self.gain
 
 class ActivePredictiveLayer(nn.Module):
     def __init__(self, features: int) -> None: 
         super().__init__()
         self.norm = nn.LayerNorm(features)
-        # 【修正】Leaky Top-K を採用
-        # sparsity 0.15: エリート選別
-        # leak 0.1: 下位ニューロンも10%の影響力を持つ（文脈保持）
-        self.activation = LeakyTopKActivation(sparsity=0.15, gain=3.0, leak_factor=0.1)
+        # 【修正】Leaky廃止。ノイズ完全遮断。
+        # sparsity 0.15, gain 3.0 (安定設定)
+        self.activation = TopKActivation(sparsity=0.15, gain=3.0)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
         x = self.norm(x)
@@ -70,6 +61,7 @@ class HybridNeuromorphicCore(nn.Module):
                 target_onehot = torch.zeros_like(out)
                 target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
                 
+                # 標準エラー
                 error = (target_onehot - out)
                 
                 self.output_gate.update_plasticity(r, out, reward=error, learning_rate=learning_rate)
