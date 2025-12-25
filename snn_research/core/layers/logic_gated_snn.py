@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Prototype Aggregation)
-# 内容: 教師ありヘブ学習(平均化)によるノイズ除去、バイポーラ信号処理、適応型温度
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: EMA & Decorrelation)
+# 内容: EMAによるロバストなプロトタイプ学習、重み直交化、バイポーラ信号処理
 
 import torch
 import torch.nn as nn
@@ -29,17 +29,17 @@ class LogicGatedSNN(nn.Module):
             std_dev = 0.05
             trainable = True
             
-            # 初期重み
+            # 直交初期化により初期の分離能を確保
             states = torch.empty(out_features, in_features)
             nn.init.orthogonal_(states, gain=1.0)
             states = states * std_dev
             
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
-            # 温度パラメータ (初期値は適度に)
+            # 温度パラメータ: 初期値は低めに設定し、学習とともに上昇させる
             self.register_buffer('adaptive_threshold', torch.ones(out_features) * 20.0)
         else:
-            # リザーバー層
+            # リザーバー層 (固定)
             std_dev = 3.0 / math.sqrt(in_features)
             trainable = False
             
@@ -83,29 +83,24 @@ class LogicGatedSNN(nn.Module):
         
         if self.mode == 'readout':
             # --- Bipolar Transformation ---
-            # 0/1 -> -1/1
+            # 0/1 の入力を -1/1 に変換。ノイズ成分(0.5)を0.0にする効果がある。
             x_bipolar = (x - 0.5) * 2.0
             
-            # 正規化: ベクトルの向きだけを比較するため
+            # Normalization
             x_norm = F.normalize(x_bipolar, p=2, dim=1, eps=1e-8)
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             
             # Cosine Similarity
-            # 高ノイズ下でも、プロトタイプ学習が成功していれば、
-            # 正解クラスとの類似度がわずかに他より高くなる
+            # 高ノイズ下でも、プロトタイプが正しく形成されていれば信号が検出できる
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
-            # Adaptive Temperature Scaling
+            # Temperature Scaling
             temperature = self.adaptive_threshold.mean()
-            
-            # スケーリング
             scaled_sim = cosine_sim * temperature
             
             if self.training:
-                # 学習中はSoftmaxで確率的勾配を流す
                 spikes = F.softmax(scaled_sim, dim=1)
             else:
-                # 推論時はHard Argmaxで最も確信度の高いものを選ぶ
                 spikes = torch.zeros_like(scaled_sim)
                 _, max_idx = scaled_sim.max(dim=1)
                 spikes.scatter_(1, max_idx.unsqueeze(1), 1.0)
@@ -123,10 +118,6 @@ class LogicGatedSNN(nn.Module):
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor], learning_rate: float = 0.02) -> None:
-        """
-        Supervised Hebbian Averaging (Prototype Aggregation)
-        reward引数にTarget One-Hotを受け取ることを想定。
-        """
         if not self.trainable:
             return
 
@@ -136,51 +127,65 @@ class LogicGatedSNN(nn.Module):
             # Input Bipolar Transform
             pre_spikes_bipolar = (pre_spikes - 0.5) * 2.0
             
-            # rewardがTarget One-Hotであるか確認
             if isinstance(reward, torch.Tensor) and reward.shape == post_spikes.shape:
                 target_onehot = reward
                 
-                # --- Prototype Aggregation Logic ---
-                # 正解クラスの重みを、現在の入力ベクトル(の平均)に近づける。
-                # w_new = w_old + lr * (x - w_old)  <-- 移動平均の式
-                # これを展開すると: delta = x - w_old (ただしターゲットのみ)
-                # 簡略化: delta = Target^T * Input
-                # これを正規化後に加算することで、重みは入力の平均方向へ向く
+                # --- EMA Prototype Update ---
+                # 各クラスに対応する入力ベクトルの平均(Centroid)を計算
+                # centroid[c] = sum(target[b, c] * input[b]) / sum(target[b, c])
                 
-                # Positive Phase (Attraction): 正解クラスを入力へ引き寄せる
-                pos_delta = torch.matmul(target_onehot.t(), pre_spikes_bipolar) / batch_size
+                # バッチ内の各クラスの出現回数
+                class_counts = target_onehot.sum(dim=0).unsqueeze(1) + 1e-8
                 
-                # Negative Phase (Repulsion): 不正解クラスを入力から遠ざける（マージン最大化）
-                # ただし、高ノイズ時は「遠ざける」操作がノイズ学習になるリスクがあるため、
-                # Attraction（正解への収束）を主成分とする。
-                # Repulsionは弱めに設定、または正解との乖離（エラー）に基づく場合のみ適用。
+                # クラスごとの入力の合計
+                class_sums = torch.matmul(target_onehot.t(), pre_spikes_bipolar)
                 
-                # 純粋なHebbian Aggregationを採用
-                delta = pos_delta
+                # クラスごとの平均ベクトル (Batch Centroids)
+                batch_centroids = class_sums / class_counts
+                
+                # 正規化して方向ベクトルにする
+                batch_centroids = F.normalize(batch_centroids, p=2, dim=1)
+                
+                # 現在の重みとの差分 (Delta)
+                # w_new = w_old + lr * (centroid - w_old)
+                # これにより重みはCentroidに向かって指数移動平均で近づく
+                delta = batch_centroids - F.normalize(self.states, p=2, dim=1)
+                
+                # ターゲットが存在したクラスのみ更新するマスク
+                update_mask = (target_onehot.sum(dim=0).unsqueeze(1) > 0).float()
+                delta = delta * update_mask
 
             else:
-                # Fallback for legacy calls
+                # Fallback (Legacy)
                 if isinstance(reward, float):
                     reward_tensor = torch.full((batch_size, self.out_features), reward, device=pre_spikes.device)
                 else:
                     reward_tensor = reward
                 delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes_bipolar) / batch_size
 
-            # Momentum Update
-            momentum_factor = 0.95
-            self.momentum_buffer.mul_(momentum_factor).add_(delta)
+            # 重み更新 (Momentumは使わず、純粋なEMA的な挙動にするため直接加算)
+            self.states.add_(delta * learning_rate)
             
-            # Weight Update
-            self.states.add_(self.momentum_buffer * learning_rate)
+            # --- Constraints & Regularization ---
             
-            # --- Constraints & Normalization ---
-            
-            # 1. Centering: 重み自体のバイアスを除去
+            # 1. Centering (平均除去)
             mean_weight = self.states.mean(dim=1, keepdim=True)
             self.states.sub_(mean_weight)
             
-            # 2. Norm Scaling: 重みベクトルを単位球面上に配置
-            # これにより、重みは「方向（プロトタイプ）」のみを表現するようになる
+            # 2. Decorrelation (直交化) - 非常に重要
+            # 重みベクトル同士が似てしまうのを防ぎ、分離能を維持する
+            # w = w - beta * (w @ w.T) @ w  (Gram-Schmidt的な効果)
+            if random.random() < 0.1: # 毎回やると重いので時々実行
+                w_norm = F.normalize(self.states, p=2, dim=1)
+                gram_matrix = torch.matmul(w_norm, w_norm.t())
+                # 対角成分(自己相関)を0にして、他との相関だけを残す
+                eye = torch.eye(self.out_features, device=self.states.device)
+                gram_matrix = gram_matrix * (1.0 - eye)
+                # 相関がある方向成分を引く
+                decorrelation_delta = torch.matmul(gram_matrix, self.states)
+                self.states.sub_(decorrelation_delta * 0.05)
+            
+            # 3. Norm Scaling
             norm = self.states.norm(p=2, dim=1, keepdim=True)
             target_norm = math.sqrt(self.in_features)
             scale_factor = target_norm / (norm + 1e-8)
@@ -191,13 +196,10 @@ class LogicGatedSNN(nn.Module):
             
             # Temperature Auto-tuning
             if self.mode == 'readout':
-                # エントロピー制御: 確信度が高まるにつれて温度を下げていく（尖らせる）のではなく、
-                # 逆にCosine類似度の値が安定してくるため、温度を上げてSoftmaxをシャープにする。
                 entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
-                target_entropy = 0.1 # 非常に低いエントロピー（One-hotに近い状態）を目指す
-                
-                # エントロピーが高すぎる(迷っている) -> 温度を上げる(差を強調する)
-                # エントロピーが低い(確信している) -> 温度を維持
-                temp_delta = 0.5 * (entropy - target_entropy)
+                target_entropy = 0.2
+                # エントロピーが高い(迷っている) -> 温度を上げて差を強調
+                temp_delta = 0.1 * (entropy - target_entropy)
                 self.adaptive_threshold.add_(temp_delta)
-                self.adaptive_threshold.clamp_(10.0, 150.0) # 上限を高めに設定
+                # 温度が高すぎると不安定になるので上限を設定
+                self.adaptive_threshold.clamp_(10.0, 60.0)
