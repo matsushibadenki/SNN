@@ -10,8 +10,6 @@ class DiffGatedTopK(nn.Module):
     """
     Difference-based Gating Top-K:
     上位1位と2位の差分（Confidence Margin）に基づいて、信号強度を動的に調整する。
-    差が大きい＝確信度が高い -> 強く通す
-    差が小さい＝迷っている -> 弱く通す（抑制）
     """
     def __init__(self, sparsity: float = 0.15, gain: float = 3.0) -> None:
         super().__init__()
@@ -19,33 +17,27 @@ class DiffGatedTopK(nn.Module):
         self.gain = gain
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Top-K マスク
         k = int(x.shape[1] * self.sparsity)
-        if k < 2: k = 2 # 差分計算のため最低2つ必要
+        if k < 2: k = 2
         
         topk_values, topk_indices = torch.topk(x, k, dim=1)
         
-        # 1位と2位の差分を計算 (バッチごと)
-        # topk_values: [Batch, K]
-        diff = topk_values[:, 0] - topk_values[:, 1] # [Batch]
+        # 1位と2位の差分を計算
+        diff = topk_values[:, 0] - topk_values[:, 1]
         
-        # 差分に応じた動的ゲイン (Sigmoidでスケーリング)
-        # 差が0に近い -> ゲイン小
-        # 差が大きい -> ゲイン大
+        # 差分に応じた動的ゲイン (Sigmoid)
         dynamic_gain = torch.sigmoid(diff) * self.gain + 1.0
-        dynamic_gain = dynamic_gain.unsqueeze(1) # [Batch, 1]
+        dynamic_gain = dynamic_gain.unsqueeze(1)
         
         mask = torch.zeros_like(x)
         mask.scatter_(1, topk_indices, 1.0)
         
-        # マスク * 動的ゲイン
         return x * mask * dynamic_gain
 
 class ActivePredictiveLayer(nn.Module):
     def __init__(self, features: int) -> None: 
         super().__init__()
         self.norm = nn.LayerNorm(features)
-        # 【修正】Diff-Gated Top-K を採用
         self.activation = DiffGatedTopK(sparsity=0.15, gain=3.0)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
