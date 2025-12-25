@@ -1,89 +1,118 @@
-# **Matsushiba Denki SNN \- 統合テストコマンド完全版 (v20 Unified)**
+# **SNNプロジェクト 網羅的テストマニュアル**
 
-このドキュメントは、SNNプロジェクトの全バージョン（Brain v20, v16, v14）および全機能（Phase 1-16+）を網羅したテストコマンド集です。
+このドキュメントは、SNN（Spiking Neural Network）プロジェクトにおけるテスト実行手順、検証スクリプトの使用方法、および各テストの目的を網羅的にまとめたものです。
 
-最新の **SCAL (Statistical Centroid Alignment Learning)** 技術、および **Brain v2.0 Spartan Training** の手順を含みます。
+開発者は、コードの変更後にこれらのテストを実行し、リグレッションが発生していないことを確認してください。
 
-## **📋 目次**
+## **1\. クイックスタート (全テスト実行)**
 
-1. [CLI & 環境準備](https://www.google.com/search?q=%231-cli--%E7%92%B0%E5%A2%83%E6%BA%96%E5%82%99)  
-2. [Brain v20 / v16 Demo](https://www.google.com/search?q=%232-brain-v20--v16-demo) **(Updated\!)**  
-3. [Training Workflow](https://www.google.com/search?q=%233-training-workflow) **(New\!)**  
-4. [SCAL & Core Technology](https://www.google.com/search?q=%234-scal--core-technology) **(New\!)**  
-5. [Legacy & Benchmarks](https://www.google.com/search?q=%235-legacy--benchmarks)
+プロジェクトの健全性を全体的に確認するためのコマンドです。
 
-## **1\. CLI & 環境準備**
+### **プロジェクト全体の自動テスト**
 
-プロジェクトルートで実行してください。
+scripts/run\_all\_tests.py スクリプトを使用すると、推奨される設定で全てのテストスイートを実行できます。
 
-\# 仮想環境の有効化 (推奨)  
-source .venv/bin/activate
+python scripts/run\_all\_tests.py
 
-\# パスの設定 (必須)  
-export PYTHONPATH=$PYTHONPATH:.
+### **Pytestによる一括実行**
 
-## **2\. Brain v20 / v16 Demo**
+標準的な pytest コマンドを使用して、tests/ ディレクトリ以下の全てのテストを実行します。
 
-統合された人工脳の動作デモです。
+pytest
 
-### **Brain v16.3: SCAL統合・自律動作デモ**
+## **2\. テストカテゴリと実行コマンド**
 
-視覚野、思考エンジン(Mamba)、反射モジュールが **SCAL (バイポーラ平均化)** 技術によって結合され、極限ノイズ環境でも動作します。
+テストは目的ごとに分類されています。開発中の機能に合わせて、個別に実行することで効率的に開発を進めることができます。
 
-\# 統合デモの実行 (Greeting, Logic, Safety, Reflex, Fatigueシナリオ)  
-python scripts/runners/run\_brain\_v16\_demo.py
+### **2.1 スモークテスト (Smoke Tests)**
 
-### **Brain v20 Vision: 視覚野統合**
+主要なコンポーネントがエラーなく起動・動作するかを素早く確認するためのテストです。詳細なロジック検証の前に実行することを推奨します。
 
-DVSセンサー（を模した入力）からの信号を処理し、行動を決定します。
+| テスト対象 | 説明 | 実行コマンド |
+| :---- | :---- | :---- |
+| **全パラダイム** | 全ての主要な計算パラダイムの基本動作確認 | pytest tests/test\_smoke\_all\_paradigms.py |
 
-python scripts/runners/run\_brain\_v20\_vision.py
+### **2.2 ユニットテスト & 機能テスト (Unit & Functional Tests)**
 
-## **3\. Training Workflow**
+個々のモジュールやクラスの動作を検証します。
 
-### **Brain v2.0 "Spartan" Training (Distinct Mode)**
+#### **コアコンポーネント (Core Components)**
 
-言語モデルのモード崩壊（金太郎飴状態）を防ぎ、明確な回答能力を獲得させるための厳格な学習ループです。  
-現在実行中のスクリプトです。  
-\# ターゲットLoss: 0.05  
-python scripts/trainers/train\_brain\_v5\_distinct.py
+| テスト対象 | 説明 | 実行コマンド |
+| :---- | :---- | :---- |
+| **エンコーダー** | Universal Encoderの動作検証 | pytest tests/test\_universal\_encoder.py |
+| **DSA層** | Dynamic Sparse Attention Layerの検証 | pytest tests/test\_dsa\_layer.py |
+| **QK Norm** | Query-Key Normalizationの検証 | pytest tests/test\_qk\_norm.py |
+| **Bit Spike** | Bit Spike Mambaアーキテクチャの検証 | pytest tests/test\_bit\_spike\_mamba.py |
 
-### **Web Learning (Self-Evolution)**
+#### **認知アーキテクチャ (Cognitive Architecture)**
 
-Web検索を通じて知識を獲得し、RAGデータベースを構築します。
+| テスト対象 | 説明 | 実行コマンド |
+| :---- | :---- | :---- |
+| **認知モジュール** | 記憶、推論などの認知コンポーネント群 | pytest tests/cognitive\_architecture/ |
+| **脳統合** | 各脳モジュールの統合動作検証 | pytest tests/test\_brain\_integration.py |
+| **非同期カーネル** | 非同期処理カーネルの動作検証 | pytest tests/test\_async\_brain\_kernel.py |
+| **視覚野** | Visual Cortexモデルの検証 | pytest tests/test\_visual\_cortex.py |
+| **Liquid Association** | Liquid Association Cortexの検証 | pytest tests/test\_liquid\_association.py |
 
-python scripts/runners/run\_web\_learning.py
+### **2.3 統合テスト & パイプラインテスト (Integration Tests)**
 
-## **4\. SCAL & Core Technology**
+複数のコンポーネントが連携して動作することを確認するテストです。
 
-今回確立された、ノイズ耐性限界(0.48)を突破するためのコア技術の検証コマンドです。
+| テスト対象 | 説明 | 実行コマンド |
+| :---- | :---- | :---- |
+| **DVSパイプライン** | Dynamic Vision Sensorデータ処理フロー | pytest tests/test\_dvs\_pipeline.py |
+| **GRPOロジック** | Group Relative Policy Optimizationロジック | pytest tests/test\_grpo\_logic.py |
+| **実世界統合** | センサー/アクチュエータを含む統合テスト | pytest tests/test\_integration\_real\_world.py |
 
-### **SCAL (Statistical Centroid Alignment Learning) 検証**
+## **3\. 検証・診断スクリプト (Verification Scripts)**
 
-1.58ビット・ロジックゲート樹状突起とバイポーラ統計平均化を用いた、超ロバスト学習のシミュレーションです。
+tests/ ディレクトリのテストコード以外にも、scripts/ ディレクトリにはシステムの健全性やパフォーマンスを検証するための有用なスクリプトが含まれています。
 
-\# ノイズレベル0.48（信号成分4%）での学習実証  
-python scripts/run\_logic\_gated\_learning.py
+### **3.1 システム診断・ヘルスチェック**
 
-* **期待される結果**:  
-  * Noise 0.45: Accuracy \> 85% (Excellent)  
-  * Noise 0.48: Accuracy \> 35% (State-of-the-Art / Theoretical Limit)  
-  * "Status: State-of-the-Art" が表示されれば成功です。
+| スクリプト | 説明 | 実行コマンド |
+| :---- | :---- | :---- |
+| **ヘルスチェック** | プロジェクト全体の依存関係と構成を確認 | python scripts/run\_project\_health\_check.py |
+| **コンパイラテスト** | ハードウェアコンパイラの動作確認 | python scripts/runners/run\_compiler\_test.py |
 
-### **ニューロンダイナミクス可視化**
+### **3.2 パフォーマンス・学習検証**
 
-適応型LIFニューロンの膜電位挙動を確認します。
+| スクリプト | 説明 | 実行コマンド |
+| :---- | :---- | :---- |
+| **パフォーマンス検証** | 推論速度やメモリ効率の測定 | python scripts/verify\_performance.py |
+| **Phase 3 検証** | プロジェクトフェーズ3の要件検証 | python scripts/verify\_phase3.py |
+| **DSA学習検証** | DSAアルゴリズムの学習能力検証 | python scripts/verify\_dsa\_learning.py |
+| **ベンチマーク** | 総合的なベンチマークスイートの実行 | python scripts/run\_benchmark\_suite.py |
 
-python scripts/visualize\_neuron\_dynamics.py
+### **3.3 デモ・シミュレーション実行**
 
-## **5\. Legacy & Benchmarks**
+特定の機能の動作を目視で確認するためのデモスクリプトです。
 
-### **CIFAR-10 学習ベンチマーク**
+| スクリプト | 説明 | 実行コマンド |
+| :---- | :---- | :---- |
+| **Brain v14** | Artificial Brain v14の実行 | python scripts/run\_artificial\_brain\_v14.py |
+| **視覚野デモ** | 視覚処理のデモンストレーション | python scripts/runners/run\_brain\_v20\_vision.py |
+| **Web学習** | Webからの能動的学習デモ | python scripts/runners/run\_web\_learning.py |
+| **睡眠学習** | 睡眠フェーズによる記憶定着デモ | python scripts/runners/run\_sleep\_learning\_demo.py |
 
-生物学的PCネットワークによる画像認識学習。
+## **4\. トラブルシューティング**
 
-python scripts/train\_bio\_pc\_cifar10.py
+テストが失敗する場合の一般的な対処法です。
 
-### **初期プロトタイプ (Brain v14)**
+### **よくあるエラー**
 
-python scripts/run\_artificial\_brain\_v14.py  
+1. **ModuleNotFoundError**:  
+   * 仮想環境が有効になっているか確認してください。  
+   * pip install \-r requirements.txt で依存関係がインストールされているか確認してください。  
+   * 実行ディレクトリがプロジェクトルートであることを確認してください。  
+2. **ImportError**:  
+   * PYTHONPATH が正しく設定されていない可能性があります。プロジェクトルートで実行するか、export PYTHONPATH=$PYTHONPATH:. を実行してください。  
+3. **CUDA/GPU エラー**:  
+   * GPU環境がない場合、設定ファイル (configs/) で device: cpu に変更するか、コード内のデバイス判定ロジックがCPUにフォールバックしているか確認してください。
+
+### **デバッグのヒント**
+
+特定のテストの詳細なログを表示したい場合は、-v (verbose) や \-s (標準出力を表示) オプションを使用します。
+
+pytest tests/test\_brain\_integration.py \-v \-s  
