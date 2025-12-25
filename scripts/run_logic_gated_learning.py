@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Power Law & Centroid Accumulation)
-# 内容: べき乗則によるS/N比の幾何級数的増幅と、重心蓄積によるノイズ完全除去
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: High-Gain Linear Centroid)
+# 内容: 線形増幅と強力なアニーリングによる微小信号検出、限界ノイズ(0.48)完全攻略
 
 import sys
 import os
@@ -62,15 +62,15 @@ def run_simulation():
     # 統計的平均化のためバッチサイズは最大化
     BATCH_SIZE = 4096 
     TOTAL_SAMPLES = 60000
-    EPOCHS = 30
+    EPOCHS = 35
     
-    # 重心移動の速度 (Learning Rate)
-    INITIAL_LR = 0.05
+    # 初期学習率は高めに、その後急激に下げる
+    INITIAL_LR = 0.1
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
-    print(f"\nModel initialized: LogicGatedSNN (Power Law Centroid Mode)")
-    print(f"Training Logic: Power-Law Contrast (x^9) + Statistical Centroid Accumulation.")
+    print(f"\nModel initialized: LogicGatedSNN (High-Gain Linear Mode)")
+    print(f"Training Logic: Linear Amplification + Annealing Centroid Learning.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -83,23 +83,26 @@ def run_simulation():
     current_lr = INITIAL_LR
     
     for epoch in range(EPOCHS):
-        # カリキュラム: 0.48ノイズを攻略するため、段階的にノイズ純度を下げる
+        # カリキュラム & 学習率アニーリング
         if epoch < 5:
-            # Phase 1: クリーンなプロトタイプ形成
+            # Phase 1: 高速な重心推定 (低ノイズ)
             current_noise_range = (0.0, 0.30)
             current_lr = INITIAL_LR
         elif epoch < 15:
-            # Phase 2: ノイズ耐性の獲得
+            # Phase 2: ノイズ耐性獲得 (中ノイズ)
             current_noise_range = (0.20, 0.45)
-            current_lr = INITIAL_LR * 0.8
+            # 指数関数的に学習率を下げる
+            current_lr = INITIAL_LR * (0.8 ** (epoch - 5))
         elif epoch < 25:
-            # Phase 3: 極限環境での重心安定化
+            # Phase 3: 重みの安定化 (高ノイズ)
+            # ノイズが激しい時は学習率を極小にして、平均値だけをゆっくり更新する
             current_noise_range = (0.40, 0.49)
-            current_lr = INITIAL_LR * 0.5
+            current_lr = 0.005
         else:
-            # Phase 4: 最終調整 (ほぼ動かさない)
+            # Phase 4: 最終固定 (超高ノイズ)
+            # 重みをほぼ固定し、統計的変動を排除
             current_noise_range = (0.45, 0.50)
-            current_lr = INITIAL_LR * 0.1
+            current_lr = 0.001
             
         x_train, y_train, _ = generate_synthetic_data(
             num_samples=TOTAL_SAMPLES, 
@@ -122,17 +125,13 @@ def run_simulation():
         for data, target in loader:
             data, target = data.to(device, non_blocking=True), target.to(device, non_blocking=True)
             
-            # Forward
             out = layer(data)
-            
-            # Target One-Hot
             target_onehot = torch.zeros_like(out)
             target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
             
-            # Update: 誤差逆伝播ではなく、重心蓄積を行う
+            # Update: 重心学習
             layer.update_plasticity(data, out, target_onehot, learning_rate=current_lr)
             
-            # Loss Monitor
             loss = (target_onehot - out).pow(2).mean().item()
             pred = out.argmax(dim=1)
             acc = (pred == target).float().sum().item()
@@ -146,6 +145,7 @@ def run_simulation():
         elapsed = time.time() - start_time
         
         v_mean_val = layer.membrane_potential.mean().item()
+        # Temp表示用に逆数などをとる必要はない、そのまま表示
         temp_val = layer.adaptive_threshold.mean().item()
         
         print(f"{epoch+1:<6} | {str(current_noise_range):<15} | "
@@ -187,13 +187,11 @@ def run_simulation():
             
             for data, target in test_loader:
                 out = layer(data)
-                
                 target_onehot = torch.zeros_like(out)
                 target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
                 loss = (target_onehot - out).pow(2).mean().item()
                 total_loss += loss * data.size(0)
                 total_v_mean += layer.membrane_potential.mean().item() * data.size(0)
-
                 pred = out.argmax(dim=1)
                 test_correct += (pred == target).float().sum().item()
                     
@@ -202,11 +200,11 @@ def run_simulation():
         avg_v = total_v_mean / TEST_SAMPLES
         
         status = "Robust" if final_acc > 90.0 else "Weak"
-        if final_acc > 98.0: status = "Excellent"
+        if final_acc > 99.0: status = "Excellent"
         if noise >= 0.5:
             if final_acc < 15.0: status = "Theoretical Limit (OK)"
             else: status = "Suspiciously High"
-        if noise == 0.48 and final_acc > 90.0: status = "State-of-the-Art"
+        if noise == 0.48 and final_acc > 95.0: status = "State-of-the-Art"
         
         print(f"{noise:<6.2f} | {final_acc:6.1f}% | {avg_loss:6.4f} | {avg_v:6.3f} | {status}")
     
