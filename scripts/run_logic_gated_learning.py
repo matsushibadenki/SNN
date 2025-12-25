@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Extreme Robustness & Speed)
-# 内容: ベクトル化された高速データ生成、高ノイズ適応型アニーリング、ロバスト性評価
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Cubic Contrast & High-Noise Specialist)
+# 内容: ベクトル化データ生成、3乗コントラスト対応、高ノイズ特化カリキュラム
 
 import sys
 import os
@@ -70,14 +70,15 @@ def run_simulation():
     HIDDEN_FEATURES = 10000 
     OUT_FEATURES = 10
     BATCH_SIZE = 128
-    TOTAL_SAMPLES = 20000
+    # ノイズを平均化するためにサンプル数を増量
+    TOTAL_SAMPLES = 30000
     EPOCHS = 40
     
     INITIAL_LR = 0.03
     
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Hyper Contrast (x50), Precise Top-K, LR Annealing.")
+    print(f"Training Logic: Cubic Contrast (x100), Soft Threshold, Noise Specialist.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -90,26 +91,23 @@ def run_simulation():
     current_lr = INITIAL_LR
     
     for epoch in range(EPOCHS):
-        # カリキュラム学習設定 (強化版)
+        # カリキュラム学習設定 (High-Noise Emphasis)
         if epoch < 10:
-            # 基礎固めフェーズ
+            # 基礎学習
             current_noise_range = (0.0, 0.20) 
             current_lr = INITIAL_LR * (0.95 ** epoch)
         elif epoch < 25:
-            # 応用フェーズ
+            # 応用学習
             current_noise_range = (0.0, 0.40)
             current_lr = INITIAL_LR * (0.95 ** epoch)
         elif epoch < 35:
-            # 高ノイズ適応フェーズ
-            current_noise_range = (0.1, 0.45)
-            # 学習率を下げて、ノイズによる重みの振動を抑制する
-            current_lr = 0.005
+            # 高ノイズ適応 (範囲を狭めて集中学習)
+            current_noise_range = (0.2, 0.48)
+            current_lr = 0.005 # 安定化のための低学習率
         else:
-            # 極限環境フェーズ (Fine-tuning)
-            # ノイズ下限を上げて、難しいサンプルのみで微調整
-            current_noise_range = (0.2, 0.50)
-            # 非常に低い学習率で、平均的な特徴（プロトタイプ）のみを定着させる
-            current_lr = 0.001
+            # 極限環境適応 (0.45 noise対策)
+            current_noise_range = (0.35, 0.50)
+            current_lr = 0.002 # 微調整
             
         # データ生成 (高速化版)
         x_train, y_train, _ = generate_synthetic_data(
