@@ -1,10 +1,10 @@
 # ファイルパス: snn_research/cognitive_architecture/hybrid_perception_cortex.py
-# (Phase 3: Cortical Column Integrated - mypy修正版)
+# (Phase 3: Cortical Column Integrated - Fix: Added perceive method)
 # Title: ハイブリッド知覚野 (Cortical Column + SOM)
 # Description:
 # - 入力スパイクを「皮質カラム (Cortical Column)」で処理し、階層的な特徴変換を行う。
 # - カラムの出力を「自己組織化マップ (SOM)」に入力し、トポロジカルな分類を行う。
-# - 修正: mypyエラー (None not callable, assignment type mismatch) を解消。
+# - 修正: perceive メソッドを追加し、ArtificialBrain との互換性を確保。
 
 import torch
 import torch.nn as nn
@@ -37,7 +37,6 @@ class HybridPerceptionCortex(nn.Module):
         self.feature_dim = feature_dim
         
         # 1. 皮質カラム (CorticalColumn)
-        # 注入されない場合は内部で簡易作成するが、self.column は常に CorticalColumn 型とする
         if cortical_column is None:
             print("⚠️ Warning: CorticalColumn not injected. Using fallback.")
             self.column = CorticalColumn(
@@ -62,52 +61,71 @@ class HybridPerceptionCortex(nn.Module):
             stdp_params=stdp_params
         )
         
-        # カラムの状態保持用 (型を明示)
+        # カラムの状態保持用
         self.prev_column_state = None
         
         print("🧠 ハイブリッド知覚野 (Cortical Column + SOM) が初期化されました。")
 
-    def perceive_and_upload(self, spike_pattern: torch.Tensor) -> None:
+    def perceive(self, sensory_input: torch.Tensor) -> Dict[str, Any]:
         """
-        入力スパイク -> カラム処理 -> SOM学習 -> Workspaceアップロード
+        ArtificialBrain から呼び出される標準インターフェース。
+        入力 -> カラム処理 -> SOM学習 -> 特徴量返却
+        
+        Args:
+            sensory_input: (Batch, Neurons) または (Neurons,)
         """
-        # spike_pattern: (Time, Neurons) または (Neurons,)
-        if spike_pattern.dim() == 2:
-            # 時間平均をとってレート入力とする (簡易化)
-            input_signal = spike_pattern.float().mean(dim=0).unsqueeze(0) # (1, Neurons)
+        # デバイス同期
+        if sensory_input.device != next(self.parameters()).device:
+            sensory_input = sensory_input.to(next(self.parameters()).device)
+
+        # 入力形状の正規化 (Batch=1 または Time平均)
+        if sensory_input.dim() == 2:
+            # (Batch, Neurons) -> (1, Neurons) 平均化
+            input_signal = sensory_input.float().mean(dim=0).unsqueeze(0)
         else:
-            input_signal = spike_pattern.float().unsqueeze(0)
+            input_signal = sensory_input.float().unsqueeze(0)
 
         # 1. 皮質カラムによる処理
-        # self.column は CorticalColumn 型であることが保証されているため、呼び出し可能
         out_ff, out_fb, current_states = self.column(input_signal, self.prev_column_state)
         
-        # 状態更新 (次のステップのために保持)
-        # Dict[str, Tensor] として保存
+        # 状態更新
         self.prev_column_state = {k: v.detach() for k, v in current_states.items()}
 
         # 2. 特徴射影
-        # カラム出力 (1, FeatureDim) -> (FeatureDim,)
         column_output = out_ff.squeeze(0)
         feature_vector = torch.relu(self.input_projection(column_output))
 
-        # 3. SOMによる特徴分類と学習
-        # 特徴ベクトルをSOMに入力
-        for _ in range(3): # 学習反復
+        # 3. SOMによる特徴分類と学習 (オンライン学習)
+        for _ in range(3): 
             som_spikes = self.som(feature_vector)
             self.som.update_weights(feature_vector, som_spikes)
         
         final_som_activation = self.som(feature_vector)
         
-        # 顕著性スコア (カラムの活性度 + 入力強度)
+        # 活性度計算
         column_activity = sum(t.mean().item() for t in current_states.values()) / len(current_states)
-        input_strength = input_signal.mean().item()
-        salience = min(1.0, (column_activity + input_strength) * 5.0)
+        
+        return {
+            "features": final_som_activation, # (FeatureDim,)
+            "column_activity": column_activity,
+            "type": "perception",
+            "details": f"Processed via Cortical Column (Activity: {column_activity:.2f})"
+        }
+
+    def perceive_and_upload(self, spike_pattern: torch.Tensor) -> None:
+        """
+        (旧インターフェース) 処理結果を直接 Workspace へアップロードする。
+        perceive メソッドをラップする形で実装。
+        """
+        result = self.perceive(spike_pattern)
+        
+        input_strength = spike_pattern.float().mean().item()
+        salience = min(1.0, (result["column_activity"] + input_strength) * 5.0)
         
         perception_data = {
             "type": "perception", 
-            "features": final_som_activation,
-            "details": f"Processed via Cortical Column (Activity: {column_activity:.2f})"
+            "features": result["features"],
+            "details": result["details"]
         }
 
         self.workspace.upload_to_workspace(
@@ -115,4 +133,4 @@ class HybridPerceptionCortex(nn.Module):
             data=perception_data,
             salience=salience
         )
-        print(f"  - 知覚野: 皮質カラム処理完了 (活性度: {column_activity:.2f}) -> Workspaceへ送信")
+        print(f"  - 知覚野: 皮質カラム処理完了 (活性度: {result['column_activity']:.2f}) -> Workspaceへ送信")
