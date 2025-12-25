@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: マージン最大化 & 信号バイアス)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 静寂なリザーバー & LR制御)
 
 import torch
 import torch.nn as nn
@@ -34,18 +34,20 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('synapse_states', states.clamp(-max_states, max_states))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
         else:
-            # リザーバー層: 分散調整 + ポジティブバイアス
-            std_dev = 3.5 / math.sqrt(in_features)
+            # リザーバー層: 発火率を抑えるための調整
+            # 【修正】3.5 -> 2.0: 重みの分散を抑える
+            std_dev = 2.0 / math.sqrt(in_features)
             self.threshold = 1.0
             trainable = False
             
             if out_features >= in_features:
                 w = torch.empty(out_features, in_features)
                 nn.init.orthogonal_(w, gain=1.0)
-                # スパース接続 (密度30%)
-                mask = (torch.rand_like(w) > 0.7).float()
-                # 【重要】信号バイアス: 抑制過多を防ぐため、正の重みをわずかに増やす (+0.01)
-                raw_states = (w + 0.01) * mask * (std_dev * 5.0) 
+                # スパース接続 (密度20%)
+                mask = (torch.rand_like(w) > 0.8).float()
+                # 【修正】バイアス削除 & スケール縮小 (5.0 -> 3.0)
+                # ノイズ過多の入力を受けても、確信度が高い部分しか反応しないようにする
+                raw_states = w * mask * (std_dev * 3.0) 
             else:
                 raw_states = torch.randn(out_features, in_features) * std_dev
 
@@ -65,7 +67,8 @@ class LogicGatedSNN(nn.Module):
     def _quantize_weights(self, x: torch.Tensor) -> torch.Tensor:
         """3値量子化 (-1, 0, 1) * 0.5"""
         w = torch.zeros_like(x)
-        threshold_val = 0.02 
+        # 【修正】0.02 -> 0.05: 閾値を上げて、より多くの小さな重みをゼロにする（スパース化）
+        threshold_val = 0.05 
         w[x > threshold_val] = 1.0
         w[x < -threshold_val] = -1.0
         return w * 0.5
@@ -90,10 +93,11 @@ class LogicGatedSNN(nn.Module):
         spikes = (v_mem >= self.threshold).float()
         return spikes
 
-    def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor]) -> None:
+    def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor], learning_rate: float = 0.02) -> None:
         """
-        マージン最大化学習 (Margin Maximization Learning)
-        reward: 通常は (target - output) だが、ここではターゲット情報そのものを受け取る想定で拡張可能。
+        学習則更新
+        Args:
+            learning_rate: 外部から減衰させたLRを受け取る
         """
         if not self.trainable:
             return
@@ -101,13 +105,7 @@ class LogicGatedSNN(nn.Module):
         with torch.no_grad():
             batch_size = pre_spikes.size(0)
             
-            # rewardがError信号の場合 (target_onehot - out)
-            # これをそのまま使うと単純なDelta則になる。
-            # ここでは「間違っている場合」だけでなく「正解だが自信がない場合」も学習させるため、
-            # 外部で計算されたErrorをそのまま信頼する（呼び出し元でマージンロジックを組むのが一般的だが、
-            # ここではシンプルに勾配を強調する）
-            
-            # Error信号の増幅（難易度が高いサンプルほど強く学ぶ）
+            # Error信号の増幅（マージン最大化ロジックの一部）
             effective_reward = reward * 2.0 
 
             if isinstance(effective_reward, float):
@@ -115,12 +113,14 @@ class LogicGatedSNN(nn.Module):
             elif effective_reward.dim() == 1:
                 effective_reward = effective_reward.unsqueeze(1).expand(-1, self.out_features)
             
-            lr = 0.02
+            # モメンタム
             momentum = 0.95 
             
             delta = torch.matmul(effective_reward.t(), pre_spikes) / batch_size
             
             self.momentum_buffer.mul_(momentum).add_(delta)
-            self.states.add_(self.momentum_buffer * lr)
+            
+            # 可変学習率の適用
+            self.states.add_(self.momentum_buffer * learning_rate)
             
             self.states.clamp_(-self.max_states, self.max_states)
