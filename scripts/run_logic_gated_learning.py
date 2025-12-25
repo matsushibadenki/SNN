@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Homeostatic Regulation)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Elite Filtering & High Momentum)
 
 import sys
 import os
@@ -65,12 +65,11 @@ def run_simulation():
     TOTAL_SAMPLES = 20000
     EPOCHS = 40
     
-    # Weight Decayに対抗するため、少し高めの学習率からスタート
     INITIAL_LR = 0.05
     
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Weight Decay, Tight Clamping [-10, 10], Normalized Dynamics.")
+    print(f"Training Logic: Top 10% Elite Filtering, High Gain 4.0, Momentum 0.98.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -92,7 +91,6 @@ def run_simulation():
         else:
             current_noise_range = (0.0, 0.49)
             
-        # 緩やかな減衰
         current_lr = INITIAL_LR * (0.97 ** epoch)
             
         x_train, y_train, _ = generate_synthetic_data(
