@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: 黄金比Top-K & シンプル構成)
+# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: 純粋化Top-K & バランス調整)
 
 import torch
 import torch.nn as nn
@@ -7,7 +7,7 @@ from typing import Dict, Optional, cast
 from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
 
 class TopKActivation(nn.Module):
-    def __init__(self, sparsity: float = 0.15, gain: float = 3.0) -> None:
+    def __init__(self, sparsity: float = 0.12, gain: float = 3.5) -> None:
         super().__init__()
         self.sparsity = sparsity
         self.gain = gain
@@ -26,8 +26,9 @@ class ActivePredictiveLayer(nn.Module):
     def __init__(self, features: int) -> None: 
         super().__init__()
         self.norm = nn.LayerNorm(features)
-        # 【修正】sparsity 0.15, gain 3.0: 経験的に最もバランスが良い設定
-        self.activation = TopKActivation(sparsity=0.15, gain=3.0)
+        # 【修正】sparsity 0.15 -> 0.12: 少しだけ絞り込む
+        # 【修正】gain 3.0 -> 3.5: 絞った分、少しだけ強める
+        self.activation = TopKActivation(sparsity=0.12, gain=3.5)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
         x = self.norm(x)
@@ -45,7 +46,7 @@ class HybridNeuromorphicCore(nn.Module):
         r = self.deep_process(f)
         return self.output_gate(r)
 
-    def autonomous_step(self, x_input: torch.Tensor, target: Optional[torch.Tensor] = None, learning_rate: float = 0.02) -> Dict[str, float]:
+    def autonomous_step(self, x_input: torch.Tensor, target: Optional[torch.Tensor] = None, learning_rate: float = 0.03) -> Dict[str, float]:
         with torch.no_grad():
             f = self.fast_process(x_input)
             r = self.deep_process(f)
@@ -58,7 +59,6 @@ class HybridNeuromorphicCore(nn.Module):
                 target_onehot = torch.zeros_like(out)
                 target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
                 
-                # エラー信号（標準）
                 error = (target_onehot - out)
                 
                 self.output_gate.update_plasticity(r, out, reward=error, learning_rate=learning_rate)
