@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Cubic Contrast)
-# 内容: 3乗則による超コントラスト強化、ロバストな学習制御、最適化された計算ロジック
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Quintic Contrast & Speed Optimized)
+# 内容: 5乗則による極限コントラスト強化、MPS対応最適化、超堅牢性閾値ロジック
 
 import torch
 import torch.nn as nn
@@ -32,8 +32,8 @@ class LogicGatedSNN(nn.Module):
         if self.mode == 'readout':
             # 読み出し層
             std_dev = 0.05
-            # Cubic Contrast用に閾値を調整 (値が小さくなるため)
-            self.base_threshold = 0.1
+            # Quintic Contrast用に閾値を調整 (高次べき乗により値が鋭敏化するため)
+            self.base_threshold = 0.05
             trainable = True
             
             # 直交初期化
@@ -94,20 +94,19 @@ class LogicGatedSNN(nn.Module):
         # --- Optimized Cosine Similarity Logic ---
         if self.mode == 'readout':
             # F.normalize を使用して高速化かつ安定化 (L2 Norm)
-            # epsを含めることでゼロ除算を防ぐ
-            x_norm = F.normalize(x, p=2, dim=1, eps=1e-8)
-            w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
+            # epsを最適化 (MPS/CUDAでの数値安定性のため 1e-6 推奨)
+            x_norm = F.normalize(x, p=2, dim=1, eps=1e-6)
+            w_norm = F.normalize(w, p=2, dim=1, eps=1e-6)
             
             # コサイン類似度計算
             cosine_sim = torch.matmul(x_norm, w_norm.t())
             
-            # --- Cubic Contrast Enhancement ---
-            # 3乗則を適用して、高い類似度と低い類似度の差を拡大する。
-            # sign()を掛けることで負の相関（逆パターン）も区別する。
-            # ノイズ環境下(0.45)では正解との類似度が低くなるが、不正解よりは高いため、
-            # この比率を拡大することでWinner-Take-Allの精度を上げる。
-            # Scale x100.0 で数値を扱いやすい範囲にする。
-            v_mem = cosine_sim.sign() * cosine_sim.abs().pow(3) * 100.0
+            # --- Quintic Contrast Enhancement (5乗則) ---
+            # 3乗則(Cubic)から5乗則(Quintic)へ強化。
+            # 高ノイズ環境(0.45以上)では信号S/N比が極端に低いため、
+            # 5乗することで「わずかに高い正解の類似度」を際立たせ、ノイズを強力に抑制する。
+            # Scale x100.0 で勾配消失を防ぐ。
+            v_mem = cosine_sim.sign() * cosine_sim.abs().pow(5) * 100.0
         else:
             v_mem = torch.matmul(x, w.t())
         
@@ -117,14 +116,14 @@ class LogicGatedSNN(nn.Module):
             adaptive_th = self.adaptive_threshold.unsqueeze(0)
             
             # 相対的閾値 (Batch-wise Adaptive)
-            # Cubic変換により値の差が開いているため、係数0.3でも
-            # 十分にノイズをカットしつつ、正解(弱まった信号)を拾える。
+            # 5乗則によりピークが鋭くなるため、係数を0.3から0.4へ引き上げ、
+            # より厳格に勝者を選定する（False Positiveの削減）。
             batch_max_v, _ = v_mem.max(dim=1, keepdim=True)
-            relative_th = batch_max_v * 0.3
+            relative_th = batch_max_v * 0.4
             
             # 最終的な閾値の決定
             effective_threshold = torch.min(adaptive_th, relative_th)
-            effective_threshold = effective_threshold.clamp(min=0.01) # 下限を少し下げる
+            effective_threshold = effective_threshold.clamp(min=0.001) 
 
             spikes = (v_mem >= effective_threshold).float()
             
@@ -133,30 +132,31 @@ class LogicGatedSNN(nn.Module):
                 with torch.no_grad():
                     fire_rate = spikes.mean(dim=0)
                     target_rate = 0.1
-                    delta = 0.01 * (fire_rate - target_rate)
+                    # 更新速度を少し落として安定化
+                    delta = 0.005 * (fire_rate - target_rate)
                     self.adaptive_threshold.add_(delta)
-                    # スケール100.0に合わせて上限を調整
                     self.adaptive_threshold.clamp_(0.01, 50.0)
         else:
             spikes = (v_mem >= self.base_threshold).float()
         
         # --- Fallback: Hard Winner-Take-All ---
-        # 少なくとも1つは発火させる（デッドニューロン防止）
+        # 推論時は常に最強の信号を採用する (Top-1)
         if self.mode == 'readout':
-            has_spike = spikes.sum(dim=1) > 0
-            if not has_spike.all():
-                no_spike_mask = ~has_spike
-                _, max_indices = v_mem[no_spike_mask].max(dim=1)
-                spikes[no_spike_mask, max_indices] = 1.0
-            
-            # 推論時(eval)は Sharpening を適用して明確な予測を行う
             if not self.training:
+                # 明確なSharpening
                 final_spikes = torch.zeros_like(spikes)
                 _, max_idx = v_mem.max(dim=1)
                 final_spikes.scatter_(1, max_idx.unsqueeze(1), 1.0)
                 spikes = final_spikes
+            else:
+                # 学習時はデッドニューロン防止のため、発火ゼロの場合のみ救済
+                has_spike = spikes.sum(dim=1) > 0
+                if not has_spike.all():
+                    no_spike_mask = ~has_spike
+                    _, max_indices = v_mem[no_spike_mask].max(dim=1)
+                    spikes[no_spike_mask, max_indices] = 1.0
 
-        # 膜電位の統計記録
+        # 膜電位の統計記録 (デバッグ用、計算グラフ切断)
         if self.training or not self.training:
             with torch.no_grad():
                 v_mean = torch.mean(v_mem, dim=0).detach()
@@ -178,8 +178,8 @@ class LogicGatedSNN(nn.Module):
             else:
                 reward_tensor = reward
             
-            # シンプルなデルタ則
-            momentum = 0.98 # モメンタムを強化し、ノイズによるブレを抑制
+            # モメンタムを用いた更新 (High-Momentum for Stability)
+            momentum = 0.99 # 0.98 -> 0.99 に強化し、高ノイズ時の勾配の振動を抑制
             delta = torch.matmul(reward_tensor.t(), pre_spikes) / batch_size
             
             self.momentum_buffer.mul_(momentum).add_(delta)
@@ -191,11 +191,8 @@ class LogicGatedSNN(nn.Module):
             mean_weight = self.states.mean(dim=1, keepdim=True)
             self.states.sub_(mean_weight)
             
-            # 2. Chaos Injection (Reduced)
-            # 最終段階でのノイズ混入を防ぐため確率を下げる
-            if random.random() < 0.0001: 
-                noise = torch.randn_like(self.states) * 0.005 * learning_rate
-                self.states.add_(noise)
+            # 2. Chaos Injection (Removed for Stability)
+            # 高精度フェーズでのカオス注入は削除し、確実な収束を促す
             
             # 3. Norm Scaling (球面射影)
             norm = self.states.norm(p=2, dim=1, keepdim=True)
