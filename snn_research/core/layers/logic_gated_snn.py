@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Hyper Contrast)
-# 内容: 超強化されたコントラスト(x50), ロバストな学習制御, および最適化された計算ロジック
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Cubic Contrast)
+# 内容: 3乗則による超コントラスト強化、ロバストな学習制御、最適化された計算ロジック
 
 import torch
 import torch.nn as nn
@@ -32,9 +32,8 @@ class LogicGatedSNN(nn.Module):
         if self.mode == 'readout':
             # 読み出し層
             std_dev = 0.05
-            # コサイン類似度(x50スケール)用の閾値初期値
-            # スケールが大きいため、初期閾値も適切に設定
-            self.base_threshold = 0.5
+            # Cubic Contrast用に閾値を調整 (値が小さくなるため)
+            self.base_threshold = 0.1
             trainable = True
             
             # 直交初期化
@@ -102,9 +101,13 @@ class LogicGatedSNN(nn.Module):
             # コサイン類似度計算
             cosine_sim = torch.matmul(x_norm, w_norm.t())
             
-            # スケーリング (x50.0 に設定してコントラストを極大化)
-            # ノイズ(0.45)環境下での微細な信号差(約0.05)を、2.5の電位差まで増幅する
-            v_mem = cosine_sim * 50.0
+            # --- Cubic Contrast Enhancement ---
+            # 3乗則を適用して、高い類似度と低い類似度の差を拡大する。
+            # sign()を掛けることで負の相関（逆パターン）も区別する。
+            # ノイズ環境下(0.45)では正解との類似度が低くなるが、不正解よりは高いため、
+            # この比率を拡大することでWinner-Take-Allの精度を上げる。
+            # Scale x100.0 で数値を扱いやすい範囲にする。
+            v_mem = cosine_sim.sign() * cosine_sim.abs().pow(3) * 100.0
         else:
             v_mem = torch.matmul(x, w.t())
         
@@ -114,14 +117,14 @@ class LogicGatedSNN(nn.Module):
             adaptive_th = self.adaptive_threshold.unsqueeze(0)
             
             # 相対的閾値 (Batch-wise Adaptive)
-            # コントラストをx50にしたため、0.5の係数でも十分なマージンを確保可能。
-            # ノイズに対する堅牢性と誤検知防止のバランスをとる。
+            # Cubic変換により値の差が開いているため、係数0.3でも
+            # 十分にノイズをカットしつつ、正解(弱まった信号)を拾える。
             batch_max_v, _ = v_mem.max(dim=1, keepdim=True)
-            relative_th = batch_max_v * 0.5
+            relative_th = batch_max_v * 0.3
             
             # 最終的な閾値の決定
             effective_threshold = torch.min(adaptive_th, relative_th)
-            effective_threshold = effective_threshold.clamp(min=0.1)
+            effective_threshold = effective_threshold.clamp(min=0.01) # 下限を少し下げる
 
             spikes = (v_mem >= effective_threshold).float()
             
@@ -132,8 +135,8 @@ class LogicGatedSNN(nn.Module):
                     target_rate = 0.1
                     delta = 0.01 * (fire_rate - target_rate)
                     self.adaptive_threshold.add_(delta)
-                    # スケール50.0に合わせて上限を調整
-                    self.adaptive_threshold.clamp_(0.1, 30.0)
+                    # スケール100.0に合わせて上限を調整
+                    self.adaptive_threshold.clamp_(0.01, 50.0)
         else:
             spikes = (v_mem >= self.base_threshold).float()
         
