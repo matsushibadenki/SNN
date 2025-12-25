@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Cubic Focus & Boundary Push)
-# 内容: M4/MPS最適化、軽量化(4096 dim)、3乗コントラスト、ノイズ上限0.47
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Cubic Strict & Momentum Master)
+# 内容: M4/MPS最適化、軽量化(4096 dim)、3乗厳格学習、ノイズ上限0.47
 
 import sys
 import os
@@ -77,7 +77,7 @@ def run_simulation():
     print(f"Running on Device: {device}")
 
     IN_FEATURES = 784
-    # 軽量化: 10000 -> 4096 (十分な表現力を維持しつつ、計算速度を向上)
+    # 軽量化: 4096
     HIDDEN_FEATURES = 4096 
     OUT_FEATURES = 10
     
@@ -91,7 +91,7 @@ def run_simulation():
     
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Cubic Contrast (x50), Speed Optimized (MPS), Boundary Push Curriculum.")
+    print(f"Training Logic: Cubic Contrast (x100), Strict Threshold, Momentum 0.995.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -105,7 +105,6 @@ def run_simulation():
     
     for epoch in range(EPOCHS):
         # カリキュラム学習設定 (High-Noise Emphasis)
-        # 0.5は含めず、0.47まで攻めることで0.45の精度を底上げする。
         if epoch < 8:
             # 基礎学習
             current_noise_range = (0.0, 0.25) 
@@ -115,13 +114,14 @@ def run_simulation():
             current_noise_range = (0.1, 0.42)
             current_lr = INITIAL_LR * (0.95 ** epoch)
         elif epoch < 32:
-            # 高ノイズ適応 (範囲拡大)
+            # 高ノイズ適応
             current_noise_range = (0.30, 0.47)
             current_lr = 0.005 
         else:
             # 極限環境適応 (0.42-0.47の境界領域を反復)
             current_noise_range = (0.42, 0.47)
-            current_lr = 0.002 # 微調整
+            # 学習率を下げすぎず、モメンタムに任せる
+            current_lr = 0.003
             
         # データ生成 (高速化版)
         x_train, y_train, _ = generate_synthetic_data(
@@ -166,7 +166,6 @@ def run_simulation():
     print("\n=== Running Robustness Evaluation (Stress Test) ===")
     core.eval()
     
-    # 0.45, 0.47, 0.48, 0.5 の粘りを確認
     noise_levels = [0.1, 0.2, 0.3, 0.4, 0.45, 0.47, 0.48, 0.5]
     TEST_SAMPLES = 5000 
     
