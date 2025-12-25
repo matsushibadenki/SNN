@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Elite Filtering & High Momentum)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: High Momentum & Gain Boost)
 
 import sys
 import os
@@ -69,7 +69,7 @@ def run_simulation():
     
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Top 10% Elite Filtering, High Gain 4.0, Momentum 0.98.")
+    print(f"Training Logic: Clamp[-100,100], Momentum 0.99, Gain 5.0.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
