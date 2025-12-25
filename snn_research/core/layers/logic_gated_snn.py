@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Centered & Robust)
-# 内容: 重みセンタリングによる膜電位正規化、適応型閾値、WTAフォールバックを備えたSNNレイヤー
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Normalized Potential)
+# 内容: 膜電位のZ-Score正規化、適応型閾値、およびWTAフォールバックを備えたSNNレイヤー
 
 import torch
 import torch.nn as nn
@@ -31,7 +31,8 @@ class LogicGatedSNN(nn.Module):
         if self.mode == 'readout':
             # 読み出し層
             std_dev = 0.05
-            self.base_threshold = 1.0 
+            # 正規化後の閾値なので、標準偏差単位で設定 (例: 1.5シグマ)
+            self.base_threshold = 1.5
             trainable = True
             states = torch.randn(out_features, in_features) * std_dev
             # クランプ範囲 [-20, 20]
@@ -84,44 +85,51 @@ class LogicGatedSNN(nn.Module):
         w = self.get_effective_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        current = torch.matmul(x, w.t())
-        v_mem = current 
+        # 1. 生の膜電位を計算
+        raw_current = torch.matmul(x, w.t())
         
+        # 2. レイヤー正規化 (Z-Score Normalization)
+        # これにより、V_Mean が -4600 でも強制的に 平均0, 分散1 に補正され、
+        # 相対的に強いニューロンが浮かび上がる。
+        if self.out_features > 1:
+            mean = raw_current.mean(dim=1, keepdim=True)
+            std = raw_current.std(dim=1, keepdim=True) + 1e-6
+            v_mem = (raw_current - mean) / std
+        else:
+            v_mem = raw_current
+
         if self.mode == 'readout':
             threshold = self.adaptive_threshold.unsqueeze(0)
             
             if self.training:
                 with torch.no_grad():
-                    # 膜電位が正規化されたため、閾値調整もより安定する
+                    # 正規化されているため、発火率はより安定する
                     fire_rate = (v_mem >= threshold).float().mean(dim=0)
                     target_rate = 0.1
                     
-                    # 閾値の動的調整 (緩やかに)
+                    # 閾値の動的調整
                     delta = 0.01 * (fire_rate - target_rate)
                     self.adaptive_threshold.add_(delta)
-                    self.adaptive_threshold.clamp_(0.5, 5.0) # 上限を少し緩和
+                    # 正規化空間なので閾値は 0.0 (平均) 〜 5.0 (5シグマ) 程度に収まる
+                    self.adaptive_threshold.clamp_(0.1, 5.0)
         else:
             threshold = self.base_threshold
 
         spikes = (v_mem >= threshold).float()
         
         # --- Robustness Fix: Winner-Take-All Fallback (Hard Top-K) ---
-        # 高ノイズ時に閾値を超えられない場合でも、最も可能性の高いニューロンを発火させる
+        # 正規化により自律発火しやすくなっているが、それでも発火しない場合の保険
         if self.mode == 'readout':
-            # バッチ内の各サンプルについて、スパイクが発生したか確認
             has_spike = spikes.sum(dim=1) > 0
             
-            # スパイクが発生しなかったサンプル（無発火）のみ対象
             if not has_spike.all():
                 no_spike_mask = ~has_spike
-                # 無発火サンプルのうち、膜電位が最大のニューロンのインデックスを取得
+                # 正規化後の値で最大のものを選ぶ＝最も相対的にマッチしているニューロン
                 _, max_indices = v_mem[no_spike_mask].max(dim=1)
-                
-                # 強制発火 (Top-1 Fallback)
-                # maskされた部分に対応するインデックスに1をセット
                 spikes[no_spike_mask, max_indices] = 1.0
 
         if self.training or not self.training:
+            # ログ出力用には正規化後の値を保存（これによりV_Meanは0付近になるはず）
             v_mean = torch.mean(v_mem, dim=0).detach()
             self.membrane_potential.copy_(v_mean)
 
@@ -141,27 +149,27 @@ class LogicGatedSNN(nn.Module):
             
             momentum = 0.95
             
+            # 勾配の計算
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
             
             self.momentum_buffer.mul_(momentum).add_(delta)
-            
             self.states.add_(self.momentum_buffer * learning_rate)
             
-            # --- Weight Centering (Homeostasis) ---
-            # 重要: 重みの平均を0に保つことで、膜電位の負へのドリフト（-7000問題）を防ぐ
-            # これにより、コサイン類似度的な動作となり、ノイズ耐性が向上する
+            # --- Weight Centering & Normalization ---
+            # 重みの平均を0に保つ (バイアスのドリフト防止)
             mean_weight = self.states.mean(dim=1, keepdim=True)
             self.states.sub_(mean_weight)
             
-            # カオス的摂動 (学習停滞防止)
+            # カオス的摂動
             if random.random() < 0.01: 
                 noise = torch.randn_like(self.states) * 0.01 * learning_rate
                 self.states.add_(noise)
             
-            # 重み正規化 (暴走防止の要)
+            # 重みノルムの正規化
             norm = self.states.norm(p=2, dim=1, keepdim=True)
             target_norm = math.sqrt(self.in_features) 
             scale_factor = torch.clamp(target_norm / (norm + 1e-6), max=1.0)
             self.states.mul_(scale_factor)
             
+            # 重みの値を制限
             self.states.clamp_(-20.0, 20.0)
