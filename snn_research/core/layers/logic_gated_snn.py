@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Cubic Strict & High Momentum)
-# 内容: 3乗則x100、厳格な学習閾値、超安定モメンタム、MPS対応
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Cubic Balanced & Resonance)
+# 内容: 3乗則x100、均衡型閾値(0.28)、共鳴モメンタム、MPS最適化
 
 import torch
 import torch.nn as nn
@@ -112,11 +112,11 @@ class LogicGatedSNN(nn.Module):
             adaptive_th = self.adaptive_threshold.unsqueeze(0)
             
             # 相対的閾値 (Batch-wise Adaptive)
-            # 0.15は甘すぎたため、0.35に引き上げ。
-            # 「本当に正解に近い」強い信号のみを学習させることで、
-            # ノイズによる重みの振動（汚染）を防ぐ。
+            # 0.35(Strict)では厳しすぎたため、0.28(Balanced)へ緩和。
+            # ノイズ0.45環境下では正解信号も減衰しているため、この「わずかな緩和」が
+            # 正解を拾うか捨てるかの分かれ目になる。
             batch_max_v, _ = v_mem.max(dim=1, keepdim=True)
-            relative_th = batch_max_v * 0.35
+            relative_th = batch_max_v * 0.28
             
             # 最終的な閾値の決定
             effective_threshold = torch.min(adaptive_th, relative_th)
@@ -175,10 +175,10 @@ class LogicGatedSNN(nn.Module):
             else:
                 reward_tensor = reward
             
-            # モメンタムを用いた更新 (Ultra Stability)
-            # 0.995 に設定し、ノイズによる突発的な勾配エラーをほぼ無視し、
-            # 長期的な傾向（正解パターン）のみを蓄積する。
-            momentum = 0.995
+            # モメンタムを用いた更新 (Balanced Stability)
+            # 0.995(Ultra)から0.985(High)へ微調整。
+            # 極限環境での適応力を持たせつつ、ノイズによるブレは防ぐバランス点。
+            momentum = 0.985
             delta = torch.matmul(reward_tensor.t(), pre_spikes) / batch_size
             
             self.momentum_buffer.mul_(momentum).add_(delta)
@@ -190,9 +190,10 @@ class LogicGatedSNN(nn.Module):
             mean_weight = self.states.mean(dim=1, keepdim=True)
             self.states.sub_(mean_weight)
             
-            # 2. Chaos Injection (Reduced)
+            # 2. Chaos Injection (Micro)
+            # デッドロック防止のための微小な揺らぎ
             if random.random() < 0.001: 
-                noise = torch.randn_like(self.states) * 0.001 * learning_rate
+                noise = torch.randn_like(self.states) * 0.002 * learning_rate
                 self.states.add_(noise)
             
             # 3. Norm Scaling (球面射影)
