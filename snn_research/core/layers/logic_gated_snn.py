@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 接続復活 & スパース性最適化)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: ポジティブシフト & 接続維持)
 
 import torch
 import torch.nn as nn
@@ -30,12 +30,13 @@ class LogicGatedSNN(nn.Module):
             std_dev = 0.05
             self.threshold = 1.0 
             trainable = True
-            states = torch.randn(out_features, in_features) * std_dev
+            # 【修正】平均0ではなく、わずかに正のバイアス(+0.01)を持たせて初期化
+            # これにより、過度な抑制（マイナス電位）を防ぎ、信号を拾いやすくする
+            states = torch.randn(out_features, in_features) * std_dev + 0.01
             self.register_buffer('synapse_states', states.clamp(-max_states, max_states))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
         else:
-            # リザーバー層: 信号が途切れないように分散を確保
-            # 【修正】2.0 -> 3.0: 重みの値を大きくし、量子化でゼロにならないようにする
+            # リザーバー層: 接続維持のための設定 (前回成功した設定を維持)
             std_dev = 3.0 / math.sqrt(in_features)
             self.threshold = 1.0
             trainable = False
@@ -43,9 +44,8 @@ class LogicGatedSNN(nn.Module):
             if out_features >= in_features:
                 w = torch.empty(out_features, in_features)
                 nn.init.orthogonal_(w, gain=1.0)
-                # スパース接続 (密度30%程度に設定)
+                # スパース接続 (密度30%)
                 mask = (torch.rand_like(w) > 0.7).float()
-                # スケール調整: 直交行列ベースの値に分散を掛ける
                 raw_states = w * mask * (std_dev * 4.0)
             else:
                 raw_states = torch.randn(out_features, in_features) * std_dev
@@ -66,7 +66,7 @@ class LogicGatedSNN(nn.Module):
     def _quantize_weights(self, x: torch.Tensor) -> torch.Tensor:
         """3値量子化 (-1, 0, 1) * 0.5"""
         w = torch.zeros_like(x)
-        # 【修正】0.05 -> 0.01: 閾値を下げて、微弱な接続も許容する（信号断絶を防ぐ）
+        # 閾値 0.01 (接続重視)
         threshold_val = 0.01 
         w[x > threshold_val] = 1.0
         w[x < -threshold_val] = -1.0
