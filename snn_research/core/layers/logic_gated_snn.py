@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Cubic Balanced & Resonance)
-# 内容: 3乗則x100、均衡型閾値(0.28)、共鳴モメンタム、MPS最適化
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Golden Ratio Threshold)
+# 内容: 3乗則x100、黄金比閾値(0.3)、限界突破対応モメンタム、MPS最適化
 
 import torch
 import torch.nn as nn
@@ -112,11 +112,10 @@ class LogicGatedSNN(nn.Module):
             adaptive_th = self.adaptive_threshold.unsqueeze(0)
             
             # 相対的閾値 (Batch-wise Adaptive)
-            # 0.35(Strict)では厳しすぎたため、0.28(Balanced)へ緩和。
-            # ノイズ0.45環境下では正解信号も減衰しているため、この「わずかな緩和」が
-            # 正解を拾うか捨てるかの分かれ目になる。
+            # 0.3 (Golden Ratio) に戻す。
+            # ノイズ0.495などの極限環境でも、誤発火を防ぎつつ正解を拾う最適なバランス。
             batch_max_v, _ = v_mem.max(dim=1, keepdim=True)
-            relative_th = batch_max_v * 0.28
+            relative_th = batch_max_v * 0.30
             
             # 最終的な閾値の決定
             effective_threshold = torch.min(adaptive_th, relative_th)
@@ -175,10 +174,10 @@ class LogicGatedSNN(nn.Module):
             else:
                 reward_tensor = reward
             
-            # モメンタムを用いた更新 (Balanced Stability)
-            # 0.995(Ultra)から0.985(High)へ微調整。
-            # 極限環境での適応力を持たせつつ、ノイズによるブレは防ぐバランス点。
-            momentum = 0.985
+            # モメンタムを用いた更新 (High Stability)
+            # 0.99 に設定。
+            # 極限ノイズ(0.495)での学習は勾配が不安定なため、強い慣性で安定化させる。
+            momentum = 0.99
             delta = torch.matmul(reward_tensor.t(), pre_spikes) / batch_size
             
             self.momentum_buffer.mul_(momentum).add_(delta)
@@ -191,7 +190,7 @@ class LogicGatedSNN(nn.Module):
             self.states.sub_(mean_weight)
             
             # 2. Chaos Injection (Micro)
-            # デッドロック防止のための微小な揺らぎ
+            # 停滞防止
             if random.random() < 0.001: 
                 noise = torch.randn_like(self.states) * 0.002 * learning_rate
                 self.states.add_(noise)
