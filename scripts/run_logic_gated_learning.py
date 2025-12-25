@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Quartic Contrast & Safe Curriculum)
-# 内容: M4/MPS最適化、軽量化(4096 dim)、4乗コントラスト、ノイズ上限ガード付きカリキュラム
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Cubic Focus & Boundary Push)
+# 内容: M4/MPS最適化、軽量化(4096 dim)、3乗コントラスト、ノイズ上限0.47
 
 import sys
 import os
@@ -77,7 +77,7 @@ def run_simulation():
     print(f"Running on Device: {device}")
 
     IN_FEATURES = 784
-    # 軽量化: 10000 -> 4096 (十分な表現力を維持しつつ、計算速度を2.5倍向上)
+    # 軽量化: 10000 -> 4096 (十分な表現力を維持しつつ、計算速度を向上)
     HIDDEN_FEATURES = 4096 
     OUT_FEATURES = 10
     
@@ -91,7 +91,7 @@ def run_simulation():
     
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Quartic Contrast (x100), Speed Optimized (MPS), Safe-Limit Curriculum.")
+    print(f"Training Logic: Cubic Contrast (x50), Speed Optimized (MPS), Boundary Push Curriculum.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -105,8 +105,7 @@ def run_simulation():
     
     for epoch in range(EPOCHS):
         # カリキュラム学習設定 (High-Noise Emphasis)
-        # ノイズ0.5は完全ランダム(情報量ゼロ)のため、学習データに含めると重みが破壊される。
-        # 上限を0.46 (情報の残存4%) に留め、構造を維持させる。
+        # 0.5は含めず、0.47まで攻めることで0.45の精度を底上げする。
         if epoch < 8:
             # 基礎学習
             current_noise_range = (0.0, 0.25) 
@@ -116,13 +115,12 @@ def run_simulation():
             current_noise_range = (0.1, 0.42)
             current_lr = INITIAL_LR * (0.95 ** epoch)
         elif epoch < 32:
-            # 高ノイズ適応 (最も難しい領域をカバー)
-            current_noise_range = (0.30, 0.46)
-            current_lr = 0.005
+            # 高ノイズ適応 (範囲拡大)
+            current_noise_range = (0.30, 0.47)
+            current_lr = 0.005 
         else:
-            # 極限環境適応 (0.40-0.46の境界領域を反復し、微調整)
-            # 0.5は含めない
-            current_noise_range = (0.40, 0.46)
+            # 極限環境適応 (0.42-0.47の境界領域を反復)
+            current_noise_range = (0.42, 0.47)
             current_lr = 0.002 # 微調整
             
         # データ生成 (高速化版)
@@ -168,8 +166,8 @@ def run_simulation():
     print("\n=== Running Robustness Evaluation (Stress Test) ===")
     core.eval()
     
-    # 0.45, 0.48 の粘りを確認
-    noise_levels = [0.1, 0.2, 0.3, 0.4, 0.45, 0.48, 0.5]
+    # 0.45, 0.47, 0.48, 0.5 の粘りを確認
+    noise_levels = [0.1, 0.2, 0.3, 0.4, 0.45, 0.47, 0.48, 0.5]
     TEST_SAMPLES = 5000 
     
     print(f"{'Noise':<6} | {'Acc':<7} | {'Loss':<6} | {'O_Spk%':<6} | {'V_Mean':<6} | {'Status'}")
