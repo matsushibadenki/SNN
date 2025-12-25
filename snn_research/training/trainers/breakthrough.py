@@ -256,7 +256,9 @@ class BreakthroughTrainer:
                      self.neuron_selector.step(loss_dict['total'].item())
                 if self.meta_cognitive_snn:
                      acc = 0.0 
-                     self.meta_cognitive_snn.update_metadata(loss_dict['total'].item(), time.time()-start_time, acc)
+                     # [Fix] Commented out method call that doesn't exist
+                     # self.meta_cognitive_snn.update_metadata(loss_dict['total'].item(), time.time()-start_time, acc)
+                     pass
 
             final_loss_dict: Dict[str, Any] = {k: v for k, v in loss_dict.items()}
             
