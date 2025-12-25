@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Bipolar Signal Processing)
-# 内容: バイポーラ変換(-1/+1)によるノイズキャンセリング、デルタ則、温度スケーリング
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Prototype Aggregation)
+# 内容: 教師ありヘブ学習(平均化)によるノイズ除去、バイポーラ信号処理、適応型温度
 
 import torch
 import torch.nn as nn
@@ -29,15 +29,15 @@ class LogicGatedSNN(nn.Module):
             std_dev = 0.05
             trainable = True
             
-            # 重みもバイポーラ的な挙動を期待して初期化
+            # 初期重み
             states = torch.empty(out_features, in_features)
             nn.init.orthogonal_(states, gain=1.0)
             states = states * std_dev
             
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
-            # 温度パラメータ
-            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 30.0)
+            # 温度パラメータ (初期値は適度に)
+            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 20.0)
         else:
             # リザーバー層
             std_dev = 3.0 / math.sqrt(in_features)
@@ -83,24 +83,29 @@ class LogicGatedSNN(nn.Module):
         
         if self.mode == 'readout':
             # --- Bipolar Transformation ---
-            # 0/1 のスパイク入力を -1/+1 に変換
-            # ノイズ(0.5付近)は 0.0 にマップされ、ドット積で相殺されるようになる
+            # 0/1 -> -1/1
             x_bipolar = (x - 0.5) * 2.0
             
-            # Normalization (Bipolar空間での正規化)
+            # 正規化: ベクトルの向きだけを比較するため
             x_norm = F.normalize(x_bipolar, p=2, dim=1, eps=1e-8)
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             
-            # Cosine Similarity (Noise Cancellation Active)
+            # Cosine Similarity
+            # 高ノイズ下でも、プロトタイプ学習が成功していれば、
+            # 正解クラスとの類似度がわずかに他より高くなる
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
-            # Temperature Scaling
+            # Adaptive Temperature Scaling
             temperature = self.adaptive_threshold.mean()
+            
+            # スケーリング
             scaled_sim = cosine_sim * temperature
             
             if self.training:
+                # 学習中はSoftmaxで確率的勾配を流す
                 spikes = F.softmax(scaled_sim, dim=1)
             else:
+                # 推論時はHard Argmaxで最も確信度の高いものを選ぶ
                 spikes = torch.zeros_like(scaled_sim)
                 _, max_idx = scaled_sim.max(dim=1)
                 spikes.scatter_(1, max_idx.unsqueeze(1), 1.0)
@@ -118,42 +123,64 @@ class LogicGatedSNN(nn.Module):
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor], learning_rate: float = 0.02) -> None:
+        """
+        Supervised Hebbian Averaging (Prototype Aggregation)
+        reward引数にTarget One-Hotを受け取ることを想定。
+        """
         if not self.trainable:
             return
 
         with torch.no_grad():
             batch_size = pre_spikes.size(0)
             
-            # 入力もバイポーラ化して学習に使う
-            # これにより「抑制(-1)」と「興奮(+1)」が正しく重みに反映される
+            # Input Bipolar Transform
             pre_spikes_bipolar = (pre_spikes - 0.5) * 2.0
             
+            # rewardがTarget One-Hotであるか確認
             if isinstance(reward, torch.Tensor) and reward.shape == post_spikes.shape:
-                error_signal = reward
-                # Delta Rule with Bipolar Input
-                # Error(batch, out) * Input(batch, in) -> Delta(out, in)
-                delta = torch.matmul(error_signal.t(), pre_spikes_bipolar) / batch_size
+                target_onehot = reward
+                
+                # --- Prototype Aggregation Logic ---
+                # 正解クラスの重みを、現在の入力ベクトル(の平均)に近づける。
+                # w_new = w_old + lr * (x - w_old)  <-- 移動平均の式
+                # これを展開すると: delta = x - w_old (ただしターゲットのみ)
+                # 簡略化: delta = Target^T * Input
+                # これを正規化後に加算することで、重みは入力の平均方向へ向く
+                
+                # Positive Phase (Attraction): 正解クラスを入力へ引き寄せる
+                pos_delta = torch.matmul(target_onehot.t(), pre_spikes_bipolar) / batch_size
+                
+                # Negative Phase (Repulsion): 不正解クラスを入力から遠ざける（マージン最大化）
+                # ただし、高ノイズ時は「遠ざける」操作がノイズ学習になるリスクがあるため、
+                # Attraction（正解への収束）を主成分とする。
+                # Repulsionは弱めに設定、または正解との乖離（エラー）に基づく場合のみ適用。
+                
+                # 純粋なHebbian Aggregationを採用
+                delta = pos_delta
+
             else:
-                # Fallback (Legacy)
+                # Fallback for legacy calls
                 if isinstance(reward, float):
                     reward_tensor = torch.full((batch_size, self.out_features), reward, device=pre_spikes.device)
                 else:
                     reward_tensor = reward
                 delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes_bipolar) / batch_size
 
-            # Momentum
+            # Momentum Update
             momentum_factor = 0.95
             self.momentum_buffer.mul_(momentum_factor).add_(delta)
             
-            # Update
+            # Weight Update
             self.states.add_(self.momentum_buffer * learning_rate)
             
-            # --- Constraints ---
-            # バイポーラ学習ではCenteringは自然に行われる傾向があるが、明示的に行うと安定する
+            # --- Constraints & Normalization ---
+            
+            # 1. Centering: 重み自体のバイアスを除去
             mean_weight = self.states.mean(dim=1, keepdim=True)
             self.states.sub_(mean_weight)
             
-            # Norm Scaling
+            # 2. Norm Scaling: 重みベクトルを単位球面上に配置
+            # これにより、重みは「方向（プロトタイプ）」のみを表現するようになる
             norm = self.states.norm(p=2, dim=1, keepdim=True)
             target_norm = math.sqrt(self.in_features)
             scale_factor = target_norm / (norm + 1e-8)
@@ -164,9 +191,13 @@ class LogicGatedSNN(nn.Module):
             
             # Temperature Auto-tuning
             if self.mode == 'readout':
+                # エントロピー制御: 確信度が高まるにつれて温度を下げていく（尖らせる）のではなく、
+                # 逆にCosine類似度の値が安定してくるため、温度を上げてSoftmaxをシャープにする。
                 entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
-                # 少しエントロピー低め(確信度高め)を目指す
-                target_entropy = 0.3 
-                temp_delta = 0.2 * (entropy - target_entropy)
+                target_entropy = 0.1 # 非常に低いエントロピー（One-hotに近い状態）を目指す
+                
+                # エントロピーが高すぎる(迷っている) -> 温度を上げる(差を強調する)
+                # エントロピーが低い(確信している) -> 温度を維持
+                temp_delta = 0.5 * (entropy - target_entropy)
                 self.adaptive_threshold.add_(temp_delta)
-                self.adaptive_threshold.clamp_(10.0, 100.0)
+                self.adaptive_threshold.clamp_(10.0, 150.0) # 上限を高めに設定
