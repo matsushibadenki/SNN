@@ -13,13 +13,15 @@ class MetaCognitiveSNN(nn.Module):
     - Uncertainty Monitoring: エントロピーに基づく不確実性の検知
     - Surprise Detection: 予測と現実の乖離（驚き）の検知
     """
-    def __init__(self, d_model: int, entropy_threshold: float = 1.5):
+    def __init__(self, d_model: int, uncertainty_threshold: float = 1.5, surprise_threshold: float = 0.5):
         super().__init__()
         self.d_model = d_model
-        self.entropy_threshold = entropy_threshold
+        # [Fix] Renamed/Aliased to match usage
+        self.entropy_threshold = uncertainty_threshold
+        # [Fix] Added missing attribute
+        self.surprise_threshold = surprise_threshold
         
         # 簡易的な「確信度評価ネットワーク」
-        # (実際には前頭前野の働きを模したSNN層が入るが、ここでは軽量なMLPで実装)
         self.confidence_estimator = nn.Sequential(
             nn.Linear(d_model, d_model // 2),
             nn.ReLU(),
