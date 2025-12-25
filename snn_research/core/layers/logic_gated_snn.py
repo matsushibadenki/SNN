@@ -1,9 +1,10 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Normalized Potential)
-# 内容: 膜電位のZ-Score正規化、適応型閾値、およびWTAフォールバックを備えたSNNレイヤー
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Cosine Similarity)
+# 内容: コサイン類似度によるロバストな推論、適応型閾値、およびWTAフォールバックを備えたSNNレイヤー
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import math
 import random
 from typing import cast, Union, Optional
@@ -31,8 +32,9 @@ class LogicGatedSNN(nn.Module):
         if self.mode == 'readout':
             # 読み出し層
             std_dev = 0.05
-            # 正規化後の閾値なので、標準偏差単位で設定 (例: 1.5シグマ)
-            self.base_threshold = 1.5
+            # コサイン類似度(x10スケール)用の閾値初期値
+            # ランダムなベクトル同士の類似度は0に近いが、学習が進むと正になる
+            self.base_threshold = 0.5 
             trainable = True
             states = torch.randn(out_features, in_features) * std_dev
             # クランプ範囲 [-20, 20]
@@ -85,51 +87,55 @@ class LogicGatedSNN(nn.Module):
         w = self.get_effective_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # 1. 生の膜電位を計算
-        raw_current = torch.matmul(x, w.t())
-        
-        # 2. レイヤー正規化 (Z-Score Normalization)
-        # これにより、V_Mean が -4600 でも強制的に 平均0, 分散1 に補正され、
-        # 相対的に強いニューロンが浮かび上がる。
-        if self.out_features > 1:
-            mean = raw_current.mean(dim=1, keepdim=True)
-            std = raw_current.std(dim=1, keepdim=True) + 1e-6
-            v_mem = (raw_current - mean) / std
+        # --- Cosine Similarity Logic ---
+        if self.mode == 'readout':
+            # 1. 入力ベクトルの正規化 (L2 Norm)
+            # ノイズが増えてスパイク数が増減しても、方向だけを見るようにする
+            x_norm = x / (x.norm(p=2, dim=1, keepdim=True) + 1e-8)
+            
+            # 2. 重みベクトルの正規化
+            w_norm = w / (w.norm(p=2, dim=1, keepdim=True) + 1e-8)
+            
+            # 3. コサイン類似度の計算 (-1.0 ~ 1.0)
+            cosine_sim = torch.matmul(x_norm, w_norm.t())
+            
+            # 4. スケーリング (閾値判定をしやすくするため)
+            # 10倍することで、類似度0.1の違いが値として1.0の違いになり、分離しやすくなる
+            v_mem = cosine_sim * 10.0
         else:
-            v_mem = raw_current
-
+            # リザーバー層は従来通りのドット積
+            v_mem = torch.matmul(x, w.t())
+        
+        # --- Thresholding ---
         if self.mode == 'readout':
             threshold = self.adaptive_threshold.unsqueeze(0)
             
             if self.training:
                 with torch.no_grad():
-                    # 正規化されているため、発火率はより安定する
                     fire_rate = (v_mem >= threshold).float().mean(dim=0)
                     target_rate = 0.1
                     
                     # 閾値の動的調整
                     delta = 0.01 * (fire_rate - target_rate)
                     self.adaptive_threshold.add_(delta)
-                    # 正規化空間なので閾値は 0.0 (平均) 〜 5.0 (5シグマ) 程度に収まる
-                    self.adaptive_threshold.clamp_(0.1, 5.0)
+                    # コサイン類似度x10空間なので、閾値は適度な範囲に収まる
+                    self.adaptive_threshold.clamp_(0.1, 8.0)
         else:
             threshold = self.base_threshold
 
         spikes = (v_mem >= threshold).float()
         
         # --- Robustness Fix: Winner-Take-All Fallback (Hard Top-K) ---
-        # 正規化により自律発火しやすくなっているが、それでも発火しない場合の保険
         if self.mode == 'readout':
             has_spike = spikes.sum(dim=1) > 0
             
             if not has_spike.all():
                 no_spike_mask = ~has_spike
-                # 正規化後の値で最大のものを選ぶ＝最も相対的にマッチしているニューロン
+                # コサイン類似度が最も高い（＝角度が最も近い）ニューロンを強制発火
                 _, max_indices = v_mem[no_spike_mask].max(dim=1)
                 spikes[no_spike_mask, max_indices] = 1.0
 
         if self.training or not self.training:
-            # ログ出力用には正規化後の値を保存（これによりV_Meanは0付近になるはず）
             v_mean = torch.mean(v_mem, dim=0).detach()
             self.membrane_potential.copy_(v_mean)
 
@@ -149,27 +155,32 @@ class LogicGatedSNN(nn.Module):
             
             momentum = 0.95
             
-            # 勾配の計算
+            # 勾配計算 (標準的なHebb則/誤差訂正)
+            # コサイン類似度空間でも、方向を合わせるための勾配として機能する
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
             
             self.momentum_buffer.mul_(momentum).add_(delta)
             self.states.add_(self.momentum_buffer * learning_rate)
             
-            # --- Weight Centering & Normalization ---
-            # 重みの平均を0に保つ (バイアスのドリフト防止)
+            # --- Weight Normalization & Centering ---
+            # コサイン類似度の精度を高めるため、重みの分布を整える
+            
+            # 1. Centering (ドリフト防止)
             mean_weight = self.states.mean(dim=1, keepdim=True)
             self.states.sub_(mean_weight)
             
-            # カオス的摂動
+            # 2. Chaos (停滞防止)
             if random.random() < 0.01: 
                 noise = torch.randn_like(self.states) * 0.01 * learning_rate
                 self.states.add_(noise)
             
-            # 重みノルムの正規化
+            # 3. Norm Scaling (正則化)
+            # 重みの長さを一定範囲に保つことは、コサイン類似度の学習において重要
             norm = self.states.norm(p=2, dim=1, keepdim=True)
             target_norm = math.sqrt(self.in_features) 
-            scale_factor = torch.clamp(target_norm / (norm + 1e-6), max=1.0)
+            # 極端に小さくならないようにする
+            scale_factor = torch.clamp(target_norm / (norm + 1e-6), min=0.5, max=1.5)
             self.states.mul_(scale_factor)
             
-            # 重みの値を制限
+            # 値の暴走を防ぐクランプ
             self.states.clamp_(-20.0, 20.0)
