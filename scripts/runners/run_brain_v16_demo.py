@@ -1,8 +1,8 @@
 # ファイルパス: scripts/runners/run_brain_v16_demo.py
-# Title: Brain v16.3 Integrated Demo (Fixed Mock)
+# Title: Brain v16.3 Integrated Demo (Fixed ReasoningEngine Init)
 # Description: 
 #   SCAL (Statistical Centroid Alignment Learning) 統合後の動作確認用デモ。
-#   [Fix] MockComponentにprocessメソッドを追加し、Amygdala/Cortexのインターフェースに対応。
+#   [Fix] ReasoningEngineに必要な引数(generative_model, astrocyte, tokenizer)を追加。
 
 import sys
 import os
@@ -28,7 +28,14 @@ from snn_research.cognitive_architecture.meta_cognitive_snn import MetaCognitive
 from snn_research.cognitive_architecture.hippocampus import Hippocampus
 from snn_research.models.experimental.world_model_snn import SpikingWorldModel
 from snn_research.modules.reflex_module import ReflexModule
-from snn_research.models.transformer.sformer import SFormerBlock 
+# [Fix] Import SFormer
+from snn_research.models.transformer.sformer import SFormer
+
+# [Fix] Import Tokenizer
+try:
+    from transformers import AutoTokenizer
+except ImportError:
+    AutoTokenizer = None
 
 # ログ設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -45,12 +52,10 @@ class MockComponent:
     def __call__(self, x):
         return self.forward(x)
         
-    # [Fix] Added process method to satisfy Amygdala interface
     def process(self, x):
         # 感情値(valence, arousal)のダミーを返す
         return {"valence": 0.5, "arousal": 0.1}
         
-    # [Fix] Added retrieve method to satisfy Cortex interface
     def retrieve(self, x):
         return {"knowledge": "mock knowledge"}
 
@@ -75,12 +80,7 @@ def build_demo_brain(device):
         feature_dim=256
     )
     
-    # 記憶・感情 (今回はMockではなく実物を使う、またはMockを修正)
-    # ここでは実物を使用することを推奨するが、エラー回避のためMockを使うなら修正版が必要
-    # hippocampus = Hippocampus() # 実物
-    # amygdala = Amygdala() # 実物
-    
-    # デモの軽量化のためにMockを使う場合:
+    # デモの軽量化のためにMockを使う
     hippocampus = MockComponent("Hippocampus")
     amygdala = MockComponent("Amygdala") 
     cortex = MockComponent("Cortex")
@@ -91,11 +91,37 @@ def build_demo_brain(device):
     motor = MotorCortex()
     
     # 4. 高次機能
-    reasoning = ReasoningEngine()
+    # [Fix] SFormerの初期化 (ReasoningEngine用)
+    sformer_model = SFormer(
+        vocab_size=50257, # GPT-2 default
+        d_model=128,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=512,
+        max_seq_len=128
+    ).to(device)
+
+    # [Fix] Tokenizerの初期化
+    tokenizer = None
+    if AutoTokenizer:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("gpt2")
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+        except Exception as e:
+            logger.warning(f"Could not load tokenizer: {e}")
+
+    # [Fix] ReasoningEngineに必須引数を渡す
+    reasoning = ReasoningEngine(
+        generative_model=sformer_model,
+        astrocyte=astrocyte,
+        tokenizer=tokenizer,
+        device=device
+    )
+
     world_model = SpikingWorldModel(vocab_size=100, d_model=128).to(device)
     reflex = ReflexModule(input_dim=784, action_dim=10).to(device)
     
-    # [Fix] Corrected argument name entropy_threshold -> uncertainty_threshold
     meta_cognition = MetaCognitiveSNN(d_model=128, uncertainty_threshold=0.4).to(device)
 
     # 脳の構築 (DI)
