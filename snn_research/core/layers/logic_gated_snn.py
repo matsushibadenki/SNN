@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final Fix: デュアル適応閾値)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final Fix: 安定化適応閾値)
 
 import torch
 import torch.nn as nn
@@ -12,8 +12,7 @@ class LogicGatedSNN(nn.Module):
     synapse_states: torch.Tensor
     frozen_weight: torch.Tensor
     momentum_buffer: torch.Tensor
-    adaptive_threshold_fast: torch.Tensor # 速い適応
-    adaptive_threshold_slow: torch.Tensor # 遅い適応
+    adaptive_threshold: torch.Tensor
 
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
@@ -35,10 +34,8 @@ class LogicGatedSNN(nn.Module):
             states = torch.randn(out_features, in_features) * std_dev
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
-            
-            # デュアル適応閾値
-            self.register_buffer('adaptive_threshold_fast', torch.ones(out_features) * self.base_threshold)
-            self.register_buffer('adaptive_threshold_slow', torch.ones(out_features) * self.base_threshold)
+            # 単一の適応閾値に戻す（シンプル化）
+            self.register_buffer('adaptive_threshold', torch.ones(out_features) * self.base_threshold)
         else:
             # リザーバー層
             std_dev = 3.0 / math.sqrt(in_features)
@@ -57,8 +54,7 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('frozen_weight', effective_w)
             self.register_buffer('synapse_states', torch.zeros(1))
             self.register_buffer('momentum_buffer', torch.zeros(1))
-            self.register_buffer('adaptive_threshold_fast', torch.ones(1))
-            self.register_buffer('adaptive_threshold_slow', torch.ones(1))
+            self.register_buffer('adaptive_threshold', torch.ones(1))
             
         self.register_buffer('membrane_potential', torch.zeros(out_features))
         self.trainable = trainable
@@ -88,24 +84,19 @@ class LogicGatedSNN(nn.Module):
         current = torch.matmul(x, w.t())
         v_mem = current 
         
-        # 閾値計算
         if self.mode == 'readout':
-            # FastとSlowのブレンド (Fast重視で即応性を高める)
-            threshold = (0.8 * self.adaptive_threshold_fast + 0.2 * self.adaptive_threshold_slow).unsqueeze(0)
+            threshold = self.adaptive_threshold.unsqueeze(0)
             
             if self.training:
                 with torch.no_grad():
                     fire_rate = (v_mem >= threshold).float().mean(dim=0)
                     target_rate = 0.1
                     
-                    # Fast: 瞬時に反応 (eta=0.1)
-                    self.adaptive_threshold_fast.add_(0.1 * (fire_rate - target_rate))
-                    # Slow: ゆっくり追従 (eta=0.001)
-                    self.adaptive_threshold_slow.add_(0.001 * (fire_rate - target_rate))
-                    
-                    # クリップ
-                    self.adaptive_threshold_fast.clamp_(0.5, 5.0)
-                    self.adaptive_threshold_slow.clamp_(0.5, 5.0)
+                    # 【修正】調整速度を落とし(0.01)、急激な閾値上昇を防ぐ
+                    # また、閾値の上限を厳しく制限(3.0)し、過剰抑制を防ぐ
+                    delta = 0.01 * (fire_rate - target_rate)
+                    self.adaptive_threshold.add_(delta)
+                    self.adaptive_threshold.clamp_(0.5, 3.0)
         else:
             threshold = self.base_threshold
 
@@ -129,8 +120,7 @@ class LogicGatedSNN(nn.Module):
             elif reward.dim() == 1:
                 reward = reward.unsqueeze(1).expand(-1, self.out_features)
             
-            # モメンタム強化 (0.95 -> 0.98)
-            momentum = 0.98
+            momentum = 0.95
             
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
             
@@ -138,7 +128,12 @@ class LogicGatedSNN(nn.Module):
             
             self.states.add_(self.momentum_buffer * learning_rate)
             
-            # Weight Normalization
+            # 【追加】カオス的摂動: 学習が停滞しないように微小なノイズを加える
+            # ただし、学習が進むにつれて減衰させる
+            if random.random() < 0.01: # 1%の確率で
+                noise = torch.randn_like(self.states) * 0.01 * learning_rate
+                self.states.add_(noise)
+            
             norm = self.states.norm(p=2, dim=1, keepdim=True)
             target_norm = math.sqrt(self.in_features) 
             scale_factor = torch.clamp(target_norm / (norm + 1e-6), max=1.0)
