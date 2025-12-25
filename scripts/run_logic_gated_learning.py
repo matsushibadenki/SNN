@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Cubic Contrast & High-Noise Specialist)
-# 内容: ベクトル化データ生成、3乗コントラスト対応、高ノイズ特化カリキュラム
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Quintic Contrast & Speed Master)
+# 内容: M4/MPS最適化、軽量化(4096 dim)、5乗コントラスト対応、極限ノイズ特化カリキュラム
 
 import sys
 import os
@@ -61,15 +61,28 @@ def generate_synthetic_data(num_samples: int = 5000,
     
     return x, y, prototypes
 
+def get_optimal_device():
+    """環境に応じた最適なデバイスを選択 (M4 Mac対応)"""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        # macOS Apple Silicon (M1/M2/M3/M4) 用のMetal Performance Shaders
+        return torch.device("mps")
+    else:
+        return torch.device("cpu")
+
 def run_simulation():
     set_seed(42)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_optimal_device()
     print(f"Running on Device: {device}")
 
     IN_FEATURES = 784
-    HIDDEN_FEATURES = 10000 
+    # 軽量化: 10000 -> 4096 (十分な表現力を維持しつつ、計算速度を2.5倍向上)
+    HIDDEN_FEATURES = 4096 
     OUT_FEATURES = 10
-    BATCH_SIZE = 128
+    
+    # MPS/GPU活用のためバッチサイズを拡大
+    BATCH_SIZE = 512
     # ノイズを平均化するためにサンプル数を増量
     TOTAL_SAMPLES = 30000
     EPOCHS = 40
@@ -78,7 +91,7 @@ def run_simulation():
     
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Cubic Contrast (x100), Soft Threshold, Noise Specialist.")
+    print(f"Training Logic: Quintic Contrast (x100), Speed Optimized (MPS), Noise Specialist.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -92,22 +105,23 @@ def run_simulation():
     
     for epoch in range(EPOCHS):
         # カリキュラム学習設定 (High-Noise Emphasis)
-        if epoch < 10:
-            # 基礎学習
-            current_noise_range = (0.0, 0.20) 
+        # 5乗則コントラストに合わせてフェーズを調整
+        if epoch < 8:
+            # 基礎学習 (高速立ち上げ)
+            current_noise_range = (0.0, 0.25) 
             current_lr = INITIAL_LR * (0.95 ** epoch)
-        elif epoch < 25:
-            # 応用学習
-            current_noise_range = (0.0, 0.40)
+        elif epoch < 20:
+            # 応用学習 (中難度領域の拡大)
+            current_noise_range = (0.1, 0.42)
             current_lr = INITIAL_LR * (0.95 ** epoch)
-        elif epoch < 35:
-            # 高ノイズ適応 (範囲を狭めて集中学習)
-            current_noise_range = (0.2, 0.48)
+        elif epoch < 32:
+            # 高ノイズ適応 (最も難しい領域0.45をカバー)
+            current_noise_range = (0.30, 0.48)
             current_lr = 0.005 # 安定化のための低学習率
         else:
-            # 極限環境適応 (0.45 noise対策)
-            current_noise_range = (0.35, 0.50)
-            current_lr = 0.002 # 微調整
+            # 極限環境適応 (0.45-0.50の境界領域を攻める)
+            current_noise_range = (0.40, 0.50)
+            current_lr = 0.0015 # 微調整
             
         # データ生成 (高速化版)
         x_train, y_train, _ = generate_synthetic_data(
@@ -117,6 +131,7 @@ def run_simulation():
             prototypes=shared_prototypes,
             noise_level=current_noise_range
         )
+        # MPSの場合は明示的にto(device)が必要な場合があるが、generate内で処理済み
         x_train, y_train = x_train.to(device), y_train.to(device)
         
         dataset = TensorDataset(x_train, y_train)
@@ -152,8 +167,8 @@ def run_simulation():
     print("\n=== Running Robustness Evaluation (Stress Test) ===")
     core.eval()
     
-    noise_levels = [0.1, 0.2, 0.3, 0.4, 0.45, 0.5]
-    TEST_SAMPLES = 2000
+    noise_levels = [0.1, 0.2, 0.3, 0.4, 0.45, 0.48, 0.5]
+    TEST_SAMPLES = 5000 # 評価サンプル数を増やして信頼性を向上
     
     print(f"{'Noise':<6} | {'Acc':<7} | {'Loss':<6} | {'O_Spk%':<6} | {'V_Mean':<6} | {'Status'}")
     print("-" * 65)
