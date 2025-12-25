@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Power Law Dynamics)
-# 内容: べき乗則(Power Law)によるS/N比増幅、重心蓄積学習、バイポーラ信号処理
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: High-Gain Linear)
+# 内容: 線形増幅と適応型温度制御による微小信号検出、重心学習
 
 import torch
 import torch.nn as nn
@@ -28,13 +28,15 @@ class LogicGatedSNN(nn.Module):
             std_dev = 0.05
             trainable = True
             
+            # 直交初期化
             states = torch.empty(out_features, in_features)
             nn.init.orthogonal_(states, gain=1.0)
             states = states * std_dev
             
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
-            # Power Lawを使うため、温度は低めで良い（べき乗が温度の代わりになる）
+            # 温度パラメータ: 低すぎると分布が平坦になり、高すぎると勾配消失する
+            # High-Gain Linearでは入力自体を大きくするので、温度は適度な値からスタート
             self.register_buffer('adaptive_threshold', torch.ones(out_features) * 1.0)
         else:
             std_dev = 3.0 / math.sqrt(in_features)
@@ -80,6 +82,7 @@ class LogicGatedSNN(nn.Module):
         
         if self.mode == 'readout':
             # 1. Bipolar Transformation (-1/1)
+            # ノイズ(0.5)を0.0にセンタリングするために不可欠
             x_bipolar = (x - 0.5) * 2.0
             
             # 2. Normalization
@@ -87,25 +90,24 @@ class LogicGatedSNN(nn.Module):
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             
             # 3. Cosine Similarity
+            # -1.0 ~ 1.0 の範囲
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
-            # 4. Power Law Dynamics (The Key Fix)
-            # コサイン類似度(-1 ~ 1)を、奇数乗することで、
-            # 0付近のノイズを急速に減衰させ、相関が高い部分だけを際立たせる。
-            # 例: 0.1^9 = 1e-9 (ほぼ0), 0.5^9 = 0.002
-            # これによりS/N比が劇的に改善する。
-            power_degree = 9.0 
+            # 4. High-Gain Linear Contrast (The Fix)
+            # Power Lawのような非線形変換は微小信号(0.04)を潰してしまうため廃止。
+            # 代わりに単純にゲインを上げて、Softmaxでの確率差を稼ぐ。
+            # Gain = 50.0 とすると、0.04 * 50 = 2.0 となり、Softmaxで十分な差が出る。
+            gain = 50.0
             
-            # 符号を維持したままべき乗
-            powered_sim = cosine_sim.sign() * cosine_sim.abs().pow(power_degree)
+            # 温度パラメータによる動的調整
+            temperature = self.adaptive_threshold.mean()
             
-            # スケールを戻すために定数倍（学習安定化のため）
-            scaled_sim = powered_sim * 100.0
+            # 最終的な膜電位: (Cosine * Gain) * Temperature
+            # 実質的な係数は Gain * Temperature
+            scaled_sim = cosine_sim * gain * temperature
             
             if self.training:
-                # Temperature Scalingも併用
-                temp = self.adaptive_threshold.mean()
-                spikes = F.softmax(scaled_sim * temp, dim=1)
+                spikes = F.softmax(scaled_sim, dim=1)
             else:
                 spikes = torch.zeros_like(scaled_sim)
                 _, max_idx = scaled_sim.max(dim=1)
@@ -125,33 +127,30 @@ class LogicGatedSNN(nn.Module):
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor], learning_rate: float = 0.02) -> None:
         """
-        Centroid Accumulation Rule
+        Centroid Learning Rule
         """
         if not self.trainable:
             return
 
         with torch.no_grad():
-            # Bipolar Input
+            batch_size = pre_spikes.size(0)
+            
+            # Input Bipolar
             pre_spikes_bipolar = (pre_spikes - 0.5) * 2.0
             
             if isinstance(reward, torch.Tensor) and reward.shape == post_spikes.shape:
                 target_onehot = reward
                 
                 # --- Centroid Accumulation ---
-                # 正解クラスの入力ベクトルを単純に加算平均していくイメージ
-                # 余計なRepulsion（引き剥がし）は高ノイズ下では逆効果なので行わない
-                
-                # 正解クラスごとの入力和
+                # 正解クラスのベクトル和
                 class_sums = torch.matmul(target_onehot.t(), pre_spikes_bipolar)
-                
-                # バッチ内のクラス出現数
                 class_counts = target_onehot.sum(dim=0).unsqueeze(1) + 1e-8
                 
                 # バッチ内重心
                 batch_centroids = class_sums / class_counts
                 batch_centroids = F.normalize(batch_centroids, p=2, dim=1)
                 
-                # 重心を現在の重みに近づける (EMA)
+                # 重心をターゲットへ寄せる
                 delta = batch_centroids - F.normalize(self.states, p=2, dim=1)
                 
                 # 更新マスク
@@ -161,21 +160,18 @@ class LogicGatedSNN(nn.Module):
             else:
                 # Legacy
                 if isinstance(reward, float):
-                    reward_tensor = torch.full((pre_spikes.size(0), self.out_features), reward, device=pre_spikes.device)
+                    reward_tensor = torch.full((batch_size, self.out_features), reward, device=pre_spikes.device)
                 else:
                     reward_tensor = reward
-                delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes_bipolar) / pre_spikes.size(0)
+                delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes_bipolar) / batch_size
 
             # Update
             self.states.add_(delta * learning_rate)
             
             # --- Constraints ---
-            
-            # Centering
             mean_weight = self.states.mean(dim=1, keepdim=True)
             self.states.sub_(mean_weight)
             
-            # Norm Scaling
             norm = self.states.norm(p=2, dim=1, keepdim=True)
             target_norm = math.sqrt(self.in_features)
             scale_factor = target_norm / (norm + 1e-8)
@@ -183,10 +179,12 @@ class LogicGatedSNN(nn.Module):
             
             self.states.clamp_(-20.0, 20.0)
             
-            # Temperature Adjustment (Power Lawがあるので控えめに)
+            # Temperature Auto-tuning
             if self.mode == 'readout':
+                # 線形ゲインが入っているので、温度調整はマイルドで良い
                 entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
                 target_entropy = 0.5 
-                temp_delta = 0.1 * (entropy - target_entropy)
+                temp_delta = 0.05 * (entropy - target_entropy)
                 self.adaptive_threshold.add_(temp_delta)
-                self.adaptive_threshold.clamp_(1.0, 20.0)
+                # 上限は控えめに
+                self.adaptive_threshold.clamp_(0.5, 10.0)
