@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final Fix: バランス調整)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final Fix: 適応型閾値)
 
 import torch
 import torch.nn as nn
@@ -12,6 +12,7 @@ class LogicGatedSNN(nn.Module):
     synapse_states: torch.Tensor
     frozen_weight: torch.Tensor
     momentum_buffer: torch.Tensor
+    adaptive_threshold: torch.Tensor # 追加
 
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
@@ -28,16 +29,18 @@ class LogicGatedSNN(nn.Module):
         if self.mode == 'readout':
             # 読み出し層
             std_dev = 0.05
-            self.threshold = 1.0 
+            # 初期閾値
+            self.base_threshold = 1.0 
             trainable = True
             states = torch.randn(out_features, in_features) * std_dev
-            # クランプ範囲 [-20, 20]
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
+            # 適応型閾値のバッファ
+            self.register_buffer('adaptive_threshold', torch.ones(out_features) * self.base_threshold)
         else:
-            # リザーバー層: 安定版設定 (std=3.0)
+            # リザーバー層
             std_dev = 3.0 / math.sqrt(in_features)
-            self.threshold = 1.0
+            self.base_threshold = 1.0
             trainable = False
             
             if out_features >= in_features:
@@ -50,9 +53,9 @@ class LogicGatedSNN(nn.Module):
 
             effective_w = self._quantize_weights(raw_states)
             self.register_buffer('frozen_weight', effective_w)
-            
             self.register_buffer('synapse_states', torch.zeros(1))
             self.register_buffer('momentum_buffer', torch.zeros(1))
+            self.register_buffer('adaptive_threshold', torch.ones(1)) # ダミー
             
         self.register_buffer('membrane_potential', torch.zeros(out_features))
         self.trainable = trainable
@@ -79,14 +82,38 @@ class LogicGatedSNN(nn.Module):
         w = self.get_effective_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
+        # 電流入力
         current = torch.matmul(x, w.t())
+        
+        # 膜電位
         v_mem = current 
+        
+        # 閾値判定
+        if self.mode == 'readout':
+            # 適応型閾値を使用 (Batch方向にはブロードキャスト)
+            threshold = self.adaptive_threshold.unsqueeze(0)
+            
+            # ホメオスタシス更新 (学習時のみ)
+            if self.training:
+                with torch.no_grad():
+                    # 平均発火率が高いニューロンは閾値を上げ、低いニューロンは下げる
+                    # 目標発火率: 10% (0.1)
+                    fire_rate = (v_mem >= threshold).float().mean(dim=0)
+                    target_rate = 0.1
+                    # 調整速度
+                    eta = 0.01 
+                    self.adaptive_threshold.add_(eta * (fire_rate - target_rate))
+                    # 安全範囲にクリップ
+                    self.adaptive_threshold.clamp_(0.5, 5.0)
+        else:
+            threshold = self.base_threshold
+
+        spikes = (v_mem >= threshold).float()
         
         if self.training or not self.training:
             v_mean = torch.mean(v_mem, dim=0).detach()
             self.membrane_potential.copy_(v_mean)
 
-        spikes = (v_mem >= self.threshold).float()
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor], learning_rate: float = 0.02) -> None:
@@ -101,7 +128,6 @@ class LogicGatedSNN(nn.Module):
             elif reward.dim() == 1:
                 reward = reward.unsqueeze(1).expand(-1, self.out_features)
             
-            # 【修正】モメンタムを 0.95 に戻す (バランス重視)
             momentum = 0.95
             
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
