@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Dynamic Relative Threshold)
-# 内容: 相対的閾値によるロバストな発火制御、コサイン類似度、正規化された学習則
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Tuned Contrast & Precision)
+# 内容: 調整されたコントラスト(x14), 緩和された相対閾値(0.7), および微細化された学習制御
 
 import torch
 import torch.nn as nn
@@ -32,11 +32,11 @@ class LogicGatedSNN(nn.Module):
         if self.mode == 'readout':
             # 読み出し層
             std_dev = 0.05
-            # コサイン類似度(x10スケール)用の閾値初期値
+            # コサイン類似度(x14スケール)用の閾値初期値
             self.base_threshold = 0.5
             trainable = True
             
-            # 直交初期化 (維持)
+            # 直交初期化
             states = torch.empty(out_features, in_features)
             nn.init.orthogonal_(states, gain=1.0)
             states = states * std_dev
@@ -100,25 +100,22 @@ class LogicGatedSNN(nn.Module):
             # 2. コサイン類似度
             cosine_sim = torch.matmul(x_norm, w_norm.t())
             
-            # 3. スケーリング (10.0に戻す)
-            v_mem = cosine_sim * 10.0
+            # 3. スケーリング (x14.0 に設定してコントラストを高める)
+            v_mem = cosine_sim * 14.0
         else:
             v_mem = torch.matmul(x, w.t())
         
         # --- Thresholding Logic ---
         if self.mode == 'readout':
-            # 適応型閾値 (過去の統計)
+            # 適応型閾値
             adaptive_th = self.adaptive_threshold.unsqueeze(0)
             
-            # 相対的閾値 (現在の信号強度に基づく)
-            # 各サンプルの最大膜電位の 80% を最低ラインとする
-            # これにより、信号全体が弱くても、ピークに近いニューロンは発火できる
+            # 相対的閾値
+            # 0.8 -> 0.7 に緩和。ノイズ環境下で最強のニューロンをより拾いやすくする。
             batch_max_v, _ = v_mem.max(dim=1, keepdim=True)
-            relative_th = batch_max_v * 0.8
+            relative_th = batch_max_v * 0.7
             
-            # 最終的な閾値は、適応閾値と相対閾値の小さい方（またはブレンド）を採用
-            # ここでは「発火しやすさ」を優先して、低い方を採用する戦略をとる
-            # ただし、ノイズ誤発火を防ぐため、最低限のライン(0.1)は設ける
+            # 閾値の決定
             effective_threshold = torch.min(adaptive_th, relative_th)
             effective_threshold = effective_threshold.clamp(min=0.1)
 
@@ -131,26 +128,21 @@ class LogicGatedSNN(nn.Module):
                     target_rate = 0.1
                     delta = 0.01 * (fire_rate - target_rate)
                     self.adaptive_threshold.add_(delta)
-                    self.adaptive_threshold.clamp_(0.1, 8.0)
+                    # スケール14.0に合わせて上限を調整
+                    self.adaptive_threshold.clamp_(0.1, 10.0)
         else:
             spikes = (v_mem >= self.base_threshold).float()
         
         # --- Fallback: Hard Winner-Take-All ---
-        # それでも発火しない場合（あるいは競合解決のため）、最強のニューロンのみを発火させる
         if self.mode == 'readout':
-            # スパイクが一つもないサンプルに対してTop-1を適用
             has_spike = spikes.sum(dim=1) > 0
             if not has_spike.all():
                 no_spike_mask = ~has_spike
                 _, max_indices = v_mem[no_spike_mask].max(dim=1)
                 spikes[no_spike_mask, max_indices] = 1.0
             
-            # 推論時(eval)は、複数発火していても最強の1つに絞る (Sharpening)
+            # 推論時(eval)は Sharpening を適用
             if not self.training:
-                # 既にスパイクしているものの中で、v_memが最大のものを残す処理も可能だが、
-                # ここではシンプルに argmax を正解とするケースが多いので、
-                # 出力スパイクが「確率分布」として扱われるよう、そのままにするか、WTAするか。
-                # 精度重視ならWTAを強制する。
                 final_spikes = torch.zeros_like(spikes)
                 _, max_idx = v_mem.max(dim=1)
                 final_spikes.scatter_(1, max_idx.unsqueeze(1), 1.0)
@@ -174,7 +166,7 @@ class LogicGatedSNN(nn.Module):
             elif reward.dim() == 1:
                 reward = reward.unsqueeze(1).expand(-1, self.out_features)
             
-            # シンプルなデルタ則 (報酬変調)
+            # シンプルなデルタ則
             momentum = 0.95
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
             
@@ -182,28 +174,22 @@ class LogicGatedSNN(nn.Module):
             self.states.add_(self.momentum_buffer * learning_rate)
             
             # --- Weight Normalization ---
-            # 学習直後に正規化することで、方向ベクトルとしての性質を保つ
             
             # 1. Centering
             mean_weight = self.states.mean(dim=1, keepdim=True)
             self.states.sub_(mean_weight)
             
-            # 2. Chaos (微小)
-            if random.random() < 0.01: 
+            # 2. Chaos (頻度を下げる: 1% -> 0.1%)
+            # 収束期に入っているため、過度な摂動は控える
+            if random.random() < 0.001: 
                 noise = torch.randn_like(self.states) * 0.005 * learning_rate
                 self.states.add_(noise)
             
-            # 3. Norm Scaling (重要)
-            # コサイン類似度のための重みなので、ノルムを一定に保つのが理想的
-            # ここでは厳密な1.0ではなく、ある程度の大きさを維持させる
+            # 3. Norm Scaling
             norm = self.states.norm(p=2, dim=1, keepdim=True)
-            target_norm = math.sqrt(self.in_features) # 分散1.0相当のノルム
-            
-            # ノルムが小さすぎたり大きすぎたりする場合のみ補正
+            target_norm = math.sqrt(self.in_features)
             scale_factor = target_norm / (norm + 1e-8)
-            # 急激な変化を防ぐため、補正係数をクリップする手もあるが、
-            # ここでは単純に適用して「球面上」での最適化に近づける
             self.states.mul_(scale_factor)
             
-            # 値の暴走を防ぐクランプ
+            # Clamp
             self.states.clamp_(-20.0, 20.0)
