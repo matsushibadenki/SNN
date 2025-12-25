@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: High Momentum & Gain Boost)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Weight Normalization)
 
 import sys
 import os
@@ -65,11 +65,12 @@ def run_simulation():
     TOTAL_SAMPLES = 20000
     EPOCHS = 40
     
-    INITIAL_LR = 0.05
+    # 正規化を入れたので学習率は控えめに
+    INITIAL_LR = 0.02
     
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Clamp[-100,100], Momentum 0.99, Gain 5.0.")
+    print(f"Training Logic: Weight Normalization, Top-K(15%, x3.0), Stable LR.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
