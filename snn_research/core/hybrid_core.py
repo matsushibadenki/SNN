@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: 安定化Top-K & パイプライン)
+# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: ゲインブースト3.0)
 
 import torch
 import torch.nn as nn
@@ -7,7 +7,7 @@ from typing import Dict, Optional, cast
 from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
 
 class TopKActivation(nn.Module):
-    def __init__(self, sparsity: float = 0.20, gain: float = 2.5) -> None:
+    def __init__(self, sparsity: float = 0.20, gain: float = 3.0) -> None:
         super().__init__()
         self.sparsity = sparsity
         self.gain = gain
@@ -26,9 +26,8 @@ class ActivePredictiveLayer(nn.Module):
     def __init__(self, features: int) -> None: 
         super().__init__()
         self.norm = nn.LayerNorm(features)
-        # 【修正】sparsity 0.15 -> 0.20: 厳しすぎた選別を緩和
-        # 【修正】gain 3.0 -> 2.5: バランス調整
-        self.activation = TopKActivation(sparsity=0.20, gain=2.5)
+        # 【修正】gain 2.5 -> 3.0: 信号を強力にブーストし、負のバイアスに対抗する
+        self.activation = TopKActivation(sparsity=0.20, gain=3.0)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
         x = self.norm(x)
@@ -59,7 +58,7 @@ class HybridNeuromorphicCore(nn.Module):
                 target_onehot = torch.zeros_like(out)
                 target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
                 
-                # マージン学習: 誤差信号をブースト
+                # マージン学習
                 error = (target_onehot - out) * 1.5 
                 
                 self.output_gate.update_plasticity(r, out, reward=error, learning_rate=learning_rate)
