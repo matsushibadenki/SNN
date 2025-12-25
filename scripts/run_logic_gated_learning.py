@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Dual Gate & Super Margin)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Homeostatic Regulation)
 
 import sys
 import os
@@ -65,11 +65,12 @@ def run_simulation():
     TOTAL_SAMPLES = 20000
     EPOCHS = 40
     
-    INITIAL_LR = 0.04
+    # Weight Decayに対抗するため、少し高めの学習率からスタート
+    INITIAL_LR = 0.05
     
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Dual Gate Filtering, Super Margin Learning.")
+    print(f"Training Logic: Weight Decay, Tight Clamping [-10, 10], Normalized Dynamics.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -91,7 +92,8 @@ def run_simulation():
         else:
             current_noise_range = (0.0, 0.49)
             
-        current_lr = INITIAL_LR * (0.98 ** epoch)
+        # 緩やかな減衰
+        current_lr = INITIAL_LR * (0.97 ** epoch)
             
         x_train, y_train, _ = generate_synthetic_data(
             num_samples=TOTAL_SAMPLES, 
@@ -109,7 +111,6 @@ def run_simulation():
         total_seen = 0
         epoch_loss = 0.0
         
-        # 明示的にTrainモード
         core.train()
         
         for i, (data, target) in enumerate(loader):
@@ -134,7 +135,7 @@ def run_simulation():
     print("Optimization Complete.")
     
     print("\n=== Running Robustness Evaluation (Stress Test) ===")
-    core.eval() # Evalモード（Gate OFF）
+    core.eval()
     
     noise_levels = [0.1, 0.2, 0.3, 0.4, 0.45, 0.5]
     TEST_SAMPLES = 2000
