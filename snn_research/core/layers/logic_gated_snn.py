@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Lateral Inhibition & Robust Contrast)
-# 内容: 側抑制(Lateral Inhibition)と適応型コントラストによるS/N比最大化、高速化実装
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Z-Score Adaptive Gain)
+# 内容: Zスコア正規化による動的ゲイン調整、超高ノイズ(0.45)対応、高速化実装
 
 import torch
 import torch.nn as nn
@@ -10,7 +10,7 @@ import random
 from typing import cast, Union, Optional
 
 class LogicGatedSNN(nn.Module):
-    # バッファの型ヒントを明示
+    # バッファの型ヒント
     membrane_potential: torch.Tensor
     synapse_states: torch.Tensor
     frozen_weight: torch.Tensor
@@ -32,22 +32,20 @@ class LogicGatedSNN(nn.Module):
         if self.mode == 'readout':
             # 読み出し層
             std_dev = 0.05
-            # Initial Threshold
-            self.base_threshold = 0.1
+            self.base_threshold = 1.0 # Zスコアベースなので標準偏差の倍率として機能
             trainable = True
             
-            # 直交初期化 (Orthogonal Initialization)
+            # 直交初期化
             states = torch.empty(out_features, in_features)
             nn.init.orthogonal_(states, gain=1.0)
             states = states * std_dev
             
-            # クランプ範囲 [-20, 20]
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
-            # 適応閾値 (各ニューロンごとに独立)
+            # 適応閾値 (Zスコア閾値として扱う)
             self.register_buffer('adaptive_threshold', torch.ones(out_features) * self.base_threshold)
         else:
-            # リザーバー層 (std=3.0)
+            # リザーバー層
             std_dev = 3.0 / math.sqrt(in_features)
             self.base_threshold = 1.0
             trainable = False
@@ -91,38 +89,34 @@ class LogicGatedSNN(nn.Module):
         w = self.get_effective_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # --- Optimized Cosine Similarity Logic ---
         if self.mode == 'readout':
-            # F.normalize を使用して高速化かつ安定化 (L2 Norm)
-            # eps=1e-8 でゼロ除算防止
+            # 1. Cosine Similarity Calculation
+            # 正規化して内積をとることで、ベクトルの大きさではなく向きの一致度を見る
             x_norm = F.normalize(x, p=2, dim=1, eps=1e-8)
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
+            cosine_sim = torch.matmul(x_norm, w_norm.t()) # Shape: [Batch, Out]
             
-            # コサイン類似度計算: Shape [Batch, Out]
-            cosine_sim = torch.matmul(x_norm, w_norm.t())
+            # 2. Z-Score Adaptive Gain (The Key Fix)
+            # 高ノイズ時はcosine_simの分散が小さくなり、信号が埋もれる。
+            # バッチ方向ではなく、"チャネル方向(クラス間)"の統計で正規化することで、
+            # 「他のクラスに比べてどれだけ確信度が高いか」を数値化する。
+            # これにより、ノイズレベルに関わらず、最もらしい候補が正の大きな値(Z > 2)を持つようになる。
             
-            # --- Lateral Inhibition (側抑制) ---
-            # バッチ内の平均的な応答(コモンモードノイズ)を除去し、
-            # 「他よりも突出して似ている」信号のみを強調する。
-            # 高ノイズ環境(0.45)では、正解クラスも不正解クラスも相関が低くなるため、
-            # 平均を引くことで相対的な差を浮き彫りにする。
-            inhibition = cosine_sim.mean(dim=1, keepdim=True)
-            centered_sim = cosine_sim - inhibition
+            # 平均と標準偏差を計算 (dim=1: クラス方向)
+            mean_sim = cosine_sim.mean(dim=1, keepdim=True)
+            std_sim = cosine_sim.std(dim=1, keepdim=True)
             
-            # --- Robust Cubic Contrast Enhancement ---
-            # 3乗則は強力だが、信号が微弱すぎると消失するリスクがある。
-            # 線形項(linear term)と3乗項(cubic term)をブレンドすることで、
-            # 微小な信号差を維持しつつ、強い信号をブーストする。
-            # Scale x50.0 で数値を扱いやすい範囲にする。
-            # sign()を掛けることで負の相関（逆パターン）も区別する。
-            sim_abs = centered_sim.abs()
-            # 線形項 + 3乗項。
-            # 微小領域では線形が支配的になり、消失を防ぐ。
-            # 大信号領域では3乗が支配的になり、WTAを加速する。
-            v_mem = centered_sim.sign() * (sim_abs * 1.0 + sim_abs.pow(3) * 10.0) * 50.0
+            # Zスコア化 (0除算防止のepsを入れる)
+            # 信号が微弱(stdが小)なほど、除算により値が増幅される(Adaptive Gain)
+            z_score = (cosine_sim - mean_sim) / (std_sim + 1e-6)
+            
+            # 3. Softplus & Contrast
+            # Zスコアが負（平均以下）のものは抑制し、正のものを非線形に伸ばす
+            # Scale x10.0 で扱いやすい膜電位範囲にする
+            v_mem = F.softplus(z_score) * 10.0
             
         else:
-            # リザーバー層は線形変換のみ
+            # リザーバー層は線形
             v_mem = torch.matmul(x, w.t())
         
         # --- Thresholding Logic ---
@@ -130,53 +124,51 @@ class LogicGatedSNN(nn.Module):
             # 適応型閾値
             adaptive_th = self.adaptive_threshold.unsqueeze(0)
             
-            # 相対的閾値 (Batch-wise Adaptive)
-            # Lateral Inhibitionにより値がゼロ中心に分布しているため、
-            # 正の最大値に対する相対比率で閾値を決める。
-            batch_max_v, _ = v_mem.max(dim=1, keepdim=True)
-            # 最大値が低い(全体的に自信がない)場合は、閾値を下げてでも拾いに行く
-            relative_th = batch_max_v * 0.25 
+            # Zスコアベースなので、相対閾値は不要または固定値でよい。
+            # Z=1.5 (上位約7%相当) 以上の興奮があれば発火候補とする。
+            # 学習初期は低めに、学習が進むとadaptive_thが効いてくる構成。
+            fixed_min_threshold = 10.0 # softplus(1.5)*10 ~= 1.0 * 10 = 10.0
             
-            # 最終的な閾値の決定
-            # adaptive_th と relative_th の小さい方を採用するが、
-            # ノイズフロア(0.0付近)を拾わないように下限(0.01)を設定。
+            # バッチ内の最大値に対する割合も一応見る（安全策）
+            batch_max_v, _ = v_mem.max(dim=1, keepdim=True)
+            relative_th = batch_max_v * 0.5
+            
+            # 最終閾値
             effective_threshold = torch.min(adaptive_th, relative_th)
-            effective_threshold = effective_threshold.clamp(min=0.01)
+            # 下限を設定してノイズ発火を抑制
+            effective_threshold = effective_threshold.clamp(min=fixed_min_threshold)
 
             spikes = (v_mem >= effective_threshold).float()
             
-            # 学習中の閾値更新 (Homeostasis)
+            # Homeostasis (閾値調整)
             if self.training:
                 with torch.no_grad():
-                    # 発火率の目標値を維持するように閾値を調整
                     fire_rate = spikes.mean(dim=0)
-                    target_rate = 0.1 # One-hotに近い状態を目指す
-                    # 閾値更新速度
-                    delta = 0.02 * (fire_rate - target_rate)
+                    target_rate = 0.1 # One-hot target
+                    delta = 0.05 * (fire_rate - target_rate)
                     self.adaptive_threshold.add_(delta)
-                    self.adaptive_threshold.clamp_(0.01, 30.0)
+                    # Zスコア空間なので閾値はある程度高くても良い
+                    self.adaptive_threshold.clamp_(5.0, 50.0)
         else:
             spikes = (v_mem >= self.base_threshold).float()
         
         # --- Fallback & Sharpening ---
         if self.mode == 'readout':
-            # 少なくとも1つは発火させる（デッドニューロン防止）
+            # デッドニューロン防止（少なくとも1つ発火）
             has_spike = spikes.sum(dim=1) > 0
             if not has_spike.all():
                 no_spike_mask = ~has_spike
-                # 発火しなかったサンプルについては、膜電位最大のものを強制発火
                 _, max_indices = v_mem[no_spike_mask].max(dim=1)
                 spikes[no_spike_mask, max_indices] = 1.0
             
-            # 推論時(eval)は Sharpening (Argmax) を適用して
-            # 微弱なマルチ発火を抑制し、明確な予測を行う
+            # 推論時のSharpening (Winner-Take-All)
             if not self.training:
                 final_spikes = torch.zeros_like(spikes)
                 _, max_idx = v_mem.max(dim=1)
                 final_spikes.scatter_(1, max_idx.unsqueeze(1), 1.0)
                 spikes = final_spikes
 
-        # 膜電位の統計記録 (デバッグ用)
+        # 統計記録
         with torch.no_grad():
             v_mean = torch.mean(v_mem, dim=0).detach()
             self.membrane_potential.copy_(v_mean)
@@ -197,38 +189,25 @@ class LogicGatedSNN(nn.Module):
             else:
                 reward_tensor = reward
             
-            # デルタ則による更新
-            # (Target - Output) * Input に相当する成分が含まれる
+            # デルタ則
             delta = torch.matmul(reward_tensor.t(), pre_spikes) / batch_size
             
-            # モメンタム更新
-            # ノイズ環境下では勾配が振動しやすいため、高めのモメンタム(0.99)で安定化
-            momentum_factor = 0.99
+            # モメンタム
+            momentum_factor = 0.95
             self.momentum_buffer.mul_(momentum_factor).add_(delta)
             
             # 重み更新
             self.states.add_(self.momentum_buffer * learning_rate)
             
-            # --- Weight Normalization & Constraints ---
-            
-            # 1. Centering (平均除去)
-            # 各ニューロンの重みベクトルを中心化し、バイアスを防ぐ
+            # --- Constraints ---
+            # 1. Centering (バイアス除去)
             mean_weight = self.states.mean(dim=1, keepdim=True)
             self.states.sub_(mean_weight)
             
-            # 2. Chaos Injection (Reduced)
-            # 極小確率で微小ノイズを加え、局所解脱出を促す
-            if random.random() < 0.0001: 
-                noise = torch.randn_like(self.states) * 0.01 * learning_rate
-                self.states.add_(noise)
-            
-            # 3. Norm Scaling (球面射影)
-            # 重みベクトルの長さを一定に保つ (Cosine類似度ベースの学習に必須)
+            # 2. Norm Scaling (Cos類似度用に正規化)
             norm = self.states.norm(p=2, dim=1, keepdim=True)
-            # 目標ノルムは入力次元の平方根付近が安定的
             target_norm = math.sqrt(self.in_features)
             scale_factor = target_norm / (norm + 1e-8)
             self.states.mul_(scale_factor)
             
-            # 値の爆発を防ぐClamp
             self.states.clamp_(-20.0, 20.0)
