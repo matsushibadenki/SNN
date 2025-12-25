@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: ポジティブシフト & 接続維持)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final Fix: バイアス強化 & 厳格学習)
 
 import torch
 import torch.nn as nn
@@ -30,13 +30,12 @@ class LogicGatedSNN(nn.Module):
             std_dev = 0.05
             self.threshold = 1.0 
             trainable = True
-            # 【修正】平均0ではなく、わずかに正のバイアス(+0.01)を持たせて初期化
-            # これにより、過度な抑制（マイナス電位）を防ぎ、信号を拾いやすくする
-            states = torch.randn(out_features, in_features) * std_dev + 0.01
+            # 【修正】+0.01 -> +0.05: バイアスを強化し、深い抑制下でも発火しやすくする
+            states = torch.randn(out_features, in_features) * std_dev + 0.05
             self.register_buffer('synapse_states', states.clamp(-max_states, max_states))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
         else:
-            # リザーバー層: 接続維持のための設定 (前回成功した設定を維持)
+            # リザーバー層: 成功した設定(std=3.0)を維持
             std_dev = 3.0 / math.sqrt(in_features)
             self.threshold = 1.0
             trainable = False
@@ -44,7 +43,6 @@ class LogicGatedSNN(nn.Module):
             if out_features >= in_features:
                 w = torch.empty(out_features, in_features)
                 nn.init.orthogonal_(w, gain=1.0)
-                # スパース接続 (密度30%)
                 mask = (torch.rand_like(w) > 0.7).float()
                 raw_states = w * mask * (std_dev * 4.0)
             else:
@@ -66,7 +64,6 @@ class LogicGatedSNN(nn.Module):
     def _quantize_weights(self, x: torch.Tensor) -> torch.Tensor:
         """3値量子化 (-1, 0, 1) * 0.5"""
         w = torch.zeros_like(x)
-        # 閾値 0.01 (接続重視)
         threshold_val = 0.01 
         w[x > threshold_val] = 1.0
         w[x < -threshold_val] = -1.0
@@ -99,8 +96,8 @@ class LogicGatedSNN(nn.Module):
         with torch.no_grad():
             batch_size = pre_spikes.size(0)
             
-            # マージン学習用の報酬スケーリング
-            effective_reward = reward * 2.0 
+            # 【修正】2.0 -> 3.0: マージン学習をさらに強化。正解への圧力と不正解への抑制を最大化する。
+            effective_reward = reward * 3.0 
 
             if isinstance(effective_reward, float):
                 effective_reward = torch.full((batch_size, self.out_features), effective_reward, device=pre_spikes.device)
