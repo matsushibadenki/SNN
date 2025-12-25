@@ -59,27 +59,28 @@ class BitSpikeMamba(SpikingMamba):
         ])
         self._init_weights()
 
-    def forward(self, x: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    # [Fix] Aligned signature with SpikingMamba (x -> input_ids)
+    def forward(self, input_ids: torch.Tensor, return_spikes: bool = False, **kwargs: Any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         SNN Forward Pass.
-        x: (Batch, Length) if Long (Token IDs)
-           (Batch, Length, Dim) if Float (Embeddings/Features)
+        input_ids: (Batch, Length) if Long (Token IDs)
+                   (Batch, Length, Dim) if Float (Embeddings/Features)
         """
-        B = x.size(0)
-        device = x.device
+        B = input_ids.size(0)
+        device = input_ids.device
         
         # 1. 状態リセット
         SJ_F.reset_net(self)
         
         # 2. 入力処理 (Embedding or Direct)
-        if x.dtype == torch.long:
+        if input_ids.dtype == torch.long:
             if hasattr(self, 'embedding'):
-                x_input = self.embedding(x) # (B, L, D)
+                x_input = self.embedding(input_ids) # (B, L, D)
             else:
                 raise ValueError("Model has no embedding layer but received LongTensor input.")
         else:
             # 既に埋め込み済み、あるいは視覚特徴量など
-            x_input = x # (B, L, D)
+            x_input = input_ids # (B, L, D)
 
         # 3. Statefulness有効化
         for layer in self.layers:
@@ -103,17 +104,19 @@ class BitSpikeMamba(SpikingMamba):
                 cast(SpikingMambaBlock, layer).set_stateful(False)
         
         # 6. 出力層
+        # [Fix] Cast self.norm_f/norm to Any to avoid "Tensor not callable"
         if hasattr(self, 'norm_f'):
-            x_out = self.norm_f(x_last)
+            x_out = cast(Any, self.norm_f)(x_last)
         elif hasattr(self, 'norm'):
-            x_out = self.norm(x_last)
+            x_out = cast(Any, self.norm)(x_last)
         else:
             x_out = x_last
             
+        # [Fix] Cast self.lm_head/output_projection to Any
         if hasattr(self, 'lm_head'):
-            logits = self.lm_head(x_out)
+            logits = cast(Any, self.lm_head)(x_out)
         elif hasattr(self, 'output_projection'):
-            logits = self.output_projection(x_out)
+            logits = cast(Any, self.output_projection)(x_out)
         else:
             logits = x_out
             
