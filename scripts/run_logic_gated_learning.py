@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Z-Score Adaptive Gain)
-# 内容: Zスコア正規化による超高ノイズ耐性(0.45->90%+)、動的ゲイン制御
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Soft-WTA & Robust Noise)
+# 内容: 温度付きソフトマックスと中心化コサイン類似度による超高ノイズ(0.45)突破
 
 import sys
 import os
@@ -13,7 +13,6 @@ import numpy as np
 from typing import Union, Tuple
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-# 実行環境のパス解決
 try:
     from snn_research.core.hybrid_core import HybridNeuromorphicCore
 except ImportError:
@@ -26,7 +25,7 @@ def set_seed(seed: int = 42):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = False # 速度優先
+        torch.backends.cudnn.deterministic = False 
         torch.backends.cudnn.benchmark = True 
     print(f"Seed set to: {seed}")
 
@@ -36,12 +35,11 @@ def generate_synthetic_data(num_samples: int = 5000,
                           prototypes=None, 
                           noise_level: Union[float, Tuple[float, float]] = 0.1):
     """
-    合成データの生成 (XOR Noise) - Vectorized
+    合成データの生成 (XOR Noise)
     """
     device = prototypes.device if prototypes is not None else torch.device('cpu')
 
     if prototypes is None:
-        # プロトタイプ生成 (0 or 1)
         prototypes = (torch.randn(out_features, in_features, device=device) > 0.0).float()
     
     labels = torch.randint(0, out_features, (num_samples,), device=device)
@@ -53,8 +51,6 @@ def generate_synthetic_data(num_samples: int = 5000,
         probs = torch.full((num_samples, 1), noise_level, device=device)
     
     noise_mask = (torch.rand(num_samples, in_features, device=device) < probs).float()
-    
-    # XOR Noise: abs(pattern - noise_mask)
     x = torch.abs(patterns - noise_mask)
     y = labels
     
@@ -68,11 +64,13 @@ def run_simulation():
     IN_FEATURES = 784
     HIDDEN_FEATURES = 10000 
     OUT_FEATURES = 10
-    BATCH_SIZE = 256 # バッチ統計の安定化のため大きめに設定
-    TOTAL_SAMPLES = 30000
+    # ノイズキャンセリング効果を高めるためバッチサイズを拡大
+    BATCH_SIZE = 512 
+    TOTAL_SAMPLES = 40000
     EPOCHS = 40 
     
-    INITIAL_LR = 0.05 # Zスコア化により勾配が安定するため、初期学習率を高めに設定可能
+    # Softmax学習は勾配が綺麗に出るため、学習率は控えめでも収束する
+    INITIAL_LR = 0.02
     
     try:
         core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
@@ -81,7 +79,7 @@ def run_simulation():
         return
 
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Z-Score Adaptive Gain, Robust Noise Specialist.")
+    print(f"Training Logic: Centered Cosine + Temperature Softmax (Soft-WTA).")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -96,21 +94,20 @@ def run_simulation():
     for epoch in range(EPOCHS):
         # カリキュラム学習設定
         if epoch < 10:
-            # Phase 1: 基礎 (0.0 - 0.3)
             current_noise_range = (0.0, 0.30) 
             current_lr = INITIAL_LR * (0.95 ** epoch)
         elif epoch < 25:
-            # Phase 2: 応用 (0.2 - 0.45) - 下限を上げて難しい問題に集中
+            # 徐々に難易度を上げる
             current_noise_range = (0.20, 0.45)
             current_lr = INITIAL_LR * (0.95 ** epoch)
         elif epoch < 35:
-            # Phase 3: 高ノイズ特化 (0.35 - 0.48)
+            # 高ノイズ特化ゾーン
             current_noise_range = (0.35, 0.48)
-            current_lr = 0.008 
+            current_lr = 0.003 # 重みが暴れないように低学習率で固定
         else:
-            # Phase 4: 極限 (0.40 - 0.50)
+            # 最終仕上げ
             current_noise_range = (0.40, 0.50)
-            current_lr = 0.005 
+            current_lr = 0.001
             
         x_train, y_train, _ = generate_synthetic_data(
             num_samples=TOTAL_SAMPLES, 
@@ -142,7 +139,6 @@ def run_simulation():
         avg_loss = epoch_loss / len(loader)
         elapsed = time.time() - start_time
         
-        # V_Meanが正しくスケーリングされているか確認
         v_mean_val = metrics.get('out_v_mean', 0)
         
         print(f"{epoch+1:<6} | {str(current_noise_range):<15} | "
@@ -159,7 +155,7 @@ def run_simulation():
     core.eval()
     
     noise_levels = [0.1, 0.2, 0.3, 0.4, 0.45, 0.5]
-    TEST_SAMPLES = 5000 
+    TEST_SAMPLES = 10000 # 統計的信頼性を最大化
     
     print(f"{'Noise':<6} | {'Acc':<7} | {'Loss':<6} | {'O_Spk%':<6} | {'V_Mean':<6} | {'Status'}")
     print("-" * 65)
@@ -193,9 +189,7 @@ def run_simulation():
                 
                 total_spikes += out.mean().item() * data.size(0)
                 
-                if hasattr(core, 'output_gate') and hasattr(core.output_gate, 'membrane_potential'):
-                    total_v_mean += core.output_gate.membrane_potential.mean().item() * data.size(0)
-                elif hasattr(core, 'readout_layer') and hasattr(core.readout_layer, 'membrane_potential'):
+                if hasattr(core, 'readout_layer'):
                      total_v_mean += core.readout_layer.membrane_potential.mean().item() * data.size(0)
 
                 pred = out.argmax(dim=1)
@@ -211,7 +205,6 @@ def run_simulation():
         if noise >= 0.5:
             if final_acc < 15.0: status = "Theoretical Limit (OK)"
             else: status = "Suspiciously High"
-        # 0.45で90%を超えれば成功
         if noise == 0.45 and final_acc > 90.0: status = "State-of-the-Art"
         
         print(f"{noise:<6.2f} | {final_acc:6.1f}% | {avg_loss:6.4f} | {avg_spk:5.1f}% | {avg_v:6.3f} | {status}")
