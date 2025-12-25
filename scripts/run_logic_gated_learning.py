@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
 # 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Stable & Robust)
-# 内容: 高速化されたデータ生成、カリキュラム学習、ロバスト性評価を含む完全な学習ループ
+# 内容: 高速化されたデータ生成、強化されたカリキュラム、ロバスト性評価を含む完全な学習ループ
 
 import sys
 import os
@@ -13,8 +13,6 @@ import numpy as np
 from typing import Union, Tuple
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-# 注意: HybridNeuromorphicCoreの実装はこのスクリプトの外部にある前提ですが、
-# 動作させるためにはLogicGatedSNNが正しくインポートされ、Core内で使用されている必要があります。
 from snn_research.core.hybrid_core import HybridNeuromorphicCore
 
 def set_seed(seed: int = 42):
@@ -33,6 +31,7 @@ def generate_synthetic_data(num_samples: int = 5000,
                           noise_level: Union[float, Tuple[float, float]] = 0.1):
     """
     合成データの生成 (XOR Noise) - 高速化版 (Vectorized)
+    ループ処理を廃止し、PyTorchのテンソル演算で一括生成することで劇的に高速化。
     """
     device = prototypes.device if prototypes is not None else torch.device('cpu')
 
@@ -55,14 +54,10 @@ def generate_synthetic_data(num_samples: int = 5000,
         probs = torch.full((num_samples, 1), noise_level, device=device)
     
     # ノイズマスクの生成 (確率に基づいてビット反転位置を決定)
-    # in_features次元に対してブロードキャストまたは拡張して比較
     noise_mask = (torch.rand(num_samples, in_features, device=device) < probs).float()
     
     # XOR的なノイズ付加: abs(pattern - noise)
-    # 0 - 0 -> 0
-    # 1 - 0 -> 1
-    # 0 - 1 -> 1 (反転)
-    # 1 - 1 -> 0 (反転)
+    # これによりビット反転（0->1, 1->0）をシミュレート
     x = torch.abs(patterns - noise_mask)
     y = labels
     
@@ -82,12 +77,10 @@ def run_simulation():
     
     INITIAL_LR = 0.03
     
-    # Coreの初期化 (外部ファイル依存)
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Adaptive Threshold (Tuned), Hard Top-K, Stable LR.")
+    print(f"Training Logic: High Contrast (x25), Tolerant Top-K, Hardened Curriculum.")
     
-    # プロトタイプの初期化
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
 
@@ -99,7 +92,7 @@ def run_simulation():
     current_lr = INITIAL_LR
     
     for epoch in range(EPOCHS):
-        # カリキュラム学習設定
+        # カリキュラム学習設定 (強化版)
         if epoch < 5:
             current_noise_range = (0.0, 0.20) 
         elif epoch < 15:
@@ -107,7 +100,8 @@ def run_simulation():
         elif epoch < 25:
             current_noise_range = (0.0, 0.45)
         else:
-            current_noise_range = (0.0, 0.49)
+            # 最終フェーズで下限を上げ、高ノイズへの適応を強制する
+            current_noise_range = (0.1, 0.50)
             
         # 学習率の減衰 (0.97倍/epoch)
         current_lr = INITIAL_LR * (0.97 ** epoch)
@@ -132,7 +126,6 @@ def run_simulation():
         core.train()
         
         for i, (data, target) in enumerate(loader):
-            # autonomous_stepは内部でforwardとplasticity updateを行うと想定
             metrics = core.autonomous_step(data, target, learning_rate=current_lr)
             acc = metrics["accuracy"]
             epoch_correct += acc * data.size(0)
@@ -190,7 +183,7 @@ def run_simulation():
                 total_loss += loss * data.size(0)
                 
                 total_spikes += out.mean().item() * data.size(0)
-                # output_gateがLogicGatedSNNのインスタンスであると仮定
+                # output_gateがLogicGatedSNNのインスタンスであると仮定して電位を取得
                 if hasattr(core, 'output_gate') and hasattr(core.output_gate, 'membrane_potential'):
                     total_v_mean += core.output_gate.membrane_potential.mean().item() * data.size(0)
 
@@ -208,10 +201,6 @@ def run_simulation():
             if final_acc < 15.0: status = "Theoretical Limit (OK)"
             else: status = "Suspiciously High"
         
-        # 0.45でWeakになるのを改善できているか確認
-        if noise == 0.45 and final_acc > 85.0:
-            status += " (Improved)"
-
         print(f"{noise:<6.2f} | {final_acc:6.1f}% | {avg_loss:6.4f} | {avg_spk:5.1f}% | {avg_v:6.3f} | {status}")
     
     print("\nSimulation Complete.")
