@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Adaptive & Normalized)
-# 内容: 適応型閾値、重み正規化、カオス的摂動、およびWTAフォールバックを備えたSNNレイヤー
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Centered & Robust)
+# 内容: 重みセンタリングによる膜電位正規化、適応型閾値、WTAフォールバックを備えたSNNレイヤー
 
 import torch
 import torch.nn as nn
@@ -92,13 +92,14 @@ class LogicGatedSNN(nn.Module):
             
             if self.training:
                 with torch.no_grad():
+                    # 膜電位が正規化されたため、閾値調整もより安定する
                     fire_rate = (v_mem >= threshold).float().mean(dim=0)
                     target_rate = 0.1
                     
                     # 閾値の動的調整 (緩やかに)
                     delta = 0.01 * (fire_rate - target_rate)
                     self.adaptive_threshold.add_(delta)
-                    self.adaptive_threshold.clamp_(0.5, 3.0)
+                    self.adaptive_threshold.clamp_(0.5, 5.0) # 上限を少し緩和
         else:
             threshold = self.base_threshold
 
@@ -145,6 +146,12 @@ class LogicGatedSNN(nn.Module):
             self.momentum_buffer.mul_(momentum).add_(delta)
             
             self.states.add_(self.momentum_buffer * learning_rate)
+            
+            # --- Weight Centering (Homeostasis) ---
+            # 重要: 重みの平均を0に保つことで、膜電位の負へのドリフト（-7000問題）を防ぐ
+            # これにより、コサイン類似度的な動作となり、ノイズ耐性が向上する
+            mean_weight = self.states.mean(dim=1, keepdim=True)
+            self.states.sub_(mean_weight)
             
             # カオス的摂動 (学習停滞防止)
             if random.random() < 0.01: 
