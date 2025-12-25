@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: カリキュラム学習 & k-WTA)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: カリキュラム学習 & Soft k-WTA)
 
 import sys
 import os
@@ -63,7 +63,7 @@ def run_simulation():
 
     # パラメータ設定
     IN_FEATURES = 784
-    HIDDEN_FEATURES = 10000 # 巨大なリザーバー
+    HIDDEN_FEATURES = 10000 
     OUT_FEATURES = 10
     BATCH_SIZE = 128
     TOTAL_SAMPLES = 20000
@@ -72,7 +72,7 @@ def run_simulation():
     # モデル構築
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: k-WTA (Top 10%) & Curriculum Learning.")
+    print(f"Training Logic: Soft k-WTA (Top 25% + Gain) & Curriculum Learning.")
     
     # プロトタイプの生成（全エポックで共有）
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
@@ -85,17 +85,14 @@ def run_simulation():
     start_time = time.time()
     
     for epoch in range(EPOCHS):
-        # --- カリキュラム学習のロジック ---
-        # エポックが進むにつれて難易度（ノイズ上限）を上げる
-        # しかし、常に「簡単なデータ(0.0)」も含めることで忘却を防ぐ
+        # カリキュラム学習
         if epoch < 5:
-            current_noise_range = (0.0, 0.20) # 基礎固め
+            current_noise_range = (0.0, 0.20) 
         elif epoch < 15:
-            current_noise_range = (0.0, 0.40) # 応用
+            current_noise_range = (0.0, 0.40) 
         else:
-            current_noise_range = (0.0, 0.49) # 極限訓練
+            current_noise_range = (0.0, 0.49) 
             
-        # データ生成（エポックごとに新しいノイズパターンを生成）
         x_train, y_train, _ = generate_synthetic_data(
             num_samples=TOTAL_SAMPLES, 
             in_features=IN_FEATURES, 
@@ -126,7 +123,6 @@ def run_simulation():
         avg_loss = epoch_loss / len(loader)
         elapsed = time.time() - start_time
         
-        # 途中経過表示
         print(f"{epoch+1:<6} | {str(current_noise_range):<15} | "
               f"{epoch_acc:5.1f}% | "
               f"{avg_loss:6.4f} | "
@@ -140,7 +136,6 @@ def run_simulation():
     print("\n=== Running Robustness Evaluation (Stress Test) ===")
     core.eval()
     
-    # テスト範囲
     noise_levels = [0.1, 0.2, 0.3, 0.4, 0.45, 0.5]
     TEST_SAMPLES = 2000
     
