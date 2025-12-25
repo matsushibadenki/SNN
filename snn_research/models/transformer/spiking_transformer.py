@@ -1,18 +1,18 @@
 # ファイルパス: snn_research/models/transformer/spiking_transformer.py
-# Title: Spiking Transformer V2 (BitNet & SDSA Enhanced)
+# Title: Spiking Transformer V3 (SCAL Bipolar Attention)
 # Description:
-#   SDSAとBitNet(1.58bit)を統合した高効率Transformer。
-#   FFN層にBitSpikeLinearを採用し、演算コストを削減。
+#   バイポーラ入力変換を用いたロバストなAttention機構を導入。
+#   Q, Kをバイポーラ化(-1/1)してから内積をとることで、ノイズ耐性を向上。
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import List, Tuple, Dict, Any, Optional, Union, cast 
 import math
 import logging
 
 from snn_research.core.base import BaseModel, SNNLayerNorm
 from snn_research.core.neurons import AdaptiveLIFNeuron
-from snn_research.core.attention import SpikeDrivenSelfAttention
 # BitNetのインポート
 try:
     from snn_research.core.layers.bit_spike_layer import BitSpikeLinear
@@ -23,6 +23,105 @@ from spikingjelly.activation_based import base as sj_base
 from spikingjelly.activation_based import functional as SJ_F 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+class BipolarSpikeSelfAttention(nn.Module):
+    """
+    SCAL (Statistical Centroid Alignment Learning) ベースのAttention。
+    QとKをバイポーラ化(-1/1)して内積をとることで、ノイズを相殺する。
+    """
+    def __init__(self, d_model: int, nhead: int):
+        super().__init__()
+        self.d_model = d_model
+        self.nhead = nhead
+        self.head_dim = d_model // nhead
+        assert self.head_dim * nhead == d_model, "d_model must be divisible by nhead"
+
+        self.q_proj = BitSpikeLinear(d_model, d_model)
+        self.k_proj = BitSpikeLinear(d_model, d_model)
+        self.v_proj = BitSpikeLinear(d_model, d_model)
+        self.out_proj = BitSpikeLinear(d_model, d_model)
+        
+        self.scale = 1.0 / math.sqrt(self.head_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, N, C = x.shape
+        
+        # Linear Projections (Spike-based or Analog)
+        q = self.q_proj(x).reshape(B, N, self.nhead, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).reshape(B, N, self.nhead, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).reshape(B, N, self.nhead, self.head_dim).transpose(1, 2)
+
+        # --- SCAL Bipolar Logic ---
+        # 入力がスパイク(0/1)に近いと仮定し、-1/1に変換してノイズ中心を0にする
+        # Min-Max正規化などを経て、おおよそ0~1の範囲にあるものを想定
+        # (x - 0.5) * 2
+        q_bipolar = (q - 0.5) * 2.0
+        k_bipolar = (k - 0.5) * 2.0
+        
+        # Bipolar Dot Product Attention
+        # noise * noise -> 0 (uncorrelated)
+        attn_scores = torch.matmul(q_bipolar, k_bipolar.transpose(-2, -1)) * self.scale
+        
+        # Softmax (Standard Attention)
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        
+        # Value aggregation
+        out = torch.matmul(attn_weights, v)
+        
+        out = out.transpose(1, 2).reshape(B, N, C)
+        return self.out_proj(out)
+
+class SDSAEncoderLayer(sj_base.MemoryModule):
+    """
+    SCAL Bipolar Attention + BitNet FFN Encoder Layer.
+    """
+    neuron_ff: AdaptiveLIFNeuron
+    neuron_ff2: AdaptiveLIFNeuron
+    
+    def __init__(self, d_model: int, nhead: int, dim_feedforward: int, time_steps: int, neuron_config: dict):
+        super().__init__()
+        # Use SCAL-based Bipolar Attention
+        self.attention = BipolarSpikeSelfAttention(d_model, nhead)
+        
+        self.linear1 = BitSpikeLinear(d_model, dim_feedforward)
+        
+        lif_params = {k: v for k, v in neuron_config.items() if k in ['tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']}
+        self.neuron_ff = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=dim_feedforward, **lif_params))
+
+        self.linear2 = BitSpikeLinear(dim_feedforward, d_model)
+        self.neuron_ff2 = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=d_model, **lif_params))
+
+        self.norm1 = SNNLayerNorm(d_model)
+        self.norm2 = SNNLayerNorm(d_model)
+
+    def set_stateful(self, stateful: bool) -> None:
+        self.stateful = stateful
+        self.neuron_ff.set_stateful(stateful)
+        self.neuron_ff2.set_stateful(stateful)
+
+    def reset(self) -> None:
+        super().reset()
+        self.neuron_ff.reset()
+        self.neuron_ff2.reset()
+
+    def forward(self, src: torch.Tensor) -> torch.Tensor:
+        # 1. Bipolar Attention
+        attn_output = self.attention(src)
+
+        # 2. Add & Norm
+        x = src + attn_output 
+        x = self.norm1(x)
+
+        # 3. BitNet FFN
+        ff_spikes, _ = self.neuron_ff(self.linear1(x))
+        ff_output_analog = self.linear2(ff_spikes)
+        ff_output_spikes, _ = self.neuron_ff2(ff_output_analog)
+
+        # 4. Add & Norm
+        x = x + ff_output_spikes
+        x = self.norm2(x)
+
+        return x
 
 class PatchEmbedding(nn.Module):
     def __init__(self, img_size: int, patch_size: int, in_channels: int, embed_dim: int):
@@ -43,64 +142,9 @@ class PatchEmbedding(nn.Module):
         x = x.transpose(1, 2)
         return x
 
-class SDSAEncoderLayer(sj_base.MemoryModule):
-    """
-    BitNet FFN + SDSA Encoder Layer.
-    """
-    neuron_ff: AdaptiveLIFNeuron
-    neuron_ff2: AdaptiveLIFNeuron
-    sdsa: SpikeDrivenSelfAttention
-    
-    def __init__(self, d_model: int, nhead: int, dim_feedforward: int, time_steps: int, neuron_config: dict):
-        super().__init__()
-        self.sdsa = SpikeDrivenSelfAttention(d_model, nhead, time_steps, neuron_config)
-        
-        # FFNにBitSpikeLinearを使用 (Multiplication Free)
-        self.linear1 = BitSpikeLinear(d_model, dim_feedforward)
-        
-        lif_params = {k: v for k, v in neuron_config.items() if k in ['tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']}
-        self.neuron_ff = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=dim_feedforward, **lif_params))
-
-        self.linear2 = BitSpikeLinear(dim_feedforward, d_model)
-        self.neuron_ff2 = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=d_model, **lif_params))
-
-        self.norm1 = SNNLayerNorm(d_model)
-        self.norm2 = SNNLayerNorm(d_model)
-
-    def set_stateful(self, stateful: bool) -> None:
-        self.stateful = stateful
-        self.sdsa.set_stateful(stateful)
-        self.neuron_ff.set_stateful(stateful)
-        self.neuron_ff2.set_stateful(stateful)
-
-    def reset(self) -> None:
-        super().reset()
-        self.sdsa.reset()
-        self.neuron_ff.reset()
-        self.neuron_ff2.reset()
-
-    def forward(self, src: torch.Tensor) -> torch.Tensor:
-        # 1. SDSA
-        attn_output = self.sdsa(src)
-
-        # 2. Add & Norm
-        x = src + attn_output 
-        x = self.norm1(x)
-
-        # 3. BitNet FFN (Accumulation based)
-        ff_spikes, _ = self.neuron_ff(self.linear1(x))
-        ff_output_analog = self.linear2(ff_spikes)
-        ff_output_spikes, _ = self.neuron_ff2(ff_output_analog)
-
-        # 4. Add & Norm
-        x = x + ff_output_spikes
-        x = self.norm2(x)
-
-        return x
-
 class SpikingTransformerV2(BaseModel):
     """
-    SDSA Encoder Layer を使用した Spiking Transformer。
+    SCAL対応 Spiking Transformer。
     """
     def __init__(self, 
                  vocab_size: int, 
@@ -133,7 +177,7 @@ class SpikingTransformerV2(BaseModel):
         self.output_projection = nn.Linear(d_model, vocab_size)
 
         self._init_weights()
-        logging.info(f"✅ SpikingTransformerV2 (SDSA, ViT, Cross-Modal, BitNet) initialized.")
+        logging.info(f"✅ SpikingTransformerV3 (SCAL Bipolar Attention) initialized.")
 
     def forward(self, 
                 input_ids: Optional[torch.Tensor] = None, 
@@ -154,6 +198,7 @@ class SpikingTransformerV2(BaseModel):
             B, N = input_ids.shape
             device = input_ids.device
             x = self.token_embedding(input_ids)
+            # Position encoding logic...
             if N <= self.pos_encoder_text.shape[1]:
                  x = x + self.pos_encoder_text[:, :N, :]
             else:
@@ -164,7 +209,6 @@ class SpikingTransformerV2(BaseModel):
             x = self.patch_embedding(input_images)
             B, N, _ = x.shape
             x = x + self.pos_encoder_image
-        
         else:
             raise ValueError("Either input_ids or input_images must be provided.")
 
@@ -172,11 +216,8 @@ class SpikingTransformerV2(BaseModel):
             if context_embeds.shape[0] != B:
                  if context_embeds.shape[0] == 1:
                       context_embeds = context_embeds.expand(B, -1, -1)
-                 else:
-                      context_embeds = None
             if context_embeds is not None:
                 x = torch.cat([context_embeds, x], dim=1) 
-                N = x.shape[1] 
 
         outputs_over_time = []
         for layer_module in self.layers:
