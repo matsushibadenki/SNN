@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 直交性重視 & 高速化)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 重み消失バグ修正 & 信号増幅)
 
 import torch
 import torch.nn as nn
@@ -34,20 +34,20 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('synapse_states', states.clamp(-max_states, max_states))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
         else:
-            # リザーバー層: 直交性を意識した初期化
-            # 入力次元の平方根で割ることで、分散を正規化し、信号消失/爆発を防ぐ
-            std_dev = 1.1 / math.sqrt(in_features)
+            # リザーバー層: 重み消失を防ぐため、スケーリング係数を大幅に増加
+            # 【修正】1.1 -> 4.0: 量子化閾値を超えさせるために分散を広げる
+            std_dev = 4.0 / math.sqrt(in_features)
             self.threshold = 1.0
             trainable = False
             
-            # 直交行列に近い初期化を試みる（完全な直交は計算コストが高いので近似）
+            # 直交行列に近い初期化
             if out_features >= in_features:
-                # 射影行列のような構造
                 w = torch.empty(out_features, in_features)
                 nn.init.orthogonal_(w, gain=1.0)
-                # スパース性を導入して「配線の混線」を防ぐ
-                mask = (torch.rand_like(w) > 0.8).float() # 20%接続 (80%スパース)
-                raw_states = w * mask * (std_dev * 10.0) # スケール調整
+                # スパース接続 (密度25%)
+                mask = (torch.rand_like(w) > 0.75).float()
+                # スケールを調整して信号強度を確保
+                raw_states = w * mask * (std_dev * 5.0) 
             else:
                 raw_states = torch.randn(out_features, in_features) * std_dev
 
@@ -67,7 +67,8 @@ class LogicGatedSNN(nn.Module):
     def _quantize_weights(self, x: torch.Tensor) -> torch.Tensor:
         """3値量子化 (-1, 0, 1) * 0.5"""
         w = torch.zeros_like(x)
-        threshold_val = 0.05 # 閾値を下げて、より多くの接続を許容
+        # 【修正】0.05 -> 0.02: 閾値を下げて、より多くの接続を生存させる
+        threshold_val = 0.02 
         w[x > threshold_val] = 1.0
         w[x < -threshold_val] = -1.0
         return w * 0.5
@@ -104,14 +105,12 @@ class LogicGatedSNN(nn.Module):
             elif reward.dim() == 1:
                 reward = reward.unsqueeze(1).expand(-1, self.out_features)
             
-            # 学習率設定
             lr = 0.02
-            momentum = 0.95 # モメンタムを強化し、学習を安定化
+            momentum = 0.95 
             
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
             
             self.momentum_buffer.mul_(momentum).add_(delta)
             self.states.add_(self.momentum_buffer * lr)
             
-            # 重み減衰なし（記憶保持優先）
             self.states.clamp_(-self.max_states, self.max_states)
