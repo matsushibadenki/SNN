@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Stable & Robust)
-# 内容: 高速化されたデータ生成、強化されたカリキュラム、ロバスト性評価を含む完全な学習ループ
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Extreme Robustness)
+# 内容: 高速化されたデータ生成、高ノイズ適応型カリキュラム、ロバスト性評価
 
 import sys
 import os
@@ -31,7 +31,6 @@ def generate_synthetic_data(num_samples: int = 5000,
                           noise_level: Union[float, Tuple[float, float]] = 0.1):
     """
     合成データの生成 (XOR Noise) - 高速化版 (Vectorized)
-    ループ処理を廃止し、PyTorchのテンソル演算で一括生成することで劇的に高速化。
     """
     device = prototypes.device if prototypes is not None else torch.device('cpu')
 
@@ -57,7 +56,6 @@ def generate_synthetic_data(num_samples: int = 5000,
     noise_mask = (torch.rand(num_samples, in_features, device=device) < probs).float()
     
     # XOR的なノイズ付加: abs(pattern - noise)
-    # これによりビット反転（0->1, 1->0）をシミュレート
     x = torch.abs(patterns - noise_mask)
     y = labels
     
@@ -79,7 +77,7 @@ def run_simulation():
     
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: High Contrast (x25), Tolerant Top-K, Hardened Curriculum.")
+    print(f"Training Logic: Ultra High Contrast (x30), Relaxed Top-K (0.4), Hardened Curriculum.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -92,7 +90,7 @@ def run_simulation():
     current_lr = INITIAL_LR
     
     for epoch in range(EPOCHS):
-        # カリキュラム学習設定 (強化版)
+        # カリキュラム学習設定 (さらに強化)
         if epoch < 5:
             current_noise_range = (0.0, 0.20) 
         elif epoch < 15:
@@ -100,10 +98,10 @@ def run_simulation():
         elif epoch < 25:
             current_noise_range = (0.0, 0.45)
         else:
-            # 最終フェーズで下限を上げ、高ノイズへの適応を強制する
-            current_noise_range = (0.1, 0.50)
+            # 最終フェーズ: 高ノイズ適応を強制するため下限をさらに上げる
+            current_noise_range = (0.2, 0.50)
             
-        # 学習率の減衰 (0.97倍/epoch)
+        # 学習率の減衰 (0.97倍/epoch -> 後半は少し維持するように微調整も可能だがシンプルに継続)
         current_lr = INITIAL_LR * (0.97 ** epoch)
             
         # データ生成 (高速化版)
@@ -183,7 +181,6 @@ def run_simulation():
                 total_loss += loss * data.size(0)
                 
                 total_spikes += out.mean().item() * data.size(0)
-                # output_gateがLogicGatedSNNのインスタンスであると仮定して電位を取得
                 if hasattr(core, 'output_gate') and hasattr(core.output_gate, 'membrane_potential'):
                     total_v_mean += core.output_gate.membrane_potential.mean().item() * data.size(0)
 
@@ -195,7 +192,7 @@ def run_simulation():
         avg_spk = (total_spikes / TEST_SAMPLES) * 100
         avg_v = total_v_mean / TEST_SAMPLES
         
-        status = "Robust" if final_acc > 80.0 else "Weak"
+        status = "Robust" if final_acc > 85.0 else "Weak"
         if final_acc > 98.0: status = "Excellent"
         if noise >= 0.5:
             if final_acc < 15.0: status = "Theoretical Limit (OK)"
