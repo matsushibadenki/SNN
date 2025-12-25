@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: 標準化Top-K & シンプルパイプライン)
+# 日本語タイトル: 統合ニューロモルフィック・コア (Final Fix: 厳格Top-K & ハイパーゲイン)
 
 import torch
 import torch.nn as nn
@@ -7,7 +7,7 @@ from typing import Dict, Optional, cast
 from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
 
 class TopKActivation(nn.Module):
-    def __init__(self, sparsity: float = 0.20, gain: float = 2.0) -> None:
+    def __init__(self, sparsity: float = 0.10, gain: float = 4.0) -> None:
         super().__init__()
         self.sparsity = sparsity
         self.gain = gain
@@ -26,8 +26,9 @@ class ActivePredictiveLayer(nn.Module):
     def __init__(self, features: int) -> None: 
         super().__init__()
         self.norm = nn.LayerNorm(features)
-        # sparsity 0.20 (2000 neurons), gain 2.0 (standard boost)
-        self.activation = TopKActivation(sparsity=0.20, gain=2.0)
+        # 【修正】sparsity 0.20 -> 0.10: 上位10%の「エリート」のみを通す
+        # 【修正】gain 2.0 -> 4.0: 選ばれた信号を超強力にブーストする
+        self.activation = TopKActivation(sparsity=0.10, gain=4.0)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
         x = self.norm(x)
@@ -58,7 +59,6 @@ class HybridNeuromorphicCore(nn.Module):
                 target_onehot = torch.zeros_like(out)
                 target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
                 
-                # 標準的な誤差信号 (余計なブーストなし)
                 error = (target_onehot - out)
                 
                 self.output_gate.update_plasticity(r, out, reward=error, learning_rate=learning_rate)
