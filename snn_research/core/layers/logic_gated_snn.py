@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Cubic Contrast)
-# 内容: 3乗則による超コントラスト強化、ロバストな学習制御、最適化された計算ロジック
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Lateral Inhibition & Robust Contrast)
+# 内容: 側抑制(Lateral Inhibition)と適応型コントラストによるS/N比最大化、高速化実装
 
 import torch
 import torch.nn as nn
@@ -32,11 +32,11 @@ class LogicGatedSNN(nn.Module):
         if self.mode == 'readout':
             # 読み出し層
             std_dev = 0.05
-            # Cubic Contrast用に閾値を調整 (値が小さくなるため)
+            # Initial Threshold
             self.base_threshold = 0.1
             trainable = True
             
-            # 直交初期化
+            # 直交初期化 (Orthogonal Initialization)
             states = torch.empty(out_features, in_features)
             nn.init.orthogonal_(states, gain=1.0)
             states = states * std_dev
@@ -44,7 +44,7 @@ class LogicGatedSNN(nn.Module):
             # クランプ範囲 [-20, 20]
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
-            # 適応閾値
+            # 適応閾値 (各ニューロンごとに独立)
             self.register_buffer('adaptive_threshold', torch.ones(out_features) * self.base_threshold)
         else:
             # リザーバー層 (std=3.0)
@@ -94,21 +94,35 @@ class LogicGatedSNN(nn.Module):
         # --- Optimized Cosine Similarity Logic ---
         if self.mode == 'readout':
             # F.normalize を使用して高速化かつ安定化 (L2 Norm)
-            # epsを含めることでゼロ除算を防ぐ
+            # eps=1e-8 でゼロ除算防止
             x_norm = F.normalize(x, p=2, dim=1, eps=1e-8)
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             
-            # コサイン類似度計算
+            # コサイン類似度計算: Shape [Batch, Out]
             cosine_sim = torch.matmul(x_norm, w_norm.t())
             
-            # --- Cubic Contrast Enhancement ---
-            # 3乗則を適用して、高い類似度と低い類似度の差を拡大する。
+            # --- Lateral Inhibition (側抑制) ---
+            # バッチ内の平均的な応答(コモンモードノイズ)を除去し、
+            # 「他よりも突出して似ている」信号のみを強調する。
+            # 高ノイズ環境(0.45)では、正解クラスも不正解クラスも相関が低くなるため、
+            # 平均を引くことで相対的な差を浮き彫りにする。
+            inhibition = cosine_sim.mean(dim=1, keepdim=True)
+            centered_sim = cosine_sim - inhibition
+            
+            # --- Robust Cubic Contrast Enhancement ---
+            # 3乗則は強力だが、信号が微弱すぎると消失するリスクがある。
+            # 線形項(linear term)と3乗項(cubic term)をブレンドすることで、
+            # 微小な信号差を維持しつつ、強い信号をブーストする。
+            # Scale x50.0 で数値を扱いやすい範囲にする。
             # sign()を掛けることで負の相関（逆パターン）も区別する。
-            # ノイズ環境下(0.45)では正解との類似度が低くなるが、不正解よりは高いため、
-            # この比率を拡大することでWinner-Take-Allの精度を上げる。
-            # Scale x100.0 で数値を扱いやすい範囲にする。
-            v_mem = cosine_sim.sign() * cosine_sim.abs().pow(3) * 100.0
+            sim_abs = centered_sim.abs()
+            # 線形項 + 3乗項。
+            # 微小領域では線形が支配的になり、消失を防ぐ。
+            # 大信号領域では3乗が支配的になり、WTAを加速する。
+            v_mem = centered_sim.sign() * (sim_abs * 1.0 + sim_abs.pow(3) * 10.0) * 50.0
+            
         else:
+            # リザーバー層は線形変換のみ
             v_mem = torch.matmul(x, w.t())
         
         # --- Thresholding Logic ---
@@ -117,50 +131,55 @@ class LogicGatedSNN(nn.Module):
             adaptive_th = self.adaptive_threshold.unsqueeze(0)
             
             # 相対的閾値 (Batch-wise Adaptive)
-            # Cubic変換により値の差が開いているため、係数0.3でも
-            # 十分にノイズをカットしつつ、正解(弱まった信号)を拾える。
+            # Lateral Inhibitionにより値がゼロ中心に分布しているため、
+            # 正の最大値に対する相対比率で閾値を決める。
             batch_max_v, _ = v_mem.max(dim=1, keepdim=True)
-            relative_th = batch_max_v * 0.3
+            # 最大値が低い(全体的に自信がない)場合は、閾値を下げてでも拾いに行く
+            relative_th = batch_max_v * 0.25 
             
             # 最終的な閾値の決定
+            # adaptive_th と relative_th の小さい方を採用するが、
+            # ノイズフロア(0.0付近)を拾わないように下限(0.01)を設定。
             effective_threshold = torch.min(adaptive_th, relative_th)
-            effective_threshold = effective_threshold.clamp(min=0.01) # 下限を少し下げる
+            effective_threshold = effective_threshold.clamp(min=0.01)
 
             spikes = (v_mem >= effective_threshold).float()
             
-            # 学習中の閾値更新
+            # 学習中の閾値更新 (Homeostasis)
             if self.training:
                 with torch.no_grad():
+                    # 発火率の目標値を維持するように閾値を調整
                     fire_rate = spikes.mean(dim=0)
-                    target_rate = 0.1
-                    delta = 0.01 * (fire_rate - target_rate)
+                    target_rate = 0.1 # One-hotに近い状態を目指す
+                    # 閾値更新速度
+                    delta = 0.02 * (fire_rate - target_rate)
                     self.adaptive_threshold.add_(delta)
-                    # スケール100.0に合わせて上限を調整
-                    self.adaptive_threshold.clamp_(0.01, 50.0)
+                    self.adaptive_threshold.clamp_(0.01, 30.0)
         else:
             spikes = (v_mem >= self.base_threshold).float()
         
-        # --- Fallback: Hard Winner-Take-All ---
-        # 少なくとも1つは発火させる（デッドニューロン防止）
+        # --- Fallback & Sharpening ---
         if self.mode == 'readout':
+            # 少なくとも1つは発火させる（デッドニューロン防止）
             has_spike = spikes.sum(dim=1) > 0
             if not has_spike.all():
                 no_spike_mask = ~has_spike
+                # 発火しなかったサンプルについては、膜電位最大のものを強制発火
                 _, max_indices = v_mem[no_spike_mask].max(dim=1)
                 spikes[no_spike_mask, max_indices] = 1.0
             
-            # 推論時(eval)は Sharpening を適用して明確な予測を行う
+            # 推論時(eval)は Sharpening (Argmax) を適用して
+            # 微弱なマルチ発火を抑制し、明確な予測を行う
             if not self.training:
                 final_spikes = torch.zeros_like(spikes)
                 _, max_idx = v_mem.max(dim=1)
                 final_spikes.scatter_(1, max_idx.unsqueeze(1), 1.0)
                 spikes = final_spikes
 
-        # 膜電位の統計記録
-        if self.training or not self.training:
-            with torch.no_grad():
-                v_mean = torch.mean(v_mem, dim=0).detach()
-                self.membrane_potential.copy_(v_mean)
+        # 膜電位の統計記録 (デバッグ用)
+        with torch.no_grad():
+            v_mean = torch.mean(v_mem, dim=0).detach()
+            self.membrane_potential.copy_(v_mean)
 
         return spikes
 
@@ -178,30 +197,38 @@ class LogicGatedSNN(nn.Module):
             else:
                 reward_tensor = reward
             
-            # シンプルなデルタ則
-            momentum = 0.98 # モメンタムを強化し、ノイズによるブレを抑制
+            # デルタ則による更新
+            # (Target - Output) * Input に相当する成分が含まれる
             delta = torch.matmul(reward_tensor.t(), pre_spikes) / batch_size
             
-            self.momentum_buffer.mul_(momentum).add_(delta)
+            # モメンタム更新
+            # ノイズ環境下では勾配が振動しやすいため、高めのモメンタム(0.99)で安定化
+            momentum_factor = 0.99
+            self.momentum_buffer.mul_(momentum_factor).add_(delta)
+            
+            # 重み更新
             self.states.add_(self.momentum_buffer * learning_rate)
             
-            # --- Weight Normalization ---
+            # --- Weight Normalization & Constraints ---
             
-            # 1. Centering
+            # 1. Centering (平均除去)
+            # 各ニューロンの重みベクトルを中心化し、バイアスを防ぐ
             mean_weight = self.states.mean(dim=1, keepdim=True)
             self.states.sub_(mean_weight)
             
             # 2. Chaos Injection (Reduced)
-            # 最終段階でのノイズ混入を防ぐため確率を下げる
+            # 極小確率で微小ノイズを加え、局所解脱出を促す
             if random.random() < 0.0001: 
-                noise = torch.randn_like(self.states) * 0.005 * learning_rate
+                noise = torch.randn_like(self.states) * 0.01 * learning_rate
                 self.states.add_(noise)
             
             # 3. Norm Scaling (球面射影)
+            # 重みベクトルの長さを一定に保つ (Cosine類似度ベースの学習に必須)
             norm = self.states.norm(p=2, dim=1, keepdim=True)
+            # 目標ノルムは入力次元の平方根付近が安定的
             target_norm = math.sqrt(self.in_features)
             scale_factor = target_norm / (norm + 1e-8)
             self.states.mul_(scale_factor)
             
-            # Clamp
+            # 値の爆発を防ぐClamp
             self.states.clamp_(-20.0, 20.0)
