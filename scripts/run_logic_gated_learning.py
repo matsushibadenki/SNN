@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Massive Scale & Extreme Training)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: カリキュラム学習 & k-WTA)
 
 import sys
 import os
@@ -63,50 +63,56 @@ def run_simulation():
 
     # パラメータ設定
     IN_FEATURES = 784
-    # 【修正】4096 -> 10000: 圧倒的な次元数でノイズ空間を分離する
-    HIDDEN_FEATURES = 10000
+    HIDDEN_FEATURES = 10000 # 巨大なリザーバー
     OUT_FEATURES = 10
     BATCH_SIZE = 128
     TOTAL_SAMPLES = 20000
-    # 【修正】25 -> 30: 収束までの時間を十分に確保
     EPOCHS = 30
     
-    # 学習ノイズ範囲
-    # 【修正】(0.0, 0.48) -> (0.05, 0.49): 簡単なデータを減らし、限界付近(0.49)まで学習させる
-    TRAIN_NOISE_RANGE = (0.05, 0.49)
-
     # モデル構築
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Dropout Enabled, Massive Reservoir, Extreme Noise Training.")
+    print(f"Training Logic: k-WTA (Top 10%) & Curriculum Learning.")
     
-    # --- 学習フェーズ ---
-    print(f"Generating Training Data (Noise Range: {TRAIN_NOISE_RANGE})...")
+    # プロトタイプの生成（全エポックで共有）
+    _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
+    shared_prototypes = shared_prototypes.to(device)
+
+    print("\nStarting Curriculum Training Phase...")
+    print(f"{'Epoch':<6} | {'Noise Range':<15} | {'Acc':<6} | {'Loss':<6} | {'R_Spk%':<6} | {'V_Mean':<6} | {'Time'}")
+    print("-" * 85)
     
-    x_train, y_train, shared_prototypes = generate_synthetic_data(
-        num_samples=TOTAL_SAMPLES, 
-        in_features=IN_FEATURES, 
-        out_features=OUT_FEATURES,
-        prototypes=None,
-        noise_level=TRAIN_NOISE_RANGE
-    )
-    x_train, y_train = x_train.to(device), y_train.to(device)
-    
-    dataset = TensorDataset(x_train, y_train)
-    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-    
-    print("\nStarting Readout Training Phase...")
-    print(f"{'Epoch':<6} | {'Progress':<13} | {'Acc':<6} | {'Loss':<6} | {'R_Spk%':<6} | {'O_Spk%':<6} | {'V_Mean':<6} | {'V_Max':<6} | {'Time'}")
-    print("-" * 95)
-    
-    moving_avg_acc = 0.1
     start_time = time.time()
     
     for epoch in range(EPOCHS):
+        # --- カリキュラム学習のロジック ---
+        # エポックが進むにつれて難易度（ノイズ上限）を上げる
+        # しかし、常に「簡単なデータ(0.0)」も含めることで忘却を防ぐ
+        if epoch < 5:
+            current_noise_range = (0.0, 0.20) # 基礎固め
+        elif epoch < 15:
+            current_noise_range = (0.0, 0.40) # 応用
+        else:
+            current_noise_range = (0.0, 0.49) # 極限訓練
+            
+        # データ生成（エポックごとに新しいノイズパターンを生成）
+        x_train, y_train, _ = generate_synthetic_data(
+            num_samples=TOTAL_SAMPLES, 
+            in_features=IN_FEATURES, 
+            out_features=OUT_FEATURES,
+            prototypes=shared_prototypes,
+            noise_level=current_noise_range
+        )
+        x_train, y_train = x_train.to(device), y_train.to(device)
+        
+        dataset = TensorDataset(x_train, y_train)
+        loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+
         epoch_correct = 0
         total_seen = 0
+        epoch_loss = 0.0
         
-        core.train() # Dropout有効化
+        core.train()
         
         for i, (data, target) in enumerate(loader):
             metrics = core.autonomous_step(data, target)
@@ -114,32 +120,27 @@ def run_simulation():
             acc = metrics["accuracy"]
             epoch_correct += acc * data.size(0)
             total_seen += data.size(0)
-            moving_avg_acc = moving_avg_acc * 0.9 + acc * 0.1
+            epoch_loss += metrics["loss"]
             
-            if i % 50 == 0:
-                elapsed = time.time() - start_time
-                print(f"{epoch+1:<6} | {i*BATCH_SIZE:5d}/{TOTAL_SAMPLES} | "
-                      f"{acc*100:5.1f}% | "
-                      f"{metrics['loss']:6.4f} | "
-                      f"{metrics['res_density']*100:5.1f}% | "
-                      f"{metrics['out_density']*100:5.1f}% | "
-                      f"{metrics['out_v_mean']:6.3f} | "
-                      f"{metrics['out_v_max']:6.3f} | "
-                      f"{elapsed:.0f}s")
-        
         epoch_acc = epoch_correct / total_seen * 100
-        print(f"--- Epoch {epoch+1} Final Accuracy: {epoch_acc:.2f}% ---")
+        avg_loss = epoch_loss / len(loader)
+        elapsed = time.time() - start_time
         
-        # Dropoutがあるため、学習データでの精度は多少低くても、汎化性能は高いはず
-        if epoch_acc > 99.5: 
-            print(">>> High Accuracy Reached. Optimization Complete.")
-            break
+        # 途中経過表示
+        print(f"{epoch+1:<6} | {str(current_noise_range):<15} | "
+              f"{epoch_acc:5.1f}% | "
+              f"{avg_loss:6.4f} | "
+              f"{metrics['res_density']*100:5.1f}% | "
+              f"{metrics['out_v_mean']:6.3f} | "
+              f"{elapsed:.0f}s")
+        
+    print("Optimization Complete.")
     
     # --- 評価フェーズ ---
     print("\n=== Running Robustness Evaluation (Stress Test) ===")
-    core.eval() # Dropout無効化（全ニューロンを使用）
+    core.eval()
     
-    # テスト範囲: 0.1 〜 0.5 (理論限界)
+    # テスト範囲
     noise_levels = [0.1, 0.2, 0.3, 0.4, 0.45, 0.5]
     TEST_SAMPLES = 2000
     
@@ -184,15 +185,11 @@ def run_simulation():
         avg_spk = (total_spikes / TEST_SAMPLES) * 100
         avg_v = total_v_mean / TEST_SAMPLES
         
-        # 評価基準判定
         status = "Robust" if final_acc > 80.0 else "Weak"
         if final_acc > 98.0: status = "Excellent"
-        
         if noise >= 0.5:
-            if final_acc < 15.0:
-                status = "Theoretical Limit (OK)"
-            else:
-                status = "Suspiciously High"
+            if final_acc < 15.0: status = "Theoretical Limit (OK)"
+            else: status = "Suspiciously High"
 
         print(f"{noise:<6.2f} | {final_acc:6.1f}% | {avg_loss:6.4f} | {avg_spk:5.1f}% | {avg_v:6.3f} | {status}")
     
