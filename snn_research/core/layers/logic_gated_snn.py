@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Cubic Focus & Low Threshold)
-# 内容: 3乗則による最適バランス、微弱信号検出用低閾値、MPS対応
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Cubic Strict & High Momentum)
+# 内容: 3乗則x100、厳格な学習閾値、超安定モメンタム、MPS対応
 
 import torch
 import torch.nn as nn
@@ -32,8 +32,8 @@ class LogicGatedSNN(nn.Module):
         if self.mode == 'readout':
             # 読み出し層
             std_dev = 0.05
-            # Cubic Contrast (3乗) 用に閾値を調整
-            self.base_threshold = 0.05
+            # Cubic Contrast (x100) 用に閾値を調整
+            self.base_threshold = 0.1
             trainable = True
             
             # 直交初期化
@@ -100,10 +100,9 @@ class LogicGatedSNN(nn.Module):
             # コサイン類似度計算
             cosine_sim = torch.matmul(x_norm, w_norm.t())
             
-            # --- Cubic Contrast Enhancement (3乗則) ---
-            # 4乗や5乗では高ノイズ時の信号減衰が激しすぎたため、3乗則(Cubic)に戻す。
-            # Scale x50.0 で数値を扱いやすい範囲にする。
-            v_mem = cosine_sim.sign() * cosine_sim.abs().pow(3) * 50.0
+            # --- Cubic Contrast Enhancement (3乗則 x100) ---
+            # 強い信号をより強くし、明確な勝者を作る。
+            v_mem = cosine_sim.sign() * cosine_sim.abs().pow(3) * 100.0
         else:
             v_mem = torch.matmul(x, w.t())
         
@@ -113,14 +112,15 @@ class LogicGatedSNN(nn.Module):
             adaptive_th = self.adaptive_threshold.unsqueeze(0)
             
             # 相対的閾値 (Batch-wise Adaptive)
-            # ノイズ環境下では正解信号も弱まるため、相対閾値を0.15まで下げ、
-            # 「ノイズよりはマシだが弱い正解」を拾えるようにする。
+            # 0.15は甘すぎたため、0.35に引き上げ。
+            # 「本当に正解に近い」強い信号のみを学習させることで、
+            # ノイズによる重みの振動（汚染）を防ぐ。
             batch_max_v, _ = v_mem.max(dim=1, keepdim=True)
-            relative_th = batch_max_v * 0.15
+            relative_th = batch_max_v * 0.35
             
             # 最終的な閾値の決定
             effective_threshold = torch.min(adaptive_th, relative_th)
-            effective_threshold = effective_threshold.clamp(min=0.001) 
+            effective_threshold = effective_threshold.clamp(min=0.01) 
 
             spikes = (v_mem >= effective_threshold).float()
             
@@ -175,9 +175,10 @@ class LogicGatedSNN(nn.Module):
             else:
                 reward_tensor = reward
             
-            # モメンタムを用いた更新
-            # 高ノイズ適応のために、過去の慣性に縛られすぎないよう少し下げる (0.99 -> 0.90)
-            momentum = 0.90
+            # モメンタムを用いた更新 (Ultra Stability)
+            # 0.995 に設定し、ノイズによる突発的な勾配エラーをほぼ無視し、
+            # 長期的な傾向（正解パターン）のみを蓄積する。
+            momentum = 0.995
             delta = torch.matmul(reward_tensor.t(), pre_spikes) / batch_size
             
             self.momentum_buffer.mul_(momentum).add_(delta)
@@ -190,7 +191,6 @@ class LogicGatedSNN(nn.Module):
             self.states.sub_(mean_weight)
             
             # 2. Chaos Injection (Reduced)
-            # 重みの硬直を防ぐため、ごく微量を復活させる
             if random.random() < 0.001: 
                 noise = torch.randn_like(self.states) * 0.001 * learning_rate
                 self.states.add_(noise)
