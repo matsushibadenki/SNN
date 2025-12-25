@@ -1,34 +1,45 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: 純粋化Top-K & バランス調整)
+# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: Leaky Top-K)
 
 import torch
 import torch.nn as nn
 from typing import Dict, Optional, cast
 from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
 
-class TopKActivation(nn.Module):
-    def __init__(self, sparsity: float = 0.12, gain: float = 3.5) -> None:
+class LeakyTopKActivation(nn.Module):
+    """
+    Leaky Top-K Activation:
+    上位k%はそのまま通し、それ以外も完全にゼロにはせず、
+    leak_factor倍して通す。ReLUに対するLeaky ReLUのような関係。
+    """
+    def __init__(self, sparsity: float = 0.15, gain: float = 3.0, leak_factor: float = 0.1) -> None:
         super().__init__()
         self.sparsity = sparsity
         self.gain = gain
+        self.leak_factor = leak_factor
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         k = int(x.shape[1] * self.sparsity)
         if k < 1: k = 1
         
+        # 上位k個のインデックスを取得
         topk_values, topk_indices = torch.topk(x, k, dim=1)
-        mask = torch.zeros_like(x)
+        
+        # マスク作成: 上位は1.0, 下位はleak_factor
+        mask = torch.full_like(x, self.leak_factor)
         mask.scatter_(1, topk_indices, 1.0)
         
+        # 信号増幅
         return x * mask * self.gain
 
 class ActivePredictiveLayer(nn.Module):
     def __init__(self, features: int) -> None: 
         super().__init__()
         self.norm = nn.LayerNorm(features)
-        # 【修正】sparsity 0.15 -> 0.12: 少しだけ絞り込む
-        # 【修正】gain 3.0 -> 3.5: 絞った分、少しだけ強める
-        self.activation = TopKActivation(sparsity=0.12, gain=3.5)
+        # 【修正】Leaky Top-K を採用
+        # sparsity 0.15: エリート選別
+        # leak 0.1: 下位ニューロンも10%の影響力を持つ（文脈保持）
+        self.activation = LeakyTopKActivation(sparsity=0.15, gain=3.0, leak_factor=0.1)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
         x = self.norm(x)
@@ -46,7 +57,7 @@ class HybridNeuromorphicCore(nn.Module):
         r = self.deep_process(f)
         return self.output_gate(r)
 
-    def autonomous_step(self, x_input: torch.Tensor, target: Optional[torch.Tensor] = None, learning_rate: float = 0.03) -> Dict[str, float]:
+    def autonomous_step(self, x_input: torch.Tensor, target: Optional[torch.Tensor] = None, learning_rate: float = 0.02) -> Dict[str, float]:
         with torch.no_grad():
             f = self.fast_process(x_input)
             r = self.deep_process(f)
