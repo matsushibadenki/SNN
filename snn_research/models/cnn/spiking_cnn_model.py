@@ -4,7 +4,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Tuple, Dict, Any, List
+from typing import Tuple, Dict, Any, List, cast
 
 from snn_research.core.base import BaseModel
 from snn_research.core.factories import NeuronFactory
@@ -73,7 +73,8 @@ class SpikingCNN(BaseModel):
         # ニューロン層をステートフルにする
         for m in self.modules():
             if hasattr(m, 'set_stateful'):
-                m.set_stateful(True)
+                # [Fix] Cast to Any to satisfy mypy
+                cast(Any, m).set_stateful(True)
 
         for _ in range(self.time_steps):
             x = input_images
@@ -101,7 +102,8 @@ class SpikingCNN(BaseModel):
         # ステートフル解除
         for m in self.modules():
             if hasattr(m, 'set_stateful'):
-                m.set_stateful(False)
+                # [Fix] Cast to Any
+                cast(Any, m).set_stateful(False)
         
         # 時間平均 (Logits)
         logits = torch.stack(outputs).mean(dim=0)
