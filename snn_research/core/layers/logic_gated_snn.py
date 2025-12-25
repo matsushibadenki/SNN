@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 重み減衰 & タイトクランプ)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final Fix: 広域クランプ & 高モメンタム)
 
 import torch
 import torch.nn as nn
@@ -30,13 +30,13 @@ class LogicGatedSNN(nn.Module):
             std_dev = 0.05
             self.threshold = 1.0 
             trainable = True
-            # 初期化は標準的に（バイアスなし）
+            # 初期化
             states = torch.randn(out_features, in_features) * std_dev
-            # クランプ範囲を狭めるため、初期値も範囲内に収める
-            self.register_buffer('synapse_states', states.clamp(-10, 10))
+            # 【修正】クランプ範囲を広げる [-20, 20]
+            self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
         else:
-            # リザーバー層: 成功した設定 (std=3.0) を維持
+            # リザーバー層: 成功した設定 (std=3.0, threshold=0.01) を維持
             std_dev = 3.0 / math.sqrt(in_features)
             self.threshold = 1.0
             trainable = False
@@ -102,7 +102,9 @@ class LogicGatedSNN(nn.Module):
             elif reward.dim() == 1:
                 reward = reward.unsqueeze(1).expand(-1, self.out_features)
             
-            momentum = 0.9 
+            # 【修正】モメンタムを強化 (0.9 -> 0.98)
+            # ノイズによる勾配の振動を強力に抑制し、正解方向へ突き進む
+            momentum = 0.98 
             
             # 勾配計算
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
@@ -113,10 +115,9 @@ class LogicGatedSNN(nn.Module):
             # 重み更新
             self.states.add_(self.momentum_buffer * learning_rate)
             
-            # 【重要】Weight Decay: 重みが発散しないように減衰させる (L2正則化相当)
-            # これにより膜電位がマイナス数千になるのを防ぐ
+            # Weight Decay (維持)
             self.states.mul_(0.9995)
             
-            # 【重要】Tight Clamping: 重みの範囲を [-10, 10] に制限
-            # 極端な抑制を防ぐ
-            self.states.clamp_(-10.0, 10.0)
+            # 【修正】クランプ範囲を拡大 [-20, 20]
+            # 強い特徴を表現できるようにする
+            self.states.clamp_(-20.0, 20.0)
