@@ -4,6 +4,7 @@
 #   モード崩壊（金太郎飴状態）を打破し、質問ごとに明確に異なる回答ができるまで徹底学習させる。
 #   Target Loss: 0.05 (完全暗記)
 #   [Fix] mypyエラー修正: layer.set_stateful呼び出し時の型キャストを追加。
+#   [Fix] AttributeError修正: SimpleLIFNeuronにset_statefulを追加。
 
 import os
 import sys
@@ -41,6 +42,10 @@ class SimpleLIFNeuron(base.MemoryModule):
         super().reset()
         self.mem = None
         self.spikes.zero_()
+        
+    # [Fix] Added missing method required by SpikingMambaBlock
+    def set_stateful(self, stateful: bool):
+        self.stateful = stateful
 
     def forward(self, x: torch.Tensor):
         if self.mem is None or self.mem.shape != x.shape:
@@ -78,8 +83,6 @@ class FixedBitSpikeMamba(BitSpikeMamba):
             if hasattr(layer, 'set_stateful'):
                  cast(Any, layer).set_stateful(False)
         
-        # Output layers are assumed to be nn.Module, no cast needed if inferred correctly, 
-        # but parent fix used Any cast.
         logits = self.output_projection(self.norm(x_out))
         
         # Return tuple matching signature
