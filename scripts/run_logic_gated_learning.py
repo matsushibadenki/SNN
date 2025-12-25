@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 限界突破・高精度版)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Massive Scale & Extreme Training)
 
 import sys
 import os
@@ -30,13 +30,7 @@ def generate_synthetic_data(num_samples: int = 5000,
                           out_features: int = 10, 
                           prototypes=None, 
                           noise_level: Union[float, Tuple[float, float]] = 0.1):
-    """
-    パターン認識タスクデータ生成
-    Args:
-        noise_level: floatなら固定値、tupleなら(min, max)の範囲でランダム
-    """
     if prototypes is None:
-        # 密度50%のランダムパターンを「正解」として定義
         prototypes = (torch.randn(out_features, in_features) > 0.0).float()
     
     x_data = []
@@ -46,13 +40,11 @@ def generate_synthetic_data(num_samples: int = 5000,
         label = torch.randint(0, out_features, (1,)).item()
         pattern = prototypes[label].clone()
         
-        # ノイズレベルの決定
         if isinstance(noise_level, (tuple, list)):
             current_noise = random.uniform(noise_level[0], noise_level[1])
         else:
             current_noise = noise_level
             
-        # ノイズ注入 (XOR Noise)
         noise = (torch.rand(in_features) < current_noise).float()
         noisy_pattern = torch.abs(pattern - noise)
         
@@ -71,20 +63,22 @@ def run_simulation():
 
     # パラメータ設定
     IN_FEATURES = 784
-    HIDDEN_FEATURES = 4096 
+    # 【修正】4096 -> 10000: 圧倒的な次元数でノイズ空間を分離する
+    HIDDEN_FEATURES = 10000
     OUT_FEATURES = 10
     BATCH_SIZE = 128
     TOTAL_SAMPLES = 20000
-    # 【修正】15 -> 25: 学習率を下げた分、エポック数を増やして収束を保証する
-    EPOCHS = 25
+    # 【修正】25 -> 30: 収束までの時間を十分に確保
+    EPOCHS = 30
     
-    # 学習ノイズ範囲: 0.0 (Clean) 〜 0.48 (Limit)
-    TRAIN_NOISE_RANGE = (0.0, 0.48)
+    # 学習ノイズ範囲
+    # 【修正】(0.0, 0.48) -> (0.05, 0.49): 簡単なデータを減らし、限界付近(0.49)まで学習させる
+    TRAIN_NOISE_RANGE = (0.05, 0.49)
 
     # モデル構築
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Reservoir Weights Frozen & Momentum Learning Enabled.")
+    print(f"Training Logic: Dropout Enabled, Massive Reservoir, Extreme Noise Training.")
     
     # --- 学習フェーズ ---
     print(f"Generating Training Data (Noise Range: {TRAIN_NOISE_RANGE})...")
@@ -112,10 +106,9 @@ def run_simulation():
         epoch_correct = 0
         total_seen = 0
         
-        core.train()
+        core.train() # Dropout有効化
         
         for i, (data, target) in enumerate(loader):
-            # 自律学習ステップ
             metrics = core.autonomous_step(data, target)
             
             acc = metrics["accuracy"]
@@ -137,13 +130,14 @@ def run_simulation():
         epoch_acc = epoch_correct / total_seen * 100
         print(f"--- Epoch {epoch+1} Final Accuracy: {epoch_acc:.2f}% ---")
         
-        if epoch_acc > 99.9: # 目標値を最大に設定
-            print(">>> Perfect Accuracy Reached. Optimization Complete.")
+        # Dropoutがあるため、学習データでの精度は多少低くても、汎化性能は高いはず
+        if epoch_acc > 99.5: 
+            print(">>> High Accuracy Reached. Optimization Complete.")
             break
     
     # --- 評価フェーズ ---
     print("\n=== Running Robustness Evaluation (Stress Test) ===")
-    core.eval()
+    core.eval() # Dropout無効化（全ニューロンを使用）
     
     # テスト範囲: 0.1 〜 0.5 (理論限界)
     noise_levels = [0.1, 0.2, 0.3, 0.4, 0.45, 0.5]
@@ -174,13 +168,11 @@ def run_simulation():
             for data, target in test_loader:
                 out = core(data)
                 
-                # Loss計算
                 target_onehot = torch.zeros_like(out)
                 target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
                 loss = (target_onehot - out).pow(2).mean().item()
                 total_loss += loss * data.size(0)
                 
-                # 統計情報
                 total_spikes += out.mean().item() * data.size(0)
                 total_v_mean += core.output_gate.membrane_potential.mean().item() * data.size(0)
 
@@ -196,12 +188,11 @@ def run_simulation():
         status = "Robust" if final_acc > 80.0 else "Weak"
         if final_acc > 98.0: status = "Excellent"
         
-        # 0.50は理論的に情報量ゼロなので10%前後が正しい挙動
         if noise >= 0.5:
             if final_acc < 15.0:
                 status = "Theoretical Limit (OK)"
             else:
-                status = "Suspiciously High" # 逆に高すぎるとデータリークの疑いあり
+                status = "Suspiciously High"
 
         print(f"{noise:<6.2f} | {final_acc:6.1f}% | {avg_loss:6.4f} | {avg_spk:5.1f}% | {avg_v:6.3f} | {status}")
     
