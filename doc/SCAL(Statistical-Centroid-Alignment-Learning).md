@@ -74,3 +74,7 @@ $$w\_{new} \= w\_{old} \+ \\eta ( \\text{Normalize}(\\sum x\_{target}) \- w\_{ol
 ## **5\. 結論**
 
 SCALは、脳が非常にノイズの多い感覚入力から「概念」を形成するメカニズムを工学的に再現したものである。計算コストが低く（乗算フリー）、ハードウェア実装も容易であるため、Brain v20の中核技術として採用する。
+
+
+
+![ログ](https://github.com/matsushibadenki/SNN/blob/main/doc/log-sample.png "ログ")
