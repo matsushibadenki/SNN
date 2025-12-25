@@ -1,5 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Diff-Gating)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Stable & Robust)
+# 内容: カリキュラム学習、LR減衰、ロバスト性評価を含む完全な学習ループ
 
 import sys
 import os
@@ -15,6 +16,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from snn_research.core.hybrid_core import HybridNeuromorphicCore
 
 def set_seed(seed: int = 42):
+    """再現性のためにSeedを固定"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -27,6 +29,9 @@ def generate_synthetic_data(num_samples: int = 5000,
                           out_features: int = 10, 
                           prototypes=None, 
                           noise_level: Union[float, Tuple[float, float]] = 0.1):
+    """
+    合成データの生成 (XOR Noise)
+    """
     if prototypes is None:
         prototypes = (torch.randn(out_features, in_features) > 0.0).float()
     
@@ -69,7 +74,7 @@ def run_simulation():
     
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Diff-Gating, Stable Threshold, Chaotic Perturbation.")
+    print(f"Training Logic: Adaptive Threshold, Hard Top-K, Stable LR.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -82,6 +87,7 @@ def run_simulation():
     current_lr = INITIAL_LR
     
     for epoch in range(EPOCHS):
+        # カリキュラム学習設定
         if epoch < 5:
             current_noise_range = (0.0, 0.20) 
         elif epoch < 15:
@@ -91,6 +97,7 @@ def run_simulation():
         else:
             current_noise_range = (0.0, 0.49)
             
+        # 学習率の減衰 (0.97倍/epoch)
         current_lr = INITIAL_LR * (0.97 ** epoch)
             
         x_train, y_train, _ = generate_synthetic_data(
