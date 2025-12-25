@@ -15,7 +15,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 from snn_research.cognitive_architecture.async_brain_kernel import AsyncArtificialBrain
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 from snn_research.models.adapters.async_mamba_adapter import AsyncBitSpikeMambaAdapter
-from snn_research.models.adapters.async_vision_adapter import AsyncIndustrialEyeAdapter
+# [Fix] Import correct class name
+from snn_research.models.adapters.async_vision_adapter import AsyncVisionAdapter
 from snn_research.modules.reflex_module import ReflexModule
 
 # ログ設定
@@ -46,7 +47,8 @@ async def main():
     astrocyte = AstrocyteNetwork()
     
     # 視覚野 (Visual Cortex)
-    vision_adapter = AsyncIndustrialEyeAdapter(device=device)
+    # [Fix] Use correct class
+    vision_adapter = AsyncVisionAdapter(config={'architecture_type': 'spiking_cnn', 'features': 128}, device=device)
     
     # 思考エンジン (System 2)
     mamba_config = {"d_model": 128, "d_state": 32, "num_layers": 4, "tokenizer": "gpt2"}
@@ -87,9 +89,6 @@ async def main():
     # 欠陥パターン（ここではモデルが未学習なので、クラス1が出るとは限りませんが、
     # Adapter側でロジックを確認済みと仮定、もしくは強制的に異常値を注入）
     
-    # 強制的に異常と判定させるため、Adapterのモデル挙動ではなく、
-    # 視覚野からの出力イベントをシミュレートする形でテストすることも可能ですが、
-    # ここでは入力データを送ってモデルの推論を回します。
     defect_input = torch.randn(1, 8, 2, 128, 128).to(device) + 2.0 # 輝度が高い＝異常？
     
     await brain.receive_input(defect_input)
