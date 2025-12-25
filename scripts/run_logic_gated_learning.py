@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: カリキュラム学習 & Soft k-WTA)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 完成版)
 
 import sys
 import os
@@ -11,13 +11,10 @@ import random
 import numpy as np
 from typing import Union, Tuple
 
-# パス設定
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from snn_research.core.hybrid_core import HybridNeuromorphicCore
 
 def set_seed(seed: int = 42):
-    """再現性のためにSeedを固定"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -61,20 +58,18 @@ def run_simulation():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on Device: {device}")
 
-    # パラメータ設定
     IN_FEATURES = 784
     HIDDEN_FEATURES = 10000 
     OUT_FEATURES = 10
     BATCH_SIZE = 128
     TOTAL_SAMPLES = 20000
-    EPOCHS = 30
+    # 【修正】30 -> 40: 収束を確実にする
+    EPOCHS = 40
     
-    # モデル構築
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Soft k-WTA (Top 25% + Gain) & Curriculum Learning.")
+    print(f"Training Logic: Resonant Reservoir & Margin Maximization.")
     
-    # プロトタイプの生成（全エポックで共有）
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
 
@@ -85,11 +80,13 @@ def run_simulation():
     start_time = time.time()
     
     for epoch in range(EPOCHS):
-        # カリキュラム学習
         if epoch < 5:
             current_noise_range = (0.0, 0.20) 
         elif epoch < 15:
             current_noise_range = (0.0, 0.40) 
+        elif epoch < 25:
+            # 【追加】中間ステップ
+            current_noise_range = (0.0, 0.45)
         else:
             current_noise_range = (0.0, 0.49) 
             
@@ -113,7 +110,6 @@ def run_simulation():
         
         for i, (data, target) in enumerate(loader):
             metrics = core.autonomous_step(data, target)
-            
             acc = metrics["accuracy"]
             epoch_correct += acc * data.size(0)
             total_seen += data.size(0)
@@ -132,7 +128,6 @@ def run_simulation():
         
     print("Optimization Complete.")
     
-    # --- 評価フェーズ ---
     print("\n=== Running Robustness Evaluation (Stress Test) ===")
     core.eval()
     
@@ -145,7 +140,7 @@ def run_simulation():
     for noise in noise_levels:
         x_test, y_test, _ = generate_synthetic_data(
             num_samples=TEST_SAMPLES, 
-            in_features=IN_FEATURES,
+            in_features=IN_FEATURES, 
             out_features=OUT_FEATURES,
             prototypes=shared_prototypes,
             noise_level=noise
