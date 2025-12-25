@@ -36,13 +36,17 @@ class SpikingWorldModel(nn.Module):
         d_state: int = 128,
         num_layers: int = 2,
         time_steps: int = 16,
-        input_dim: int = 128
+        input_dim: int = 128,
+        neuron_config: Optional[Dict[str, Any]] = None, # [Fix] Added argument
+        **kwargs: Any # [Fix] Added kwargs for flexibility
     ):
         super().__init__()
         self.d_model = d_model
         
         # 1. Encoder (Sensory -> Latent)
         # vocab_size=0 の場合は連続値入力(input_dim)として扱う
+        # [Fix] Type hint union
+        self.encoder_embedding: Union[nn.Embedding, nn.Linear]
         if vocab_size > 0:
             self.encoder_embedding = nn.Embedding(vocab_size, d_model)
         else:
