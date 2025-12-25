@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Contrastive Prototype)
-# 内容: 対照ヘブ学習(Repulsion)と超大バッチ(4096)による理論限界への挑戦
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Power Law & Centroid Accumulation)
+# 内容: べき乗則によるS/N比の幾何級数的増幅と、重心蓄積によるノイズ完全除去
 
 import sys
 import os
@@ -47,8 +47,6 @@ def generate_synthetic_data(num_samples: int = 5000,
         probs = torch.full((num_samples, 1), noise_level, device=device)
     
     noise_mask = (torch.rand(num_samples, in_features, device=device) < probs).float()
-    
-    # 0/1 データ生成
     x = torch.abs(patterns - noise_mask)
     y = labels
     
@@ -61,18 +59,18 @@ def run_simulation():
 
     IN_FEATURES = 784
     OUT_FEATURES = 10
-    # ノイズ除去の要: バッチサイズを最大化
+    # 統計的平均化のためバッチサイズは最大化
     BATCH_SIZE = 4096 
-    TOTAL_SAMPLES = 80000 # サンプル数も増やす
-    EPOCHS = 35
+    TOTAL_SAMPLES = 60000
+    EPOCHS = 30
     
-    # Contrastive Learning用学習率
+    # 重心移動の速度 (Learning Rate)
     INITIAL_LR = 0.05
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
-    print(f"\nModel initialized: LogicGatedSNN (Contrastive Prototype Mode)")
-    print(f"Training Logic: Supervised Contrastive Hebbian (Attraction & Repulsion).")
+    print(f"\nModel initialized: LogicGatedSNN (Power Law Centroid Mode)")
+    print(f"Training Logic: Power-Law Contrast (x^9) + Statistical Centroid Accumulation.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -85,21 +83,23 @@ def run_simulation():
     current_lr = INITIAL_LR
     
     for epoch in range(EPOCHS):
-        # カリキュラム
+        # カリキュラム: 0.48ノイズを攻略するため、段階的にノイズ純度を下げる
         if epoch < 5:
+            # Phase 1: クリーンなプロトタイプ形成
             current_noise_range = (0.0, 0.30)
             current_lr = INITIAL_LR
         elif epoch < 15:
+            # Phase 2: ノイズ耐性の獲得
             current_noise_range = (0.20, 0.45)
+            current_lr = INITIAL_LR * 0.8
+        elif epoch < 25:
+            # Phase 3: 極限環境での重心安定化
+            current_noise_range = (0.40, 0.49)
             current_lr = INITIAL_LR * 0.5
-        elif epoch < 30:
-            # 高ノイズ固定・低学習率で微調整（平均化）
-            current_noise_range = (0.40, 0.48)
-            current_lr = INITIAL_LR * 0.1
         else:
-            # 最終仕上げ
+            # Phase 4: 最終調整 (ほぼ動かさない)
             current_noise_range = (0.45, 0.50)
-            current_lr = INITIAL_LR * 0.05
+            current_lr = INITIAL_LR * 0.1
             
         x_train, y_train, _ = generate_synthetic_data(
             num_samples=TOTAL_SAMPLES, 
@@ -121,14 +121,18 @@ def run_simulation():
         
         for data, target in loader:
             data, target = data.to(device, non_blocking=True), target.to(device, non_blocking=True)
+            
+            # Forward
             out = layer(data)
             
+            # Target One-Hot
             target_onehot = torch.zeros_like(out)
             target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
             
-            # Contrastive Update
+            # Update: 誤差逆伝播ではなく、重心蓄積を行う
             layer.update_plasticity(data, out, target_onehot, learning_rate=current_lr)
             
+            # Loss Monitor
             loss = (target_onehot - out).pow(2).mean().item()
             pred = out.argmax(dim=1)
             acc = (pred == target).float().sum().item()
@@ -158,7 +162,7 @@ def run_simulation():
     layer.eval()
     
     noise_levels = [0.1, 0.2, 0.3, 0.4, 0.45, 0.48, 0.5]
-    TEST_SAMPLES = 20000 # 評価精度を上げるために増量
+    TEST_SAMPLES = 20000 
     
     print(f"{'Noise':<6} | {'Acc':<7} | {'Loss':<6} | {'V_Mean':<6} | {'Status'}")
     print("-" * 55)
@@ -188,7 +192,6 @@ def run_simulation():
                 target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
                 loss = (target_onehot - out).pow(2).mean().item()
                 total_loss += loss * data.size(0)
-                
                 total_v_mean += layer.membrane_potential.mean().item() * data.size(0)
 
                 pred = out.argmax(dim=1)
@@ -203,7 +206,7 @@ def run_simulation():
         if noise >= 0.5:
             if final_acc < 15.0: status = "Theoretical Limit (OK)"
             else: status = "Suspiciously High"
-        if noise == 0.45 and final_acc > 95.0: status = "State-of-the-Art"
+        if noise == 0.48 and final_acc > 90.0: status = "State-of-the-Art"
         
         print(f"{noise:<6.2f} | {final_acc:6.1f}% | {avg_loss:6.4f} | {avg_v:6.3f} | {status}")
     
