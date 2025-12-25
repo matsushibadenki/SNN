@@ -10,7 +10,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, cast
 
 class OnChipSelfCorrector(nn.Module):
     """
@@ -49,8 +49,10 @@ class OnChipSelfCorrector(nn.Module):
         with torch.no_grad():
             for layer in self.monitor_layers:
                 # AdaptiveLIFNeuron などを想定
-                if hasattr(layer, "avg_firing_rate") and hasattr(layer, "base_threshold"):
-                    current_rate = layer.avg_firing_rate
+                # [Fix] Cast to Any to access dynamic attributes
+                layer_any = cast(Any, layer)
+                if hasattr(layer_any, "avg_firing_rate") and hasattr(layer_any, "base_threshold"):
+                    current_rate = layer_any.avg_firing_rate
                     error = current_rate - self.homeostasis_target
                     
                     # 発火しすぎ -> 閾値を上げる (+ error)
@@ -59,8 +61,8 @@ class OnChipSelfCorrector(nn.Module):
                     mask = (error.abs() > (self.homeostasis_target * 0.2)).float()
                     delta = error * self.adaptation_rate * mask
                     
-                    layer.base_threshold.data += delta
-                    layer.base_threshold.data.clamp_(min=0.1)
+                    layer_any.base_threshold.data += delta
+                    layer_any.base_threshold.data.clamp_(min=0.1)
 
     def trigger_plasticity(self, layer: nn.Module, pre_spikes: torch.Tensor, post_spikes: torch.Tensor):
         """
@@ -68,7 +70,9 @@ class OnChipSelfCorrector(nn.Module):
         簡易的なSTDP/Hebbianルールの適用
         """
         with torch.no_grad():
-            if hasattr(layer, "weight") and layer.weight.requires_grad:
+            # [Fix] Cast to Any to access .weight
+            layer_any = cast(Any, layer)
+            if hasattr(layer_any, "weight") and layer_any.weight.requires_grad:
                 # Hebbian: Fire together, wire together
                 # ΔW = η * (Post * Pre^T)
                 # バッチ処理のための簡易計算
@@ -77,10 +81,11 @@ class OnChipSelfCorrector(nn.Module):
                     
                     # 重みの大きさに応じた正規化 (Oja's rule like)
                     # 実際には勾配を使わず、in-placeで値を更新
-                    layer.weight.data += self.adaptation_rate * 0.1 * delta_w
+                    # [Fix] Explicit cast to Tensor for accumulation
+                    layer_any.weight.data += self.adaptation_rate * 0.1 * delta_w
                     
                     # 重みの発散を防ぐための減衰
-                    layer.weight.data *= 0.999
+                    layer_any.weight.data *= 0.999
 
     def forward(self, logits: torch.Tensor, hidden_states: List[Tuple[torch.Tensor, torch.Tensor]]) -> Dict[str, float]:
         """
@@ -100,7 +105,8 @@ class OnChipSelfCorrector(nn.Module):
         
         if is_surprised:
             self.global_surprise = entropy
-            self.adaptation_count += 1
+            # [Fix] Explicit cast to Tensor for accumulation
+            cast(torch.Tensor, self.adaptation_count).add_(1)
             
             # 3. 適応ステップの実行
             self.update_homeostasis()
