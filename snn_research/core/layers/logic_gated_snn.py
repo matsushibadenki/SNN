@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
 # 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Tuned Contrast & Precision)
-# 内容: 強化されたコントラスト(x25), 緩和された相対閾値(0.5), および最適化されたコサイン類似度計算
+# 内容: 強化されたコントラスト(x30), 緩和された相対閾値(0.4), および最適化されたコサイン類似度計算
 
 import torch
 import torch.nn as nn
@@ -32,7 +32,7 @@ class LogicGatedSNN(nn.Module):
         if self.mode == 'readout':
             # 読み出し層
             std_dev = 0.05
-            # コサイン類似度(x25スケール)用の閾値初期値
+            # コサイン類似度(x30スケール)用の閾値初期値
             self.base_threshold = 0.6
             trainable = True
             
@@ -101,9 +101,9 @@ class LogicGatedSNN(nn.Module):
             # コサイン類似度計算
             cosine_sim = torch.matmul(x_norm, w_norm.t())
             
-            # スケーリング (x14.0 -> x25.0 に変更してコントラストを大幅に強化)
-            # 高ノイズ下での分離能力を高める
-            v_mem = cosine_sim * 25.0
+            # スケーリング (x25.0 -> x30.0 に変更してコントラストをさらに強化)
+            # ノイズに埋もれた微弱な信号を際立たせる
+            v_mem = cosine_sim * 30.0
         else:
             v_mem = torch.matmul(x, w.t())
         
@@ -113,11 +113,11 @@ class LogicGatedSNN(nn.Module):
             adaptive_th = self.adaptive_threshold.unsqueeze(0)
             
             # 相対的閾値 (Batch-wise Adaptive)
-            # 0.7 -> 0.5 に緩和。
-            # ノイズが高い場合(0.45以上)、類似度が下がるため、
-            # 最大値の半分程度でも発火を許容し、Top-Kで拾えるようにする。
+            # 0.5 -> 0.4 に緩和。
+            # ノイズが非常に高い(0.45付近)場合、正解ニューロンの活性も下がるため、
+            # 最大値の40%程度でも発火候補として認める。
             batch_max_v, _ = v_mem.max(dim=1, keepdim=True)
-            relative_th = batch_max_v * 0.5
+            relative_th = batch_max_v * 0.4
             
             # 最終的な閾値の決定
             effective_threshold = torch.min(adaptive_th, relative_th)
@@ -132,8 +132,8 @@ class LogicGatedSNN(nn.Module):
                     target_rate = 0.1
                     delta = 0.01 * (fire_rate - target_rate)
                     self.adaptive_threshold.add_(delta)
-                    # スケールに合わせて上限を調整
-                    self.adaptive_threshold.clamp_(0.1, 15.0)
+                    # スケール30.0に合わせて上限を調整
+                    self.adaptive_threshold.clamp_(0.1, 20.0)
         else:
             spikes = (v_mem >= self.base_threshold).float()
         
