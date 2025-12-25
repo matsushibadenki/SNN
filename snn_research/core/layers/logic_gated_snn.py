@@ -1,16 +1,27 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: ハイブリッド精度・LSM対応版)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Cubic Contrast)
+# 内容: 3乗則による超コントラスト強化、ロバストな学習制御、最適化された計算ロジック
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import math
+import random
 from typing import cast, Union, Optional
 
 class LogicGatedSNN(nn.Module):
+    # バッファの型ヒントを明示
+    membrane_potential: torch.Tensor
+    synapse_states: torch.Tensor
+    frozen_weight: torch.Tensor
+    momentum_buffer: torch.Tensor
+    adaptive_threshold: torch.Tensor
+
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         mode: 
-          - 'reservoir': 固定重み、3値量子化 (-1, 0, 1)、リカレント接続（今回はFFとして使用）
-          - 'readout': 学習可能、連続値重み (Float)、高精度分類用
+          - 'reservoir': 固定重み、3値量子化。
+          - 'readout': 学習可能、連続値重み。
         """
         super().__init__()
         self.in_features = in_features
@@ -18,85 +29,142 @@ class LogicGatedSNN(nn.Module):
         self.max_states = max_states
         self.mode = mode
         
-        # モードに応じた初期化
         if self.mode == 'readout':
-            # 読み出し層: 学習するのでゼロ付近からスタート
-            std_dev = 0.01
-            self.threshold = 0.0 # 使用しないが定義
+            # 読み出し層
+            std_dev = 0.05
+            # Cubic Contrast用に閾値を調整 (値が小さくなるため)
+            self.base_threshold = 0.1
             trainable = True
+            
+            # 直交初期化
+            states = torch.empty(out_features, in_features)
+            nn.init.orthogonal_(states, gain=1.0)
+            states = states * std_dev
+            
+            # クランプ範囲 [-20, 20]
+            self.register_buffer('synapse_states', states.clamp(-20, 20))
+            self.register_buffer('momentum_buffer', torch.zeros_like(states))
+            # 適応閾値
+            self.register_buffer('adaptive_threshold', torch.ones(out_features) * self.base_threshold)
         else:
-            # リザーバー層: 固定、スパース、強めの結合
-            std_dev = 5.0
-            self.threshold = 1.0
+            # リザーバー層 (std=3.0)
+            std_dev = 3.0 / math.sqrt(in_features)
+            self.base_threshold = 1.0
             trainable = False
             
-        states = torch.randn(out_features, in_features) * std_dev
-        self.register_buffer('synapse_states', states.clamp(-max_states, max_states))
-        
-        # 膜電位
+            if out_features >= in_features:
+                w = torch.empty(out_features, in_features)
+                nn.init.orthogonal_(w, gain=1.0)
+                mask = (torch.rand_like(w) > 0.7).float()
+                raw_states = w * mask * (std_dev * 4.0)
+            else:
+                raw_states = torch.randn(out_features, in_features) * std_dev
+
+            effective_w = self._quantize_weights(raw_states)
+            self.register_buffer('frozen_weight', effective_w)
+            self.register_buffer('synapse_states', torch.zeros(1))
+            self.register_buffer('momentum_buffer', torch.zeros(1))
+            self.register_buffer('adaptive_threshold', torch.ones(1))
+            
         self.register_buffer('membrane_potential', torch.zeros(out_features))
-        
-        # 学習フラグ
         self.trainable = trainable
 
     @property
     def states(self) -> torch.Tensor:
-        return cast(torch.Tensor, self.synapse_states)
+        return self.synapse_states
+
+    def _quantize_weights(self, x: torch.Tensor) -> torch.Tensor:
+        """3値量子化 (-1, 0, 1) * 0.5"""
+        w = torch.zeros_like(x)
+        threshold_val = 0.01 
+        w[x > threshold_val] = 1.0
+        w[x < -threshold_val] = -1.0
+        return w * 0.5
 
     def get_effective_weights(self) -> torch.Tensor:
-        """
-        モードに応じて重みを返す
-        """
         if self.mode == 'readout':
-            # 連続値重み (Continuous Weights)
-            # これにより微細な境界決定が可能になる
             return self.states
         else:
-            # 3値量子化重み (Ternary Weights)
-            # ノイズに強いロジックゲートとして機能
-            w = torch.zeros_like(self.states)
-            w[self.states > self.threshold] = 1.0
-            w[self.states < -self.threshold] = -1.0
-            return w
+            return self.frozen_weight
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
         w = self.get_effective_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # 電流計算
-        current = torch.matmul(x, w.t())
-        
-        v_mem = cast(torch.Tensor, self.membrane_potential)
-        
-        # 膜電位更新
+        # --- Optimized Cosine Similarity Logic ---
         if self.mode == 'readout':
-            # 読み出し層: 積分器として動作 (Leaky Integrator)
-            # スパイクではなく、蓄積された電位そのもの（またはソフトマックス）を分類に使うのが一般的だが
-            # ここではSNNの枠組みを守り、発火させる。ただし閾値は固定。
+            # F.normalize を使用して高速化かつ安定化 (L2 Norm)
+            # epsを含めることでゼロ除算を防ぐ
+            x_norm = F.normalize(x, p=2, dim=1, eps=1e-8)
+            w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             
-            # 減衰係数 0.8
-            new_v_mem = v_mem.unsqueeze(0) * 0.8 + current
+            # コサイン類似度計算
+            cosine_sim = torch.matmul(x_norm, w_norm.t())
             
-            # 発火判定 (単純な閾値 1.0)
-            spikes = (new_v_mem >= 1.0).float()
-            
-            # リセット (減算リセット)
-            v_mem_next = new_v_mem.mean(dim=0) - spikes.mean(dim=0) * 1.0
-            
+            # --- Cubic Contrast Enhancement ---
+            # 3乗則を適用して、高い類似度と低い類似度の差を拡大する。
+            # sign()を掛けることで負の相関（逆パターン）も区別する。
+            # ノイズ環境下(0.45)では正解との類似度が低くなるが、不正解よりは高いため、
+            # この比率を拡大することでWinner-Take-Allの精度を上げる。
+            # Scale x100.0 で数値を扱いやすい範囲にする。
+            v_mem = cosine_sim.sign() * cosine_sim.abs().pow(3) * 100.0
         else:
-            # リザーバー層: 従来のLogicGated動作
-            new_v_mem = v_mem.unsqueeze(0) * 0.5 + current # 減衰速め
-            spikes = (new_v_mem >= 1.0).float()
-            v_mem_next = new_v_mem.mean(dim=0) * (1.0 - spikes.mean(dim=0)) # ハードリセット
-
-        self.membrane_potential.copy_(v_mem_next)
+            v_mem = torch.matmul(x, w.t())
         
+        # --- Thresholding Logic ---
+        if self.mode == 'readout':
+            # 適応型閾値
+            adaptive_th = self.adaptive_threshold.unsqueeze(0)
+            
+            # 相対的閾値 (Batch-wise Adaptive)
+            # Cubic変換により値の差が開いているため、係数0.3でも
+            # 十分にノイズをカットしつつ、正解(弱まった信号)を拾える。
+            batch_max_v, _ = v_mem.max(dim=1, keepdim=True)
+            relative_th = batch_max_v * 0.3
+            
+            # 最終的な閾値の決定
+            effective_threshold = torch.min(adaptive_th, relative_th)
+            effective_threshold = effective_threshold.clamp(min=0.01) # 下限を少し下げる
+
+            spikes = (v_mem >= effective_threshold).float()
+            
+            # 学習中の閾値更新
+            if self.training:
+                with torch.no_grad():
+                    fire_rate = spikes.mean(dim=0)
+                    target_rate = 0.1
+                    delta = 0.01 * (fire_rate - target_rate)
+                    self.adaptive_threshold.add_(delta)
+                    # スケール100.0に合わせて上限を調整
+                    self.adaptive_threshold.clamp_(0.01, 50.0)
+        else:
+            spikes = (v_mem >= self.base_threshold).float()
+        
+        # --- Fallback: Hard Winner-Take-All ---
+        # 少なくとも1つは発火させる（デッドニューロン防止）
+        if self.mode == 'readout':
+            has_spike = spikes.sum(dim=1) > 0
+            if not has_spike.all():
+                no_spike_mask = ~has_spike
+                _, max_indices = v_mem[no_spike_mask].max(dim=1)
+                spikes[no_spike_mask, max_indices] = 1.0
+            
+            # 推論時(eval)は Sharpening を適用して明確な予測を行う
+            if not self.training:
+                final_spikes = torch.zeros_like(spikes)
+                _, max_idx = v_mem.max(dim=1)
+                final_spikes.scatter_(1, max_idx.unsqueeze(1), 1.0)
+                spikes = final_spikes
+
+        # 膜電位の統計記録
+        if self.training or not self.training:
+            with torch.no_grad():
+                v_mean = torch.mean(v_mem, dim=0).detach()
+                self.membrane_potential.copy_(v_mean)
+
         return spikes
 
-    def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor]) -> None:
-        """
-        デルタ則による学習 (Readout層のみ有効)
-        """
+    def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor], learning_rate: float = 0.02) -> None:
         if not self.trainable:
             return
 
@@ -104,22 +172,36 @@ class LogicGatedSNN(nn.Module):
             batch_size = pre_spikes.size(0)
             
             if isinstance(reward, float):
-                reward = torch.full((batch_size, self.out_features), reward, device=pre_spikes.device)
+                reward_tensor = torch.full((batch_size, self.out_features), reward, device=pre_spikes.device)
             elif reward.dim() == 1:
-                reward = reward.unsqueeze(1).expand(-1, self.out_features)
+                reward_tensor = reward.unsqueeze(1).expand(-1, self.out_features)
+            else:
+                reward_tensor = reward
             
-            # 学習率: 連続値なので小さめで安定させる
-            lr = 0.05
+            # シンプルなデルタ則
+            momentum = 0.98 # モメンタムを強化し、ノイズによるブレを抑制
+            delta = torch.matmul(reward_tensor.t(), pre_spikes) / batch_size
             
-            # Delta Rule: ΔW = lr * Error * Input
-            # Error = reward (Target - Output)
-            # pre_spikes = Input
-            delta = torch.matmul(reward.t(), pre_spikes) / batch_size
+            self.momentum_buffer.mul_(momentum).add_(delta)
+            self.states.add_(self.momentum_buffer * learning_rate)
             
-            self.states.add_(delta * lr)
+            # --- Weight Normalization ---
             
-            # Weight Decay (L2 Regularization)
-            self.states.mul_(0.9999)
+            # 1. Centering
+            mean_weight = self.states.mean(dim=1, keepdim=True)
+            self.states.sub_(mean_weight)
             
-            # クランプ (発散防止)
-            self.states.clamp_(-self.max_states, self.max_states)
+            # 2. Chaos Injection (Reduced)
+            # 最終段階でのノイズ混入を防ぐため確率を下げる
+            if random.random() < 0.0001: 
+                noise = torch.randn_like(self.states) * 0.005 * learning_rate
+                self.states.add_(noise)
+            
+            # 3. Norm Scaling (球面射影)
+            norm = self.states.norm(p=2, dim=1, keepdim=True)
+            target_norm = math.sqrt(self.in_features)
+            scale_factor = target_norm / (norm + 1e-8)
+            self.states.mul_(scale_factor)
+            
+            # Clamp
+            self.states.clamp_(-20.0, 20.0)
