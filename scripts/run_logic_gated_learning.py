@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Cubic Balanced & High-Noise Focus)
-# 内容: M4/MPS最適化、軽量化(4096 dim)、3乗均衡学習、高ノイズ集中カリキュラム
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Adversarial Curriculum)
+# 内容: M4/MPS最適化、軽量化(4096 dim)、3乗黄金比学習、限界突破カリキュラム
 
 import sys
 import os
@@ -91,7 +91,7 @@ def run_simulation():
     
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Cubic Contrast (x100), Balanced Threshold (0.28), Momentum 0.985.")
+    print(f"Training Logic: Cubic Contrast (x100), Golden Ratio (0.3), Adversarial Curriculum.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -104,25 +104,26 @@ def run_simulation():
     current_lr = INITIAL_LR
     
     for epoch in range(EPOCHS):
-        # カリキュラム学習設定 (High-Noise Focus)
-        # 後半の難易度が高いフェーズを長く取る
-        if epoch < 6:
+        # カリキュラム学習設定 (Adversarial Push)
+        if epoch < 8:
             # 基礎学習
             current_noise_range = (0.0, 0.25) 
             current_lr = INITIAL_LR * (0.95 ** epoch)
-        elif epoch < 15:
+        elif epoch < 20:
             # 応用学習
             current_noise_range = (0.1, 0.42)
             current_lr = INITIAL_LR * (0.95 ** epoch)
-        elif epoch < 28:
-            # 高ノイズ適応 (範囲拡大)
-            current_noise_range = (0.30, 0.47)
+        elif epoch < 32:
+            # 高ノイズ適応
+            current_noise_range = (0.30, 0.48)
             current_lr = 0.005 
         else:
-            # 極限環境適応 (0.40-0.47の境界領域を重点的に)
-            # 最も難しいデータを繰り返し見せる
-            current_noise_range = (0.40, 0.47)
-            current_lr = 0.003
+            # 限界突破学習 (Adversarial Phase)
+            # 0.50 (完全ランダム) は含めないが、0.495まで攻める。
+            # これにより0.45が「相対的に簡単」に感じられるようになる。
+            current_noise_range = (0.42, 0.495)
+            # 非常に低い学習率で、崩壊を防ぎつつ微調整
+            current_lr = 0.002
             
         # データ生成 (高速化版)
         x_train, y_train, _ = generate_synthetic_data(
@@ -167,7 +168,7 @@ def run_simulation():
     print("\n=== Running Robustness Evaluation (Stress Test) ===")
     core.eval()
     
-    noise_levels = [0.1, 0.2, 0.3, 0.4, 0.45, 0.47, 0.48, 0.5]
+    noise_levels = [0.1, 0.2, 0.3, 0.4, 0.45, 0.48, 0.49, 0.5]
     TEST_SAMPLES = 5000 
     
     print(f"{'Noise':<6} | {'Acc':<7} | {'Loss':<6} | {'O_Spk%':<6} | {'V_Mean':<6} | {'Status'}")
