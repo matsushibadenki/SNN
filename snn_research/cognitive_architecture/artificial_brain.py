@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: 人工脳コア・アーキテクチャ (Dependency Injection 対応版)
-# 目的: 全脳モジュールのインターフェースを統合し、外部から注入されたコンポーネントを正しく保持する。
+# 日本語タイトル: 人工脳コア・アーキテクチャ (Fix: Attribute Name Mismatch)
+# 目的: AstrocyteNetworkの属性名(energy)を正しく参照するように修正。
 
 import torch
 import torch.nn as nn
@@ -129,8 +129,6 @@ class ArtificialBrain(nn.Module):
             # 本来はEncoderを通すべきだが、ここでは簡易的に処理
             # Reasoning Engineがある場合はそちらに任せるなど分岐可能
             if self.reasoning:
-                # 文字列を直接Reasoningへ
-                # (実装依存: ReasoningEngineが文字列を受け取れるか確認が必要)
                 pass
             sensory_tensor = torch.randn(1, 784, device=device) # ダミー
         else:
@@ -231,7 +229,8 @@ class ArtificialBrain(nn.Module):
             astro_status = {
                 "status": "active", 
                 "metrics": {
-                    "energy_percent": (self.astrocyte.energy_pool / self.astrocyte.max_energy) * 100,
+                    # [Fix] Corrected attribute name 'energy_pool' -> 'energy'
+                    "energy_percent": (self.astrocyte.energy / self.astrocyte.max_energy) * 100,
                     "fatigue_index": self.astrocyte.fatigue_toxin
                 }
             }
