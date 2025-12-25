@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final Fix: 自由化 & 超モメンタム)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final Fix: 重み正規化 & 安定化学習)
 
 import torch
 import torch.nn as nn
@@ -32,11 +32,11 @@ class LogicGatedSNN(nn.Module):
             trainable = True
             # 初期化
             states = torch.randn(out_features, in_features) * std_dev
-            # 【修正】クランプ範囲を広げる [-100, 100] (自由度確保)
-            self.register_buffer('synapse_states', states.clamp(-100, 100))
+            # クランプ範囲は標準的に
+            self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
         else:
-            # リザーバー層: 成功した設定 (std=3.0) を維持
+            # リザーバー層: 安定版設定 (std=3.0)
             std_dev = 3.0 / math.sqrt(in_features)
             self.threshold = 1.0
             trainable = False
@@ -102,18 +102,24 @@ class LogicGatedSNN(nn.Module):
             elif reward.dim() == 1:
                 reward = reward.unsqueeze(1).expand(-1, self.out_features)
             
-            # 【修正】モメンタムを極限強化 (0.9 -> 0.99)
-            # ノイズを完全に無視して、大局的な勾配方向へ進む
-            momentum = 0.99 
+            # モメンタム (標準設定)
+            momentum = 0.9 
             
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
             
             self.momentum_buffer.mul_(momentum).add_(delta)
+            
+            # 学習率適用
             self.states.add_(self.momentum_buffer * learning_rate)
             
-            # Weight Decay (維持)
-            self.states.mul_(0.9995)
+            # 【重要】重みの正規化 (Weight Normalization)
+            # 重み行列のノルムが大きくなりすぎないように強制的にスケーリングする
+            # これにより膜電位の暴走（-2000など）を根本から防ぐ
+            norm = self.states.norm(p=2, dim=1, keepdim=True)
+            # 目標ノルム（入力次元のルート程度が目安）
+            target_norm = math.sqrt(self.in_features) 
+            scale_factor = torch.clamp(target_norm / (norm + 1e-6), max=1.0)
+            self.states.mul_(scale_factor)
             
-            # 【修正】クランプ範囲を拡大 [-100, 100]
-            # 強い確信度を持つニューロンの成長を許容する
-            self.states.clamp_(-100.0, 100.0)
+            # クランプは安全装置として残す
+            self.states.clamp_(-20.0, 20.0)
