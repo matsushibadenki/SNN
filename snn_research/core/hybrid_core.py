@@ -1,16 +1,13 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (Final Fix: 差分ゲーティング)
+# 日本語タイトル: 統合ニューロモルフィック・コア (Final: Hard Top-K & Adaptive)
+# 内容: 厳格なTop-Kフィルタリングと適応型閾値SNNの統合
 
 import torch
 import torch.nn as nn
 from typing import Dict, Optional, cast
 from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
 
-class DiffGatedTopK(nn.Module):
-    """
-    Difference-based Gating Top-K:
-    上位1位と2位の差分（Confidence Margin）に基づいて、信号強度を動的に調整する。
-    """
+class TopKActivation(nn.Module):
     def __init__(self, sparsity: float = 0.15, gain: float = 3.0) -> None:
         super().__init__()
         self.sparsity = sparsity
@@ -18,27 +15,22 @@ class DiffGatedTopK(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         k = int(x.shape[1] * self.sparsity)
-        if k < 2: k = 2
+        if k < 1: k = 1
         
         topk_values, topk_indices = torch.topk(x, k, dim=1)
         
-        # 1位と2位の差分を計算
-        diff = topk_values[:, 0] - topk_values[:, 1]
-        
-        # 差分に応じた動的ゲイン (Sigmoid)
-        dynamic_gain = torch.sigmoid(diff) * self.gain + 1.0
-        dynamic_gain = dynamic_gain.unsqueeze(1)
-        
+        # Hard Mask: 下位は完全にゼロ (ノイズ遮断)
         mask = torch.zeros_like(x)
         mask.scatter_(1, topk_indices, 1.0)
         
-        return x * mask * dynamic_gain
+        return x * mask * self.gain
 
 class ActivePredictiveLayer(nn.Module):
     def __init__(self, features: int) -> None: 
         super().__init__()
         self.norm = nn.LayerNorm(features)
-        self.activation = DiffGatedTopK(sparsity=0.15, gain=3.0)
+        # sparsity 0.15, gain 3.0 (最も安定した設定)
+        self.activation = TopKActivation(sparsity=0.15, gain=3.0)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
         x = self.norm(x)
@@ -69,6 +61,7 @@ class HybridNeuromorphicCore(nn.Module):
                 target_onehot = torch.zeros_like(out)
                 target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
                 
+                # 標準エラー信号
                 error = (target_onehot - out)
                 
                 self.output_gate.update_plasticity(r, out, reward=error, learning_rate=learning_rate)
