@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
 # 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Adaptive & Normalized)
-# 内容: 適応型閾値、重み正規化、カオス的摂動を備えたSNNレイヤー
+# 内容: 適応型閾値、重み正規化、カオス的摂動、およびWTAフォールバックを備えたSNNレイヤー
 
 import torch
 import torch.nn as nn
@@ -104,6 +104,22 @@ class LogicGatedSNN(nn.Module):
 
         spikes = (v_mem >= threshold).float()
         
+        # --- Robustness Fix: Winner-Take-All Fallback (Hard Top-K) ---
+        # 高ノイズ時に閾値を超えられない場合でも、最も可能性の高いニューロンを発火させる
+        if self.mode == 'readout':
+            # バッチ内の各サンプルについて、スパイクが発生したか確認
+            has_spike = spikes.sum(dim=1) > 0
+            
+            # スパイクが発生しなかったサンプル（無発火）のみ対象
+            if not has_spike.all():
+                no_spike_mask = ~has_spike
+                # 無発火サンプルのうち、膜電位が最大のニューロンのインデックスを取得
+                _, max_indices = v_mem[no_spike_mask].max(dim=1)
+                
+                # 強制発火 (Top-1 Fallback)
+                # maskされた部分に対応するインデックスに1をセット
+                spikes[no_spike_mask, max_indices] = 1.0
+
         if self.training or not self.training:
             v_mean = torch.mean(v_mem, dim=0).detach()
             self.membrane_potential.copy_(v_mean)
