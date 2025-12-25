@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Tuned Contrast & Precision)
-# 内容: 調整されたコントラスト(x14), 緩和された相対閾値(0.7), および微細化された学習制御
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: High-Contrast & Optimized)
+# 内容: 最適化されたコサイン類似度、強化されたコントラスト(x20), ロバストな相対閾値(0.6)
 
 import torch
 import torch.nn as nn
@@ -32,7 +32,7 @@ class LogicGatedSNN(nn.Module):
         if self.mode == 'readout':
             # 読み出し層
             std_dev = 0.05
-            # コサイン類似度(x14スケール)用の閾値初期値
+            # コサイン類似度(x20スケール)用の閾値初期値
             self.base_threshold = 0.5
             trainable = True
             
@@ -91,17 +91,19 @@ class LogicGatedSNN(nn.Module):
         w = self.get_effective_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # --- Cosine Similarity Logic ---
+        # --- Optimized Cosine Similarity Logic ---
         if self.mode == 'readout':
-            # 1. 正規化 (L2 Norm)
-            x_norm = x / (x.norm(p=2, dim=1, keepdim=True) + 1e-8)
-            w_norm = w / (w.norm(p=2, dim=1, keepdim=True) + 1e-8)
+            # F.normalize を使用して高速化かつ安定化 (L2 Norm)
+            # epsを含めることでゼロ除算を防ぐ
+            x_norm = F.normalize(x, p=2, dim=1, eps=1e-8)
+            w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             
-            # 2. コサイン類似度
+            # コサイン類似度計算
             cosine_sim = torch.matmul(x_norm, w_norm.t())
             
-            # 3. スケーリング (x14.0 に設定してコントラストを高める)
-            v_mem = cosine_sim * 14.0
+            # スケーリング (x14.0 -> x20.0 に変更してコントラストを強化)
+            # 高ノイズ下での分離能力を高める
+            v_mem = cosine_sim * 20.0
         else:
             v_mem = torch.matmul(x, w.t())
         
@@ -110,12 +112,14 @@ class LogicGatedSNN(nn.Module):
             # 適応型閾値
             adaptive_th = self.adaptive_threshold.unsqueeze(0)
             
-            # 相対的閾値
-            # 0.8 -> 0.7 に緩和。ノイズ環境下で最強のニューロンをより拾いやすくする。
+            # 相対的閾値 (Batch-wise Adaptive)
+            # 0.7 -> 0.6 に緩和。
+            # ノイズが高い場合、最大応答も低下するため、少し余裕を持たせて発火させる。
+            # 誤発火は後段のSoftmaxやWinner-Take-Allで抑制可能。
             batch_max_v, _ = v_mem.max(dim=1, keepdim=True)
-            relative_th = batch_max_v * 0.7
+            relative_th = batch_max_v * 0.6
             
-            # 閾値の決定
+            # 最終的な閾値の決定
             effective_threshold = torch.min(adaptive_th, relative_th)
             effective_threshold = effective_threshold.clamp(min=0.1)
 
@@ -128,12 +132,13 @@ class LogicGatedSNN(nn.Module):
                     target_rate = 0.1
                     delta = 0.01 * (fire_rate - target_rate)
                     self.adaptive_threshold.add_(delta)
-                    # スケール14.0に合わせて上限を調整
-                    self.adaptive_threshold.clamp_(0.1, 10.0)
+                    # スケール20.0に合わせて上限も少し調整
+                    self.adaptive_threshold.clamp_(0.1, 15.0)
         else:
             spikes = (v_mem >= self.base_threshold).float()
         
         # --- Fallback: Hard Winner-Take-All ---
+        # 少なくとも1つは発火させる（デッドニューロン防止）
         if self.mode == 'readout':
             has_spike = spikes.sum(dim=1) > 0
             if not has_spike.all():
@@ -141,16 +146,18 @@ class LogicGatedSNN(nn.Module):
                 _, max_indices = v_mem[no_spike_mask].max(dim=1)
                 spikes[no_spike_mask, max_indices] = 1.0
             
-            # 推論時(eval)は Sharpening を適用
+            # 推論時(eval)は Sharpening を適用して明確な予測を行う
             if not self.training:
                 final_spikes = torch.zeros_like(spikes)
                 _, max_idx = v_mem.max(dim=1)
                 final_spikes.scatter_(1, max_idx.unsqueeze(1), 1.0)
                 spikes = final_spikes
 
+        # 膜電位の統計記録
         if self.training or not self.training:
-            v_mean = torch.mean(v_mem, dim=0).detach()
-            self.membrane_potential.copy_(v_mean)
+            with torch.no_grad():
+                v_mean = torch.mean(v_mem, dim=0).detach()
+                self.membrane_potential.copy_(v_mean)
 
         return spikes
 
@@ -162,34 +169,43 @@ class LogicGatedSNN(nn.Module):
             batch_size = pre_spikes.size(0)
             
             if isinstance(reward, float):
-                reward = torch.full((batch_size, self.out_features), reward, device=pre_spikes.device)
+                # floatの場合はスカラー乗算で済むため拡張しないほうがメモリ効率が良いが
+                # 実装の統一性を優先してテンソル計算を行う
+                reward_tensor = torch.full((batch_size, self.out_features), reward, device=pre_spikes.device)
             elif reward.dim() == 1:
-                reward = reward.unsqueeze(1).expand(-1, self.out_features)
+                reward_tensor = reward.unsqueeze(1).expand(-1, self.out_features)
+            else:
+                reward_tensor = reward
             
-            # シンプルなデルタ則
+            # シンプルなデルタ則 (Reward-Modulated Hebbian Like)
             momentum = 0.95
-            delta = torch.matmul(reward.t(), pre_spikes) / batch_size
+            
+            # delta = (Reward^T @ Pre) / Batch
+            delta = torch.matmul(reward_tensor.t(), pre_spikes) / batch_size
             
             self.momentum_buffer.mul_(momentum).add_(delta)
             self.states.add_(self.momentum_buffer * learning_rate)
             
-            # --- Weight Normalization ---
+            # --- Weight Normalization & Constraints ---
             
-            # 1. Centering
+            # 1. Centering (平均を0に保つことでドリフトを防止)
             mean_weight = self.states.mean(dim=1, keepdim=True)
             self.states.sub_(mean_weight)
             
-            # 2. Chaos (頻度を下げる: 1% -> 0.1%)
-            # 収束期に入っているため、過度な摂動は控える
+            # 2. Chaos Injection
+            # 収束期に入っているため頻度を下げているが、
+            # 学習率が小さい場合はノイズもスケーリングして小さくする
             if random.random() < 0.001: 
                 noise = torch.randn_like(self.states) * 0.005 * learning_rate
                 self.states.add_(noise)
             
-            # 3. Norm Scaling
+            # 3. Norm Scaling (Cosine Simのために球面上に射影)
+            # F.normalizeは新しいTensorを返すため、ここではin-placeで計算
             norm = self.states.norm(p=2, dim=1, keepdim=True)
-            target_norm = math.sqrt(self.in_features)
+            target_norm = math.sqrt(self.in_features) # 期待されるノルム長
+            # ゼロ除算回避
             scale_factor = target_norm / (norm + 1e-8)
             self.states.mul_(scale_factor)
             
-            # Clamp
+            # Clamp (極端な値の抑制)
             self.states.clamp_(-20.0, 20.0)
