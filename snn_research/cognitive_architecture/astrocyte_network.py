@@ -1,9 +1,8 @@
 # ファイルパス: snn_research/cognitive_architecture/astrocyte_network.py
-# Title: Astrocyte Network v2.3 (Full Implementation)
+# Title: Astrocyte Network v2.4 (Fix: Added cleanup_toxins)
 # Description:
 #   Brain v2.5 / Runner v2.5 が要求する全メソッドを実装。
-#   - get_diagnosis_report: ヘルスチェック診断
-#   - replenish_energy / clear_fatigue: メンテナンス用API
+#   - cleanup_toxins: clear_fatigueのエイリアスとして追加し、デモスクリプトとの互換性を確保。
 
 import logging
 import time
@@ -171,6 +170,11 @@ class AstrocyteNetwork:
         """疲労の強制除去（睡眠完了時など）"""
         self.fatigue_toxin = max(0.0, self.fatigue_toxin - amount)
         logger.info(f"✨ Fatigue cleared by {amount}. Current: {self.fatigue_toxin:.1f}")
+
+    # [Fix] Added alias for compatibility with demo scripts
+    def cleanup_toxins(self):
+        """疲労物質を完全に除去する（エイリアス）"""
+        self.clear_fatigue(self.fatigue_toxin)
 
     def get_diagnosis_report(self) -> Dict[str, Any]:
         """Brain v2.5 / Health Check API用の診断レポート"""
