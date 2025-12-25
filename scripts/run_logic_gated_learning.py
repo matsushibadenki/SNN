@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 完成版)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: LR Decay & Noise Robustness)
 
 import sys
 import os
@@ -63,32 +63,39 @@ def run_simulation():
     OUT_FEATURES = 10
     BATCH_SIZE = 128
     TOTAL_SAMPLES = 20000
-    # 【修正】30 -> 40: 収束を確実にする
     EPOCHS = 40
+    
+    # 初期の学習率
+    INITIAL_LR = 0.05
     
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Resonant Reservoir & Margin Maximization.")
+    print(f"Training Logic: Quiet Reservoir, Strict Top-K, LR Decay.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
 
     print("\nStarting Curriculum Training Phase...")
-    print(f"{'Epoch':<6} | {'Noise Range':<15} | {'Acc':<6} | {'Loss':<6} | {'R_Spk%':<6} | {'V_Mean':<6} | {'Time'}")
-    print("-" * 85)
+    print(f"{'Epoch':<6} | {'Noise Range':<15} | {'Acc':<6} | {'Loss':<6} | {'LR':<7} | {'R_Spk%':<6} | {'V_Mean':<6} | {'Time'}")
+    print("-" * 95)
     
     start_time = time.time()
+    current_lr = INITIAL_LR
     
     for epoch in range(EPOCHS):
+        # カリキュラム設定
         if epoch < 5:
             current_noise_range = (0.0, 0.20) 
         elif epoch < 15:
             current_noise_range = (0.0, 0.40) 
         elif epoch < 25:
-            # 【追加】中間ステップ
             current_noise_range = (0.0, 0.45)
         else:
-            current_noise_range = (0.0, 0.49) 
+            current_noise_range = (0.0, 0.49)
+            
+        # LR Decay (指数減衰)
+        # エポックが進むごとに学習率を下げ、収束を安定させる
+        current_lr = INITIAL_LR * (0.95 ** epoch)
             
         x_train, y_train, _ = generate_synthetic_data(
             num_samples=TOTAL_SAMPLES, 
@@ -109,7 +116,8 @@ def run_simulation():
         core.train()
         
         for i, (data, target) in enumerate(loader):
-            metrics = core.autonomous_step(data, target)
+            # 学習率を渡す
+            metrics = core.autonomous_step(data, target, learning_rate=current_lr)
             acc = metrics["accuracy"]
             epoch_correct += acc * data.size(0)
             total_seen += data.size(0)
@@ -122,6 +130,7 @@ def run_simulation():
         print(f"{epoch+1:<6} | {str(current_noise_range):<15} | "
               f"{epoch_acc:5.1f}% | "
               f"{avg_loss:6.4f} | "
+              f"{current_lr:.5f} | "
               f"{metrics['res_density']*100:5.1f}% | "
               f"{metrics['out_v_mean']:6.3f} | "
               f"{elapsed:.0f}s")
