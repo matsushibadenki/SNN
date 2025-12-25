@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final Fix: 適応型閾値)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final Fix: デュアル適応閾値)
 
 import torch
 import torch.nn as nn
@@ -12,7 +12,8 @@ class LogicGatedSNN(nn.Module):
     synapse_states: torch.Tensor
     frozen_weight: torch.Tensor
     momentum_buffer: torch.Tensor
-    adaptive_threshold: torch.Tensor # 追加
+    adaptive_threshold_fast: torch.Tensor # 速い適応
+    adaptive_threshold_slow: torch.Tensor # 遅い適応
 
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
@@ -29,14 +30,15 @@ class LogicGatedSNN(nn.Module):
         if self.mode == 'readout':
             # 読み出し層
             std_dev = 0.05
-            # 初期閾値
             self.base_threshold = 1.0 
             trainable = True
             states = torch.randn(out_features, in_features) * std_dev
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
-            # 適応型閾値のバッファ
-            self.register_buffer('adaptive_threshold', torch.ones(out_features) * self.base_threshold)
+            
+            # デュアル適応閾値
+            self.register_buffer('adaptive_threshold_fast', torch.ones(out_features) * self.base_threshold)
+            self.register_buffer('adaptive_threshold_slow', torch.ones(out_features) * self.base_threshold)
         else:
             # リザーバー層
             std_dev = 3.0 / math.sqrt(in_features)
@@ -55,7 +57,8 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('frozen_weight', effective_w)
             self.register_buffer('synapse_states', torch.zeros(1))
             self.register_buffer('momentum_buffer', torch.zeros(1))
-            self.register_buffer('adaptive_threshold', torch.ones(1)) # ダミー
+            self.register_buffer('adaptive_threshold_fast', torch.ones(1))
+            self.register_buffer('adaptive_threshold_slow', torch.ones(1))
             
         self.register_buffer('membrane_potential', torch.zeros(out_features))
         self.trainable = trainable
@@ -82,29 +85,27 @@ class LogicGatedSNN(nn.Module):
         w = self.get_effective_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # 電流入力
         current = torch.matmul(x, w.t())
-        
-        # 膜電位
         v_mem = current 
         
-        # 閾値判定
+        # 閾値計算
         if self.mode == 'readout':
-            # 適応型閾値を使用 (Batch方向にはブロードキャスト)
-            threshold = self.adaptive_threshold.unsqueeze(0)
+            # FastとSlowのブレンド (Fast重視で即応性を高める)
+            threshold = (0.8 * self.adaptive_threshold_fast + 0.2 * self.adaptive_threshold_slow).unsqueeze(0)
             
-            # ホメオスタシス更新 (学習時のみ)
             if self.training:
                 with torch.no_grad():
-                    # 平均発火率が高いニューロンは閾値を上げ、低いニューロンは下げる
-                    # 目標発火率: 10% (0.1)
                     fire_rate = (v_mem >= threshold).float().mean(dim=0)
                     target_rate = 0.1
-                    # 調整速度
-                    eta = 0.01 
-                    self.adaptive_threshold.add_(eta * (fire_rate - target_rate))
-                    # 安全範囲にクリップ
-                    self.adaptive_threshold.clamp_(0.5, 5.0)
+                    
+                    # Fast: 瞬時に反応 (eta=0.1)
+                    self.adaptive_threshold_fast.add_(0.1 * (fire_rate - target_rate))
+                    # Slow: ゆっくり追従 (eta=0.001)
+                    self.adaptive_threshold_slow.add_(0.001 * (fire_rate - target_rate))
+                    
+                    # クリップ
+                    self.adaptive_threshold_fast.clamp_(0.5, 5.0)
+                    self.adaptive_threshold_slow.clamp_(0.5, 5.0)
         else:
             threshold = self.base_threshold
 
@@ -128,7 +129,8 @@ class LogicGatedSNN(nn.Module):
             elif reward.dim() == 1:
                 reward = reward.unsqueeze(1).expand(-1, self.out_features)
             
-            momentum = 0.95
+            # モメンタム強化 (0.95 -> 0.98)
+            momentum = 0.98
             
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
             
