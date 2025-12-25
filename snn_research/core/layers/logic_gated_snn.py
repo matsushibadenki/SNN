@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final Fix: 高モメンタム & 安定化)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final Fix: バランス調整)
 
 import torch
 import torch.nn as nn
@@ -101,8 +101,7 @@ class LogicGatedSNN(nn.Module):
             elif reward.dim() == 1:
                 reward = reward.unsqueeze(1).expand(-1, self.out_features)
             
-            # 【修正】モメンタム強化 (0.9 -> 0.95)
-            # ノイズを乗り越える推進力を強化
+            # 【修正】モメンタムを 0.95 に戻す (バランス重視)
             momentum = 0.95
             
             delta = torch.matmul(reward.t(), pre_spikes) / batch_size
@@ -111,7 +110,7 @@ class LogicGatedSNN(nn.Module):
             
             self.states.add_(self.momentum_buffer * learning_rate)
             
-            # Weight Normalization (維持)
+            # Weight Normalization
             norm = self.states.norm(p=2, dim=1, keepdim=True)
             target_norm = math.sqrt(self.in_features) 
             scale_factor = torch.clamp(target_norm / (norm + 1e-6), max=1.0)
