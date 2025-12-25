@@ -21,7 +21,8 @@ class AsyncDistillationManager:
     """
     def __init__(self, system1_model: Any, teacher_engine: Any = None):
         self.manager = ThoughtDistillationManager(system1_model, teacher_engine)
-        self.learning_queue = asyncio.Queue()
+        # [Fix] Added type annotation
+        self.learning_queue: asyncio.Queue = asyncio.Queue()
         self.is_running = False
         logger.info("⚗️ Async Distillation Manager initialized.")
 
