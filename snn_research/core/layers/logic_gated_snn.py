@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Contrastive Hebbian)
-# 内容: 教師あり対照ヘブ学習(Attraction/Repulsion)、バイポーラ信号処理、超高感度温度制御
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Power Law Dynamics)
+# 内容: べき乗則(Power Law)によるS/N比増幅、重心蓄積学習、バイポーラ信号処理
 
 import torch
 import torch.nn as nn
@@ -25,7 +25,6 @@ class LogicGatedSNN(nn.Module):
         self.mode = mode
         
         if self.mode == 'readout':
-            # 読み出し層
             std_dev = 0.05
             trainable = True
             
@@ -35,8 +34,8 @@ class LogicGatedSNN(nn.Module):
             
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
-            # 初期温度を少し高めに設定
-            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 50.0)
+            # Power Lawを使うため、温度は低めで良い（べき乗が温度の代わりになる）
+            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 1.0)
         else:
             std_dev = 3.0 / math.sqrt(in_features)
             trainable = False
@@ -80,22 +79,33 @@ class LogicGatedSNN(nn.Module):
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
         if self.mode == 'readout':
-            # Bipolar Transform: 0/1 -> -1/1
+            # 1. Bipolar Transformation (-1/1)
             x_bipolar = (x - 0.5) * 2.0
             
-            # Normalization
+            # 2. Normalization
             x_norm = F.normalize(x_bipolar, p=2, dim=1, eps=1e-8)
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             
-            # Cosine Similarity
+            # 3. Cosine Similarity
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
-            # Temperature Scaling
-            temperature = self.adaptive_threshold.mean()
-            scaled_sim = cosine_sim * temperature
+            # 4. Power Law Dynamics (The Key Fix)
+            # コサイン類似度(-1 ~ 1)を、奇数乗することで、
+            # 0付近のノイズを急速に減衰させ、相関が高い部分だけを際立たせる。
+            # 例: 0.1^9 = 1e-9 (ほぼ0), 0.5^9 = 0.002
+            # これによりS/N比が劇的に改善する。
+            power_degree = 9.0 
+            
+            # 符号を維持したままべき乗
+            powered_sim = cosine_sim.sign() * cosine_sim.abs().pow(power_degree)
+            
+            # スケールを戻すために定数倍（学習安定化のため）
+            scaled_sim = powered_sim * 100.0
             
             if self.training:
-                spikes = F.softmax(scaled_sim, dim=1)
+                # Temperature Scalingも併用
+                temp = self.adaptive_threshold.mean()
+                spikes = F.softmax(scaled_sim * temp, dim=1)
             else:
                 spikes = torch.zeros_like(scaled_sim)
                 _, max_idx = scaled_sim.max(dim=1)
@@ -114,69 +124,69 @@ class LogicGatedSNN(nn.Module):
         return spikes
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor], learning_rate: float = 0.02) -> None:
+        """
+        Centroid Accumulation Rule
+        """
         if not self.trainable:
             return
 
         with torch.no_grad():
-            batch_size = pre_spikes.size(0)
-            
-            # Bipolar Input for Learning
+            # Bipolar Input
             pre_spikes_bipolar = (pre_spikes - 0.5) * 2.0
             
             if isinstance(reward, torch.Tensor) and reward.shape == post_spikes.shape:
                 target_onehot = reward
                 
-                # --- Contrastive Hebbian Update ---
-                # Positive Phase (Attraction): 正解クラスの重みを入力へ近づける
-                pos_input = torch.matmul(target_onehot.t(), pre_spikes_bipolar)
+                # --- Centroid Accumulation ---
+                # 正解クラスの入力ベクトルを単純に加算平均していくイメージ
+                # 余計なRepulsion（引き剥がし）は高ノイズ下では逆効果なので行わない
                 
-                # Negative Phase (Repulsion): 不正解クラスの重みを入力から遠ざける
-                # (1 - target) が不正解クラスのマスク
-                neg_mask = 1.0 - target_onehot
-                neg_input = torch.matmul(neg_mask.t(), pre_spikes_bipolar)
+                # 正解クラスごとの入力和
+                class_sums = torch.matmul(target_onehot.t(), pre_spikes_bipolar)
                 
-                # Update Rule
-                # Repulsion係数 (beta): あまり強くしすぎると重みが発散するので控えめに (0.2程度)
-                beta = 0.2
+                # バッチ内のクラス出現数
+                class_counts = target_onehot.sum(dim=0).unsqueeze(1) + 1e-8
                 
-                # Delta = (Pos_Signal - beta * Neg_Signal) / Batch
-                # 正解クラスには pre_spikes が加算され、不正解クラスには pre_spikes が減算される
-                delta = (pos_input - beta * neg_input) / batch_size
-
+                # バッチ内重心
+                batch_centroids = class_sums / class_counts
+                batch_centroids = F.normalize(batch_centroids, p=2, dim=1)
+                
+                # 重心を現在の重みに近づける (EMA)
+                delta = batch_centroids - F.normalize(self.states, p=2, dim=1)
+                
+                # 更新マスク
+                update_mask = (target_onehot.sum(dim=0).unsqueeze(1) > 0).float()
+                delta = delta * update_mask
+                
             else:
-                # Legacy support
+                # Legacy
                 if isinstance(reward, float):
-                    reward_tensor = torch.full((batch_size, self.out_features), reward, device=pre_spikes.device)
+                    reward_tensor = torch.full((pre_spikes.size(0), self.out_features), reward, device=pre_spikes.device)
                 else:
                     reward_tensor = reward
-                delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes_bipolar) / batch_size
+                delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes_bipolar) / pre_spikes.size(0)
 
-            # Direct Update (Simpler is better for noise cancellation)
+            # Update
             self.states.add_(delta * learning_rate)
             
-            # --- Normalization & Constraints ---
+            # --- Constraints ---
             
-            # 1. Centering
+            # Centering
             mean_weight = self.states.mean(dim=1, keepdim=True)
             self.states.sub_(mean_weight)
             
-            # 2. Norm Scaling (Crucial)
+            # Norm Scaling
             norm = self.states.norm(p=2, dim=1, keepdim=True)
             target_norm = math.sqrt(self.in_features)
             scale_factor = target_norm / (norm + 1e-8)
             self.states.mul_(scale_factor)
             
-            # Clamp
             self.states.clamp_(-20.0, 20.0)
             
-            # Temperature Auto-tuning (High Sensitivity)
+            # Temperature Adjustment (Power Lawがあるので控えめに)
             if self.mode == 'readout':
                 entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
-                target_entropy = 0.1 
-                
-                # 0.48ノイズ(相関0.04)を検知するため、温度は非常に高く設定できるようにする
-                # エントロピーが高い＝迷っている＝温度不足
-                temp_delta = 1.0 * (entropy - target_entropy)
+                target_entropy = 0.5 
+                temp_delta = 0.1 * (entropy - target_entropy)
                 self.adaptive_threshold.add_(temp_delta)
-                # 上限を300まで開放
-                self.adaptive_threshold.clamp_(10.0, 300.0)
+                self.adaptive_threshold.clamp_(1.0, 20.0)
