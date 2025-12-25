@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: High-Gain Linear)
-# 内容: 線形増幅と適応型温度制御による微小信号検出、重心学習
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Statistical Averaging)
+# 内容: バイポーラ重心学習と適応型ゲインによる、純粋な統計的ノイズ除去
 
 import torch
 import torch.nn as nn
@@ -28,16 +28,14 @@ class LogicGatedSNN(nn.Module):
             std_dev = 0.05
             trainable = True
             
-            # 直交初期化
             states = torch.empty(out_features, in_features)
             nn.init.orthogonal_(states, gain=1.0)
             states = states * std_dev
             
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
-            # 温度パラメータ: 低すぎると分布が平坦になり、高すぎると勾配消失する
-            # High-Gain Linearでは入力自体を大きくするので、温度は適度な値からスタート
-            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 1.0)
+            # ゲイン（逆温度）として使用
+            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 20.0)
         else:
             std_dev = 3.0 / math.sqrt(in_features)
             trainable = False
@@ -82,7 +80,7 @@ class LogicGatedSNN(nn.Module):
         
         if self.mode == 'readout':
             # 1. Bipolar Transformation (-1/1)
-            # ノイズ(0.5)を0.0にセンタリングするために不可欠
+            # ノイズ(0.5)を0.0にセンタリングし、ドット積で相殺させる
             x_bipolar = (x - 0.5) * 2.0
             
             # 2. Normalization
@@ -90,21 +88,12 @@ class LogicGatedSNN(nn.Module):
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             
             # 3. Cosine Similarity
-            # -1.0 ~ 1.0 の範囲
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
-            # 4. High-Gain Linear Contrast (The Fix)
-            # Power Lawのような非線形変換は微小信号(0.04)を潰してしまうため廃止。
-            # 代わりに単純にゲインを上げて、Softmaxでの確率差を稼ぐ。
-            # Gain = 50.0 とすると、0.04 * 50 = 2.0 となり、Softmaxで十分な差が出る。
-            gain = 50.0
-            
-            # 温度パラメータによる動的調整
-            temperature = self.adaptive_threshold.mean()
-            
-            # 最終的な膜電位: (Cosine * Gain) * Temperature
-            # 実質的な係数は Gain * Temperature
-            scaled_sim = cosine_sim * gain * temperature
+            # 4. Adaptive Gain (Temperature)
+            # コサイン類似度が低い(0.04)ため、大きなゲインを掛けて分布を広げる
+            gain = self.adaptive_threshold.mean()
+            scaled_sim = cosine_sim * gain
             
             if self.training:
                 spikes = F.softmax(scaled_sim, dim=1)
@@ -127,7 +116,7 @@ class LogicGatedSNN(nn.Module):
 
     def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor], learning_rate: float = 0.02) -> None:
         """
-        Centroid Learning Rule
+        Pure Centroid Averaging Rule
         """
         if not self.trainable:
             return
@@ -135,30 +124,30 @@ class LogicGatedSNN(nn.Module):
         with torch.no_grad():
             batch_size = pre_spikes.size(0)
             
-            # Input Bipolar
+            # Bipolar Input
             pre_spikes_bipolar = (pre_spikes - 0.5) * 2.0
             
             if isinstance(reward, torch.Tensor) and reward.shape == post_spikes.shape:
                 target_onehot = reward
                 
                 # --- Centroid Accumulation ---
-                # 正解クラスのベクトル和
+                # 各クラスのバッチ内重心を計算
                 class_sums = torch.matmul(target_onehot.t(), pre_spikes_bipolar)
                 class_counts = target_onehot.sum(dim=0).unsqueeze(1) + 1e-8
                 
-                # バッチ内重心
                 batch_centroids = class_sums / class_counts
                 batch_centroids = F.normalize(batch_centroids, p=2, dim=1)
                 
-                # 重心をターゲットへ寄せる
+                # 重みを重心へ寄せる (移動平均)
+                # w_new = w + lr * (centroid - w)
                 delta = batch_centroids - F.normalize(self.states, p=2, dim=1)
                 
-                # 更新マスク
+                # 正解データが存在したクラスのみ更新
                 update_mask = (target_onehot.sum(dim=0).unsqueeze(1) > 0).float()
                 delta = delta * update_mask
                 
             else:
-                # Legacy
+                # Fallback
                 if isinstance(reward, float):
                     reward_tensor = torch.full((batch_size, self.out_features), reward, device=pre_spikes.device)
                 else:
@@ -179,12 +168,14 @@ class LogicGatedSNN(nn.Module):
             
             self.states.clamp_(-20.0, 20.0)
             
-            # Temperature Auto-tuning
+            # Auto-Tuning Gain
             if self.mode == 'readout':
-                # 線形ゲインが入っているので、温度調整はマイルドで良い
+                # エントロピーが低い(確信度が高い)状態を目指す
                 entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
-                target_entropy = 0.5 
-                temp_delta = 0.05 * (entropy - target_entropy)
-                self.adaptive_threshold.add_(temp_delta)
-                # 上限は控えめに
-                self.adaptive_threshold.clamp_(0.5, 10.0)
+                target_entropy = 0.2
+                
+                # エントロピーが高い -> ゲインを上げて差を広げる
+                gain_delta = 0.5 * (entropy - target_entropy)
+                self.adaptive_threshold.add_(gain_delta)
+                # 信号が微弱なのでゲインはかなり大きくても良い
+                self.adaptive_threshold.clamp_(10.0, 100.0)
