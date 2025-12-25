@@ -1,9 +1,10 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final Fix: 安定化適応閾値)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: import random 追加)
 
 import torch
 import torch.nn as nn
 import math
+import random  # 【修正】追加
 from typing import cast, Union, Optional
 
 class LogicGatedSNN(nn.Module):
@@ -34,7 +35,7 @@ class LogicGatedSNN(nn.Module):
             states = torch.randn(out_features, in_features) * std_dev
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
-            # 単一の適応閾値に戻す（シンプル化）
+            # 適応閾値
             self.register_buffer('adaptive_threshold', torch.ones(out_features) * self.base_threshold)
         else:
             # リザーバー層
@@ -92,8 +93,7 @@ class LogicGatedSNN(nn.Module):
                     fire_rate = (v_mem >= threshold).float().mean(dim=0)
                     target_rate = 0.1
                     
-                    # 【修正】調整速度を落とし(0.01)、急激な閾値上昇を防ぐ
-                    # また、閾値の上限を厳しく制限(3.0)し、過剰抑制を防ぐ
+                    # 閾値の動的調整
                     delta = 0.01 * (fire_rate - target_rate)
                     self.adaptive_threshold.add_(delta)
                     self.adaptive_threshold.clamp_(0.5, 3.0)
@@ -128,12 +128,12 @@ class LogicGatedSNN(nn.Module):
             
             self.states.add_(self.momentum_buffer * learning_rate)
             
-            # 【追加】カオス的摂動: 学習が停滞しないように微小なノイズを加える
-            # ただし、学習が進むにつれて減衰させる
+            # カオス的摂動: 学習停滞防止のための微小ノイズ
             if random.random() < 0.01: # 1%の確率で
                 noise = torch.randn_like(self.states) * 0.01 * learning_rate
                 self.states.add_(noise)
             
+            # Weight Normalization
             norm = self.states.norm(p=2, dim=1, keepdim=True)
             target_norm = math.sqrt(self.in_features) 
             scale_factor = torch.clamp(target_norm / (norm + 1e-6), max=1.0)
