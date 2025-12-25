@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: Hard Top-K & Adaptive Support)
+# 日本語タイトル: 統合ニューロモルフィック・コア (Final: Hard Top-K)
 
 import torch
 import torch.nn as nn
@@ -18,7 +18,6 @@ class TopKActivation(nn.Module):
         
         topk_values, topk_indices = torch.topk(x, k, dim=1)
         
-        # Hard Mask: 下位は完全にゼロ
         mask = torch.zeros_like(x)
         mask.scatter_(1, topk_indices, 1.0)
         
@@ -28,8 +27,6 @@ class ActivePredictiveLayer(nn.Module):
     def __init__(self, features: int) -> None: 
         super().__init__()
         self.norm = nn.LayerNorm(features)
-        # 【修正】Leaky廃止。ノイズ完全遮断。
-        # sparsity 0.15, gain 3.0 (安定設定)
         self.activation = TopKActivation(sparsity=0.15, gain=3.0)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
@@ -61,7 +58,6 @@ class HybridNeuromorphicCore(nn.Module):
                 target_onehot = torch.zeros_like(out)
                 target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
                 
-                # 標準エラー
                 error = (target_onehot - out)
                 
                 self.output_gate.update_plasticity(r, out, reward=error, learning_rate=learning_rate)
