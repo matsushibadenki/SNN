@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: High LR & Optimized Filter)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Leaky Top-K)
 
 import sys
 import os
@@ -65,12 +65,11 @@ def run_simulation():
     TOTAL_SAMPLES = 20000
     EPOCHS = 40
     
-    # 【修正】学習率アップ (0.02 -> 0.03)
     INITIAL_LR = 0.03
     
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Weight Norm, Top-K(12%, x3.5), High LR 0.03.")
+    print(f"Training Logic: Leaky Top-K(15%, leak=0.1), Stable Momentum.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
