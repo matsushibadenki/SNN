@@ -1,10 +1,11 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: import random 追加)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Adaptive & Normalized)
+# 内容: 適応型閾値、重み正規化、カオス的摂動を備えたSNNレイヤー
 
 import torch
 import torch.nn as nn
 import math
-import random  # 【修正】追加
+import random
 from typing import cast, Union, Optional
 
 class LogicGatedSNN(nn.Module):
@@ -33,12 +34,13 @@ class LogicGatedSNN(nn.Module):
             self.base_threshold = 1.0 
             trainable = True
             states = torch.randn(out_features, in_features) * std_dev
+            # クランプ範囲 [-20, 20]
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
             # 適応閾値
             self.register_buffer('adaptive_threshold', torch.ones(out_features) * self.base_threshold)
         else:
-            # リザーバー層
+            # リザーバー層 (std=3.0)
             std_dev = 3.0 / math.sqrt(in_features)
             self.base_threshold = 1.0
             trainable = False
@@ -93,7 +95,7 @@ class LogicGatedSNN(nn.Module):
                     fire_rate = (v_mem >= threshold).float().mean(dim=0)
                     target_rate = 0.1
                     
-                    # 閾値の動的調整
+                    # 閾値の動的調整 (緩やかに)
                     delta = 0.01 * (fire_rate - target_rate)
                     self.adaptive_threshold.add_(delta)
                     self.adaptive_threshold.clamp_(0.5, 3.0)
@@ -128,12 +130,12 @@ class LogicGatedSNN(nn.Module):
             
             self.states.add_(self.momentum_buffer * learning_rate)
             
-            # カオス的摂動: 学習停滞防止のための微小ノイズ
-            if random.random() < 0.01: # 1%の確率で
+            # カオス的摂動 (学習停滞防止)
+            if random.random() < 0.01: 
                 noise = torch.randn_like(self.states) * 0.01 * learning_rate
                 self.states.add_(noise)
             
-            # Weight Normalization
+            # 重み正規化 (暴走防止の要)
             norm = self.states.norm(p=2, dim=1, keepdim=True)
             target_norm = math.sqrt(self.in_features) 
             scale_factor = torch.clamp(target_norm / (norm + 1e-6), max=1.0)
