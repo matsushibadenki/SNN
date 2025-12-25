@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: k-WTA & Top-K Filtering)
+# 日本語タイトル: 統合ニューロモルフィック・コア (Fix: Soft k-WTA & Signal Gain)
 
 import torch
 import torch.nn as nn
@@ -8,13 +8,13 @@ from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
 
 class TopKActivation(nn.Module):
     """
-    k-Winner-Take-All Activation:
-    上位k%の強い信号のみを通し、それ以外を抑制する。
-    圧倒的なノイズ除去能力を持つ。
+    k-Winner-Take-All Activation with Gain:
+    上位k%のみを通し、さらに信号を増幅してSNNの発火を促進する。
     """
-    def __init__(self, sparsity: float = 0.1) -> None:
+    def __init__(self, sparsity: float = 0.25, gain: float = 2.0) -> None:
         super().__init__()
         self.sparsity = sparsity
+        self.gain = gain
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # k個のニューロンを選定
@@ -24,22 +24,20 @@ class TopKActivation(nn.Module):
         # 上位k個の値とインデックスを取得
         topk_values, topk_indices = torch.topk(x, k, dim=1)
         
-        # 出力テンソルをゼロで初期化（抑制）
+        # マスク作成
         mask = torch.zeros_like(x)
-        
-        # 上位k個の場所に1を立てる（微分のためにscatterを使用）
-        # 値自体はそのまま通す（ReLUのような挙動）
         mask.scatter_(1, topk_indices, 1.0)
         
-        return x * mask
+        # 信号を通過させ、ゲイン倍して次層のSNN閾値(1.0)を超えやすくする
+        return x * mask * self.gain
 
 class ActivePredictiveLayer(nn.Module):
     def __init__(self, features: int) -> None: 
         super().__init__()
         self.norm = nn.LayerNorm(features)
-        # GELUの代わりにTop-Kを使用。
-        # 上位10%の「確信度の高い特徴」だけを次層に送る
-        self.activation = TopKActivation(sparsity=0.10)
+        # 【修正】sparsity 0.1 -> 0.25: より多くの情報を流す
+        # 【追加】gain=2.0: 信号を増幅
+        self.activation = TopKActivation(sparsity=0.25, gain=2.0)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
         x = self.norm(x)
@@ -67,7 +65,7 @@ class HybridNeuromorphicCore(nn.Module):
         with torch.no_grad():
             # 1. Forward Pass
             f = self.fast_process(x_input)
-            r = self.deep_process(f) # ここで強力なデノイズがかかる
+            r = self.deep_process(f) 
             out = self.output_gate(r)
             
             loss_val = 0.0
