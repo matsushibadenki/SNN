@@ -2,149 +2,88 @@
 
 このドキュメントは、SNNプロジェクトの全バージョン（Brain v20, v16, v14）および全機能（Phase 1-16+）を網羅したテストコマンド集です。
 
-開発中の最新機能、ベンチマーク、ハードウェアシミュレーションを含むすべての実行手順を記載しています。
+最新の **SCAL (Statistical Centroid Alignment Learning)** 技術、および **Brain v2.0 Spartan Training** の手順を含みます。
 
 ## **📋 目次**
 
 1. [CLI & 環境準備](https://www.google.com/search?q=%231-cli--%E7%92%B0%E5%A2%83%E6%BA%96%E5%82%99)  
-2. [Brain v20 (Current Stable)](https://www.google.com/search?q=%232-brain-v20-current-stable)  
-3. [Brain v20 Evolution (v20.1 \- v20.3)](https://www.google.com/search?q=%233-brain-v20-evolution-v201---v203) **(New\!)**  
-4. [新機能検証 (Bio, Symbolic, Spatial)](https://www.google.com/search?q=%234-%E6%96%B0%E6%A9%9F%E8%83%BD%E6%A4%9C%E8%A8%BC-bio-symbolic-spatial)  
-5. [SNN学習 & 蒸留ワークフロー](https://www.google.com/search?q=%235-snn%E5%AD%A6%E7%BF%92--%E8%92%B8%E7%95%99%E3%83%AF%E3%83%BC%E3%82%AF%E3%83%95%E3%83%AD%E3%83%BC)  
-6. [旧バージョン (Legacy)](https://www.google.com/search?q=%236-%E6%97%A7%E3%83%90%E3%83%BC%E3%82%B8%E3%83%A7%E3%83%B3-legacy)
+2. [Brain v20 / v16 Demo](https://www.google.com/search?q=%232-brain-v20--v16-demo) **(Updated\!)**  
+3. [Training Workflow](https://www.google.com/search?q=%233-training-workflow) **(New\!)**  
+4. [SCAL & Core Technology](https://www.google.com/search?q=%234-scal--core-technology) **(New\!)**  
+5. [Legacy & Benchmarks](https://www.google.com/search?q=%235-legacy--benchmarks)
 
 ## **1\. CLI & 環境準備**
 
-プロジェクトのセットアップと健全性チェックを行うための基本コマンドです。
+プロジェクトルートで実行してください。
 
-\# 仮想環境のセットアップ (初回のみ)  
-./setup\_colab.sh
+\# 仮想環境の有効化 (推奨)  
+source .venv/bin/activate
 
-\# プロジェクト全体の健全性チェック  
-python scripts/run\_project\_health\_check.py
+\# パスの設定 (必須)  
+export PYTHONPATH=$PYTHONPATH:.
 
-\# CLIツールのヘルプ確認  
-python snn-cli.py \--help
+## **2\. Brain v20 / v16 Demo**
 
-## **2\. Brain v20 (Current Stable)**
+統合された人工脳の動作デモです。
 
-現在安定稼働している人工脳のプロトタイプ実行コマンドです。
+### **Brain v16.3: SCAL統合・自律動作デモ**
 
-### **Brain v20 Prototype (Base)**
+視覚野、思考エンジン(Mamba)、反射モジュールが **SCAL (バイポーラ平均化)** 技術によって結合され、極限ノイズ環境でも動作します。
 
-非同期カーネル、アストロサイト制御、BitSpikeMamba (System 1\) を統合した基本形です。
+\# 統合デモの実行 (Greeting, Logic, Safety, Reflex, Fatigueシナリオ)  
+python scripts/runners/run\_brain\_v16\_demo.py
 
-\# Brain v20 Prototype 実行  
-python scripts/runners/run\_brain\_v20\_prototype.py
+### **Brain v20 Vision: 視覚野統合**
 
-## **3\. Brain v20 Evolution (v20.1 \- v20.3)**
+DVSセンサー（を模した入力）からの信号を処理し、行動を決定します。
 
-**★ 最新実装機能** 自律進化、マルチモーダル統合、世界モデルなど、高度な知能機能を検証するためのコマンドセットです。
-
-### **Phase 1: 視覚と言語の統合 (SpikingVLM)**
-
-1.58bit量子化を用いた視覚-言語モデルの学習と推論テスト。
-
-\# 1\. 学習用ダミーデータの生成  
-python scripts/generate\_vlm\_dummy\_data.py
-
-\# 2\. SpikingVLMの学習 (BitNet有効化)  
-python scripts/train\_spiking\_vlm.py \\  
-    \--data\_path data/vlm\_dummy/train\_data.jsonl \\  
-    \--use\_bitnet \\  
-    \--batch\_size 4 \\  
-    \--epochs 2
-
-\# 3\. 推論時のオンチップ自己適応 (Test-Time Adaptation)  
-\# 未知のデータに対してニューロンの閾値を動的に調整するデモ  
-python scripts/run\_vlm\_adaptation.py
-
-### **Phase 2: 睡眠と記憶の定着 (Sleep Consolidation)**
-
-学習した記憶を、外部入力のない「睡眠状態」で整理・強化するプロセス。
-
-\# 睡眠サイクル (Generative Replay) の実行  
-\# 脳が自発的に「夢」を見る様子をシミュレーション  
-python scripts/run\_vlm\_sleep.py
-
-### **Phase 3: 世界モデルとメタ認知 (System 2\)**
-
-自身の確信度を監視し、自信がない場合にのみ熟考モードへ移行する機能。
-
-\# メタ認知と世界モデルによる行動計画デモ  
-python scripts/runners/run\_world\_model\_demo.py
-
-### **Phase 4: 思考の蒸留と自己進化 (Self-Evolution)**
-
-System 2（論理・熟考）の解法を System 1（直感・BitSpike）に蒸留し、脳が自律的に進化するプロセス。
-
-\# 1\. 思考蒸留の単体テスト (算数問題の解法学習)  
-python scripts/runners/run\_distillation\_demo.py
-
-\# 2\. Brain v20.2: 実視覚野 (SpikingCNN) との統合  
-\# カメラ(想定)からの入力を非同期に処理  
 python scripts/runners/run\_brain\_v20\_vision.py
 
-\# 3\. Brain v20.3: 完全統合・自己進化デモ  
-\# 未知の問題に遭遇 \-\> 熟考 \-\> 即時学習 \-\> 進化(即答化) のサイクル  
-python scripts/runners/run\_brain\_evolution.py
+## **3\. Training Workflow**
 
-## **4\. 新機能検証 (Bio, Symbolic, Spatial)**
+### **Brain v2.0 "Spartan" Training (Distinct Mode)**
 
-### **生物学的モデル & マイクロ回路**
+言語モデルのモード崩壊（金太郎飴状態）を防ぎ、明確な回答能力を獲得させるための厳格な学習ループです。  
+現在実行中のスクリプトです。  
+\# ターゲットLoss: 0.05  
+python scripts/trainers/train\_brain\_v5\_distinct.py
 
-\# 生物学的マイクロ回路 (PFC Microcircuit)  
-python scripts/run\_bio\_microcircuit\_demo.py
+### **Web Learning (Self-Evolution)**
 
-\# STDP学習 (Hebbian Learning)  
-python scripts/run\_stdp\_learning.py
+Web検索を通じて知識を獲得し、RAGデータベースを構築します。
 
-### **空間認識 & マルチモーダル**
+python scripts/runners/run\_web\_learning.py
 
-\# 空間認識デモ (Hippocampus/Grid Cells)  
-python scripts/run\_spatial\_demo.py
+## **4\. SCAL & Core Technology**
 
-\# マルチモーダル統合 (旧デモ)  
-python scripts/run\_multimodal\_demo.py
+今回確立された、ノイズ耐性限界(0.48)を突破するためのコア技術の検証コマンドです。
 
-## **5\. SNN学習 & 蒸留ワークフロー**
+### **SCAL (Statistical Centroid Alignment Learning) 検証**
 
-### **CIFAR-10 学習ベンチマーク**
+1.58ビット・ロジックゲート樹状突起とバイポーラ統計平均化を用いた、超ロバスト学習のシミュレーションです。
 
-\# 生物学的PCネットワークによるCIFAR-10学習  
-python scripts/train\_bio\_pc\_cifar10.py
-
-### **論理ゲート駆動・自律学習 (Logic Gated)**
-
-1.58ビット・ロジックゲート樹状突起を用いた、高精度な空間論理認識の自律学習テストです。
-
-\# プロジェクトルートで実行  
-export PYTHONPATH=$PYTHONPATH:.  
+\# ノイズレベル0.48（信号成分4%）での学習実証  
 python scripts/run\_logic\_gated\_learning.py
 
 * **期待される結果**:  
-  * Acc: 学習が進むにつれ 99% 以上に到達。  
-  * Robustness: ノイズレベル 0.40 でも高精度を維持。
+  * Noise 0.45: Accuracy \> 85% (Excellent)  
+  * Noise 0.48: Accuracy \> 35% (State-of-the-Art / Theoretical Limit)  
+  * "Status: State-of-the-Art" が表示されれば成功です。
 
-## **6\. 旧バージョン (Legacy)**
+### **ニューロンダイナミクス可視化**
 
-過去のメジャーバージョン (v14, v16) のものです。後方互換性テストや比較のために残されています。
+適応型LIFニューロンの膜電位挙動を確認します。
 
-### **Brain v16 (Previous Gen)**
+python scripts/visualize\_neuron\_dynamics.py
 
-\# Full Demo v16.3  
-python scripts/runners/run\_v16\_3\_demo.py
+## **5\. Legacy & Benchmarks**
 
-\# Full Demo v16.2  
-python scripts/runners/run\_v16\_2\_final\_demo.py
+### **CIFAR-10 学習ベンチマーク**
 
-\# Brain v16 Demo  
-python scripts/runners/run\_brain\_v16\_demo.py
+生物学的PCネットワークによる画像認識学習。
 
-### **Brain v14 (Stable SNN)**
+python scripts/train\_bio\_pc\_cifar10.py
 
-\# Standard Run  
-python scripts/runners/run\_brain\_v14.py
+### **初期プロトタイプ (Brain v14)**
 
-\# Brain Simulation  
-python scripts/runners/run\_brain\_simulation.py  
+python scripts/run\_artificial\_brain\_v14.py  
