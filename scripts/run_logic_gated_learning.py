@@ -1,5 +1,5 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: 接続復活 & LR Decay)
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Positive Shift & Boost)
 
 import sys
 import os
@@ -65,12 +65,11 @@ def run_simulation():
     TOTAL_SAMPLES = 20000
     EPOCHS = 40
     
-    # 【修正】初期学習率を少し下げて安定開始
     INITIAL_LR = 0.04
     
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Re-connected Reservoir, Balanced Top-K, LR Decay.")
+    print(f"Training Logic: Positive Bias Readout, Gain Boost 3.0, Gentle Decay.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -83,7 +82,6 @@ def run_simulation():
     current_lr = INITIAL_LR
     
     for epoch in range(EPOCHS):
-        # カリキュラム
         if epoch < 5:
             current_noise_range = (0.0, 0.20) 
         elif epoch < 15:
@@ -93,8 +91,8 @@ def run_simulation():
         else:
             current_noise_range = (0.0, 0.49)
             
-        # LR減衰
-        current_lr = INITIAL_LR * (0.95 ** epoch)
+        # LR Decay (より緩やかに: 0.98)
+        current_lr = INITIAL_LR * (0.98 ** epoch)
             
         x_train, y_train, _ = generate_synthetic_data(
             num_samples=TOTAL_SAMPLES, 
