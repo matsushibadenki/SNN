@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 高精度化・スパース性最適化)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: 超・疎行列化 & 記憶保持強化)
 
 import torch
 import torch.nn as nn
@@ -38,8 +38,9 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
         else:
             # リザーバー層: 入力次元数に応じたスケーリング
-            # 【修正】2.0 -> 1.5: 分散を小さくして接続をスパースにし、発火率を適正化（ノイズ耐性向上）
-            std_dev = 1.5 / math.sqrt(in_features)
+            # 【修正】1.5 -> 1.0: さらに分散を小さくし、発火率を20%前後に抑制。
+            # ノイズに埋もれた微弱なシグナルのみに反応する「静かな専門家」を作ることでSN比を改善する。
+            std_dev = 1.0 / math.sqrt(in_features)
             self.threshold = 1.0
             trainable = False
             
@@ -110,7 +111,8 @@ class LogicGatedSNN(nn.Module):
                 reward = reward.unsqueeze(1).expand(-1, self.out_features)
             
             # ハイパーパラメータ
-            lr = 0.05
+            # 【修正】0.05 -> 0.025: 学習率を下げて、急激な重み変動による「微弱パターンの忘却」を防ぐ。
+            lr = 0.025
             momentum = 0.9
             
             # Delta Rule
@@ -123,6 +125,7 @@ class LogicGatedSNN(nn.Module):
             self.states.add_(self.momentum_buffer * lr)
             
             # 正則化 (Weight Decay equivalent)
-            # 【修正】0.9995 -> 0.9999: 減衰を弱め、高ノイズパターンの記憶を保持しやすくする
-            self.states.mul_(0.9999) 
+            # 【修正】0.9999 -> 削除: 減衰を撤廃。
+            # 限界領域(0.45)の記憶は非常に繊細なため、減衰させずに全て保持する戦略に切り替える。
+            # Clampで爆発だけ防ぐ。
             self.states.clamp_(-self.max_states, self.max_states)
