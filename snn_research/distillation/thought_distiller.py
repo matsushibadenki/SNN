@@ -8,7 +8,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, cast
 import logging
 from tqdm import tqdm
 
@@ -70,8 +70,10 @@ class ThoughtDistillationManager:
                 
                 # デモ用: student.forward_loss などのインターフェースを想定
                 # テキストを直接渡せるラッパーがある前提、もしくは内部で変換
-                if hasattr(self.student, 'forward_text_loss'):
-                    loss = self.student.forward_text_loss(input_text, target_text)
+                # [Fix] Cast self.student to Any to avoid mypy error "Tensor not callable"
+                student_any = cast(Any, self.student)
+                if hasattr(student_any, 'forward_text_loss'):
+                    loss = student_any.forward_text_loss(input_text, target_text)
                 else:
                     # ダミーロス (モデルの実装に依存するため)
                     # 本来はここで self.student(input_ids) -> logits -> CrossEntropy
