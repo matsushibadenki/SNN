@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Delta Rule & Adaptive Temperature)
-# 内容: 教師ありデルタ則による直接誤差学習、適応型温度スケーリング、チャネル中心化
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Bipolar Signal Processing)
+# 内容: バイポーラ変換(-1/+1)によるノイズキャンセリング、デルタ則、温度スケーリング
 
 import torch
 import torch.nn as nn
@@ -25,23 +25,21 @@ class LogicGatedSNN(nn.Module):
         self.mode = mode
         
         if self.mode == 'readout':
-            # 読み出し層 (学習可能)
+            # 読み出し層
             std_dev = 0.05
             trainable = True
             
-            # 直交初期化
+            # 重みもバイポーラ的な挙動を期待して初期化
             states = torch.empty(out_features, in_features)
             nn.init.orthogonal_(states, gain=1.0)
             states = states * std_dev
             
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
-            
-            # Adaptive Thresholdの代わりに Temperature parameter として使用
-            # 初期温度は高め(50.0)に設定し、学習とともに調整可能にする
-            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 50.0)
+            # 温度パラメータ
+            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 30.0)
         else:
-            # リザーバー層 (固定)
+            # リザーバー層
             std_dev = 3.0 / math.sqrt(in_features)
             trainable = False
             
@@ -67,7 +65,6 @@ class LogicGatedSNN(nn.Module):
         return self.synapse_states
 
     def _quantize_weights(self, x: torch.Tensor) -> torch.Tensor:
-        """3値量子化"""
         w = torch.zeros_like(x)
         threshold_val = 0.01 
         w[x > threshold_val] = 1.0
@@ -85,26 +82,25 @@ class LogicGatedSNN(nn.Module):
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
         if self.mode == 'readout':
-            # 1. Centered Cosine Similarity
-            # ノイズ耐性の要。クラス間の平均を引き、相対的な信号強度を取り出す。
-            x_norm = F.normalize(x, p=2, dim=1, eps=1e-8)
+            # --- Bipolar Transformation ---
+            # 0/1 のスパイク入力を -1/+1 に変換
+            # ノイズ(0.5付近)は 0.0 にマップされ、ドット積で相殺されるようになる
+            x_bipolar = (x - 0.5) * 2.0
+            
+            # Normalization (Bipolar空間での正規化)
+            x_norm = F.normalize(x_bipolar, p=2, dim=1, eps=1e-8)
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
-            cosine_sim = torch.matmul(x_norm, w_norm.t()) # [Batch, Out]
             
-            mean_sim = cosine_sim.mean(dim=1, keepdim=True)
-            centered_sim = cosine_sim - mean_sim
+            # Cosine Similarity (Noise Cancellation Active)
+            cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
-            # 2. Temperature Scaling
-            # 学習可能な温度パラメータを使用
-            temperature = self.adaptive_threshold.mean() # 全ニューロン共通温度とする
-            scaled_sim = centered_sim * temperature
+            # Temperature Scaling
+            temperature = self.adaptive_threshold.mean()
+            scaled_sim = cosine_sim * temperature
             
-            # 3. Activation (Softmax or Hard WTA)
             if self.training:
-                # 学習時はSoftmaxで微分可能な確率分布にする
                 spikes = F.softmax(scaled_sim, dim=1)
             else:
-                # 推論時はArgmaxで明確な判定
                 spikes = torch.zeros_like(scaled_sim)
                 _, max_idx = scaled_sim.max(dim=1)
                 spikes.scatter_(1, max_idx.unsqueeze(1), 1.0)
@@ -112,7 +108,6 @@ class LogicGatedSNN(nn.Module):
             v_mem = scaled_sim
             
         else:
-            # リザーバー層
             v_mem = torch.matmul(x, w.t())
             spikes = (v_mem >= 1.0).float()
         
@@ -129,52 +124,49 @@ class LogicGatedSNN(nn.Module):
         with torch.no_grad():
             batch_size = pre_spikes.size(0)
             
-            # Reward引数を柔軟に処理
-            # Tensorかつ形状が[Batch, Out]の場合、それは「誤差信号 (Error Signal)」として扱う
+            # 入力もバイポーラ化して学習に使う
+            # これにより「抑制(-1)」と「興奮(+1)」が正しく重みに反映される
+            pre_spikes_bipolar = (pre_spikes - 0.5) * 2.0
+            
             if isinstance(reward, torch.Tensor) and reward.shape == post_spikes.shape:
                 error_signal = reward
-                # Delta Rule: Error * Input
-                # Batch平均をとる
-                delta = torch.matmul(error_signal.t(), pre_spikes) / batch_size
-            
+                # Delta Rule with Bipolar Input
+                # Error(batch, out) * Input(batch, in) -> Delta(out, in)
+                delta = torch.matmul(error_signal.t(), pre_spikes_bipolar) / batch_size
             else:
-                # 従来のスカラー報酬の場合（後方互換性）
+                # Fallback (Legacy)
                 if isinstance(reward, float):
                     reward_tensor = torch.full((batch_size, self.out_features), reward, device=pre_spikes.device)
-                elif reward.dim() == 1:
-                    reward_tensor = reward.unsqueeze(1).expand(-1, self.out_features)
                 else:
                     reward_tensor = reward
-                
-                # Hebbian-like update scaled by reward * prob
-                delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes) / batch_size
+                delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes_bipolar) / batch_size
 
-            # モメンタム更新
+            # Momentum
             momentum_factor = 0.95
             self.momentum_buffer.mul_(momentum_factor).add_(delta)
             
-            # 重み更新
+            # Update
             self.states.add_(self.momentum_buffer * learning_rate)
             
             # --- Constraints ---
-            # 1. Centering (平均除去) - コサイン類似度のために重要
+            # バイポーラ学習ではCenteringは自然に行われる傾向があるが、明示的に行うと安定する
             mean_weight = self.states.mean(dim=1, keepdim=True)
             self.states.sub_(mean_weight)
             
-            # 2. Norm Scaling (球面射影)
+            # Norm Scaling
             norm = self.states.norm(p=2, dim=1, keepdim=True)
             target_norm = math.sqrt(self.in_features)
             scale_factor = target_norm / (norm + 1e-8)
             self.states.mul_(scale_factor)
             
+            # Clamp
             self.states.clamp_(-20.0, 20.0)
             
-            # 温度調整 (Automatic Temperature Scaling)
-            # 予測分布が極端（全部0または1）にならないように、エントロピーに基づいて温度を微調整
+            # Temperature Auto-tuning
             if self.mode == 'readout':
-                # post_spikesはSoftmax出力
                 entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
-                target_entropy = 0.5 # 適度な分散を維持
-                temp_delta = 0.1 * (entropy - target_entropy)
+                # 少しエントロピー低め(確信度高め)を目指す
+                target_entropy = 0.3 
+                temp_delta = 0.2 * (entropy - target_entropy)
                 self.adaptive_threshold.add_(temp_delta)
-                self.adaptive_threshold.clamp_(10.0, 100.0) # 温度範囲制限
+                self.adaptive_threshold.clamp_(10.0, 100.0)
