@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Cosine Similarity)
-# 内容: コサイン類似度によるロバストな推論、適応型閾値、およびWTAフォールバックを備えたSNNレイヤー
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Orthogonal & High Contrast)
+# 内容: 直交初期化、高コントラストコサイン類似度、および強化された可塑性を備えたSNNレイヤー
 
 import torch
 import torch.nn as nn
@@ -32,11 +32,18 @@ class LogicGatedSNN(nn.Module):
         if self.mode == 'readout':
             # 読み出し層
             std_dev = 0.05
-            # コサイン類似度(x10スケール)用の閾値初期値
-            # ランダムなベクトル同士の類似度は0に近いが、学習が進むと正になる
-            self.base_threshold = 0.5 
+            # コサイン類似度(x20スケール)用の閾値初期値
+            # スケールを上げたため、閾値も少し高めに設定
+            self.base_threshold = 1.0 
             trainable = True
-            states = torch.randn(out_features, in_features) * std_dev
+            
+            # 変更点1: 直交初期化 (Orthogonal Initialization)
+            # クラス間の分離を最大化し、ノイズ耐性の基礎を作る
+            states = torch.empty(out_features, in_features)
+            nn.init.orthogonal_(states, gain=1.0)
+            # スケールを調整
+            states = states * std_dev
+            
             # クランプ範囲 [-20, 20]
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
@@ -90,7 +97,6 @@ class LogicGatedSNN(nn.Module):
         # --- Cosine Similarity Logic ---
         if self.mode == 'readout':
             # 1. 入力ベクトルの正規化 (L2 Norm)
-            # ノイズが増えてスパイク数が増減しても、方向だけを見るようにする
             x_norm = x / (x.norm(p=2, dim=1, keepdim=True) + 1e-8)
             
             # 2. 重みベクトルの正規化
@@ -99,9 +105,9 @@ class LogicGatedSNN(nn.Module):
             # 3. コサイン類似度の計算 (-1.0 ~ 1.0)
             cosine_sim = torch.matmul(x_norm, w_norm.t())
             
-            # 4. スケーリング (閾値判定をしやすくするため)
-            # 10倍することで、類似度0.1の違いが値として1.0の違いになり、分離しやすくなる
-            v_mem = cosine_sim * 10.0
+            # 4. スケーリング (High Contrast)
+            # 変更点2: スケールを 20.0 に倍増し、コントラストを高める
+            v_mem = cosine_sim * 20.0
         else:
             # リザーバー層は従来通りのドット積
             v_mem = torch.matmul(x, w.t())
@@ -118,8 +124,8 @@ class LogicGatedSNN(nn.Module):
                     # 閾値の動的調整
                     delta = 0.01 * (fire_rate - target_rate)
                     self.adaptive_threshold.add_(delta)
-                    # コサイン類似度x10空間なので、閾値は適度な範囲に収まる
-                    self.adaptive_threshold.clamp_(0.1, 8.0)
+                    # スケール20.0に合わせて上限も緩和
+                    self.adaptive_threshold.clamp_(0.1, 15.0)
         else:
             threshold = self.base_threshold
 
@@ -153,17 +159,20 @@ class LogicGatedSNN(nn.Module):
             elif reward.dim() == 1:
                 reward = reward.unsqueeze(1).expand(-1, self.out_features)
             
+            # 変更点3: 負の報酬（失敗）を強調して、間違ったパターンから強く引き離す
+            # 正の報酬はそのまま、負の報酬を 1.5倍 に重み付け
+            effective_reward = reward.clone()
+            effective_reward[reward < 0] *= 1.5
+            
             momentum = 0.95
             
-            # 勾配計算 (標準的なHebb則/誤差訂正)
-            # コサイン類似度空間でも、方向を合わせるための勾配として機能する
-            delta = torch.matmul(reward.t(), pre_spikes) / batch_size
+            # 勾配計算
+            delta = torch.matmul(effective_reward.t(), pre_spikes) / batch_size
             
             self.momentum_buffer.mul_(momentum).add_(delta)
             self.states.add_(self.momentum_buffer * learning_rate)
             
             # --- Weight Normalization & Centering ---
-            # コサイン類似度の精度を高めるため、重みの分布を整える
             
             # 1. Centering (ドリフト防止)
             mean_weight = self.states.mean(dim=1, keepdim=True)
@@ -175,10 +184,8 @@ class LogicGatedSNN(nn.Module):
                 self.states.add_(noise)
             
             # 3. Norm Scaling (正則化)
-            # 重みの長さを一定範囲に保つことは、コサイン類似度の学習において重要
             norm = self.states.norm(p=2, dim=1, keepdim=True)
             target_norm = math.sqrt(self.in_features) 
-            # 極端に小さくならないようにする
             scale_factor = torch.clamp(target_norm / (norm + 1e-6), min=0.5, max=1.5)
             self.states.mul_(scale_factor)
             
