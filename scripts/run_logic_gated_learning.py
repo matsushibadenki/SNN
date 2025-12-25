@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Extreme Robustness)
-# 内容: 高速化されたデータ生成、高ノイズ適応型カリキュラム、ロバスト性評価
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Extreme Robustness & Speed)
+# 内容: ベクトル化された高速データ生成、高ノイズ適応型アニーリング、ロバスト性評価
 
 import sys
 import os
@@ -77,32 +77,39 @@ def run_simulation():
     
     core = HybridNeuromorphicCore(IN_FEATURES, HIDDEN_FEATURES, OUT_FEATURES).to(device)
     print(f"\nModel initialized with {HIDDEN_FEATURES} hidden neurons.")
-    print(f"Training Logic: Ultra High Contrast (x30), Relaxed Top-K (0.4), Hardened Curriculum.")
+    print(f"Training Logic: Hyper Contrast (x50), Precise Top-K, LR Annealing.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
 
     print("\nStarting Curriculum Training Phase...")
-    print(f"{'Epoch':<6} | {'Noise Range':<15} | {'Acc':<6} | {'Loss':<6} | {'LR':<7} | {'R_Spk%':<6} | {'V_Mean':<6} | {'Time'}")
-    print("-" * 95)
+    print(f"{'Epoch':<6} | {'Noise Range':<15} | {'Acc':<6} | {'Loss':<6} | {'LR':<8} | {'R_Spk%':<6} | {'V_Mean':<6} | {'Time'}")
+    print("-" * 96)
     
     start_time = time.time()
     current_lr = INITIAL_LR
     
     for epoch in range(EPOCHS):
-        # カリキュラム学習設定 (さらに強化)
-        if epoch < 5:
+        # カリキュラム学習設定 (強化版)
+        if epoch < 10:
+            # 基礎固めフェーズ
             current_noise_range = (0.0, 0.20) 
-        elif epoch < 15:
-            current_noise_range = (0.0, 0.40) 
+            current_lr = INITIAL_LR * (0.95 ** epoch)
         elif epoch < 25:
-            current_noise_range = (0.0, 0.45)
+            # 応用フェーズ
+            current_noise_range = (0.0, 0.40)
+            current_lr = INITIAL_LR * (0.95 ** epoch)
+        elif epoch < 35:
+            # 高ノイズ適応フェーズ
+            current_noise_range = (0.1, 0.45)
+            # 学習率を下げて、ノイズによる重みの振動を抑制する
+            current_lr = 0.005
         else:
-            # 最終フェーズ: 高ノイズ適応を強制するため下限をさらに上げる
+            # 極限環境フェーズ (Fine-tuning)
+            # ノイズ下限を上げて、難しいサンプルのみで微調整
             current_noise_range = (0.2, 0.50)
-            
-        # 学習率の減衰 (0.97倍/epoch -> 後半は少し維持するように微調整も可能だがシンプルに継続)
-        current_lr = INITIAL_LR * (0.97 ** epoch)
+            # 非常に低い学習率で、平均的な特徴（プロトタイプ）のみを定着させる
+            current_lr = 0.001
             
         # データ生成 (高速化版)
         x_train, y_train, _ = generate_synthetic_data(
@@ -137,7 +144,7 @@ def run_simulation():
         print(f"{epoch+1:<6} | {str(current_noise_range):<15} | "
               f"{epoch_acc:5.1f}% | "
               f"{avg_loss:6.4f} | "
-              f"{current_lr:.5f} | "
+              f"{current_lr:.6f} | "
               f"{metrics.get('res_density', 0)*100:5.1f}% | "
               f"{metrics.get('out_v_mean', 0):6.3f} | "
               f"{elapsed:.0f}s")
