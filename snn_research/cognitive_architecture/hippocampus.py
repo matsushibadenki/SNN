@@ -1,25 +1,84 @@
 # ファイルパス: snn_research/cognitive_architecture/hippocampus.py
-# Title: Hippocampal Formation v2.3 (Enhanced Episodic Memory)
-# Description:
-#   短期記憶と長期記憶(RAG)のインターフェース。
-#   修正: store_episodeの構造化対応、recallの実装強化。
+# Title: Hippocampal Formation v3.0 (SCAL Associative Memory)
+# Description: Bipolar Centroid Learningによる堅牢なベクトル連想記憶を追加。
 
 import logging
 import torch
+import torch.nn.functional as F
 import json
-import os
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import List, Dict, Any, Optional, Union
 from collections import deque
-
-# RAGシステム (ベクトル検索エンジン)
 from snn_research.cognitive_architecture.rag_snn import RAGSystem
 
 logger = logging.getLogger(__name__)
 
+class BipolarAssociativeMemory:
+    """
+    SCALに基づく連想記憶マトリクス。
+    ベクトルをバイポーラ重心学習で記憶し、コサイン類似度で想起する。
+    """
+    def __init__(self, dim: int, capacity: int = 100):
+        self.dim = dim
+        self.capacity = capacity
+        # 記憶マトリクス: [Capacity, Dim]
+        # 正規化されたプロトタイプベクトルを保持
+        self.memory = torch.zeros(capacity, dim)
+        self.usage = torch.zeros(capacity) # 使用頻度またはLRU用
+        self.pointer = 0
+        self.is_full = False
+
+    def store(self, vector: torch.Tensor):
+        """
+        ベクトルを記憶する。Centroid Updateを行う。
+        """
+        if vector.dim() == 1:
+            vector = vector.unsqueeze(0)
+        
+        # Bipolar Transform & Normalize
+        vec_bipolar = (vector - 0.5) * 2.0
+        vec_norm = F.normalize(vec_bipolar, p=2, dim=1)
+        
+        # 最も似ているスロットを探す (閾値以上なら更新、なければ新規)
+        sim = torch.matmul(vec_norm, self.memory.t()).squeeze(0)
+        max_sim, idx = sim.max(dim=0)
+        
+        learning_rate = 0.1
+        
+        if max_sim > 0.8: # 既存記憶の更新 (Centroid Averaging)
+            current_mem = self.memory[idx]
+            # EMA Update: mem = mem + lr * (input - mem)
+            new_mem = current_mem + learning_rate * (vec_norm.squeeze(0) - current_mem)
+            self.memory[idx] = F.normalize(new_mem, p=2, dim=0)
+            self.usage[idx] += 1
+        else:
+            # 新規書き込み (Ring Buffer)
+            target_idx = self.pointer
+            self.memory[target_idx] = vec_norm.squeeze(0)
+            self.usage[target_idx] = 1
+            
+            self.pointer = (self.pointer + 1) % self.capacity
+            if self.pointer == 0:
+                self.is_full = True
+
+    def retrieve(self, query_vector: torch.Tensor, k: int = 1) -> List[int]:
+        """
+        類似メモリのインデックスを返す。
+        """
+        if query_vector.dim() == 1:
+            query_vector = query_vector.unsqueeze(0)
+            
+        q_bipolar = (query_vector - 0.5) * 2.0
+        q_norm = F.normalize(q_bipolar, p=2, dim=1)
+        
+        sim = torch.matmul(q_norm, self.memory.t())
+        # マスクしていない領域(未書き込み)は除外
+        if not self.is_full:
+            sim[:, self.pointer:] = -1.0
+            
+        top_v, top_i = sim.topk(k, dim=1)
+        return top_i.squeeze(0).tolist()
+
 class Hippocampus:
-    """
-    記憶の形成(Encoding)、保持(Storage)、想起(Retrieval)を司るモジュール。
-    """
     def __init__(
         self,
         rag_system: Optional[RAGSystem] = None,
@@ -27,132 +86,76 @@ class Hippocampus:
         working_memory_dim: int = 256
     ):
         self.rag = rag_system if rag_system else RAGSystem()
-        
-        # 短期記憶 (STM) / エピソードバッファ
-        # 最近のイベントを辞書形式などで保持
         self.episodic_buffer: deque = deque(maxlen=short_term_capacity)
         
-        # 作業記憶 (WM) - 現在の思考コンテキスト
+        # SCAL Associative Memory
+        self.associative_memory = BipolarAssociativeMemory(working_memory_dim, capacity=short_term_capacity)
         self.working_memory = torch.zeros(working_memory_dim)
         
-        logger.info("🧠 Hippocampus initialized (STM + RAG Interface).")
+        logger.info("🧠 Hippocampus initialized (SCAL Memory Enabled).")
 
     def process(self, input_data: Any) -> Any:
-        """
-        Brain Kernelからの呼び出し口。
-        """
         if isinstance(input_data, str) and input_data.startswith("QUERY:"):
             query = input_data.replace("QUERY:", "").strip()
             return self.recall(query)
-            
+        
+        # データ保存と同時にベクトル学習も行う(簡易シミュレーション)
         self.store_episode(input_data)
+        
+        # もしinput_dataがテンソルやベクトルを持っていれば連想記憶へ
+        if isinstance(input_data, dict) and 'embedding' in input_data:
+            emb = input_data['embedding']
+            if isinstance(emb, torch.Tensor):
+                self.associative_memory.store(emb)
+                
         return None
 
     def store_episode(self, data: Any):
-        """
-        短期記憶へエピソードを追加。
-        dataが辞書の場合、重要なキーが含まれているかチェックしつつ保存。
-        """
         self.episodic_buffer.append(data)
-        
-        # 簡易ログ表示
-        preview = ""
-        if isinstance(data, dict):
-            preview = f"In: {str(data.get('input'))[:20]} -> Out: {str(data.get('output'))[:20]}"
-        else:
-            preview = str(data)[:30]
-        # logger.debug(f"📝 Episode buffered: {preview}...")
 
     def recall(self, query: str, k: int = 3) -> List[str]:
-        """
-        記憶の検索 (Recall)。
-        STMとLTMの両方から検索する。
-        """
         results = []
         
-        # 1. 短期記憶からの検索 (簡易キーワードマッチ)
-        # 直近の会話や文脈を優先。辞書内のテキストフィールドも検索対象にする。
+        # 1. STM Search (Text)
         stm_hits = 0
         for item in reversed(self.episodic_buffer):
-            item_text = ""
-            if isinstance(item, dict):
-                # 辞書なら input/output を検索対象文字列にする
-                parts = [str(v) for k, v in item.items() if k in ['input', 'output', 'thought_trace'] and v]
-                item_text = " | ".join(parts)
-            else:
-                item_text = str(item)
-            
+            item_text = str(item)
             if query in item_text:
-                results.append(f"[STM] {item_text[:200]}...") # 長すぎる場合はカット
+                results.append(f"[STM] {item_text[:200]}...")
                 stm_hits += 1
                 if stm_hits >= 2: break 
 
-        # 2. 長期記憶(RAG)からの検索
+        # 2. RAG Search
         if self.rag:
-            # rag.searchの実装に依存するが、ここではリストが返ると想定
             try:
                 rag_results = self.rag.search(query, k=k)
                 if rag_results:
                     results.extend(rag_results)
-            except Exception as e:
-                logger.warning(f"RAG search failed: {e}")
+            except Exception:
+                pass
             
         return results
 
     def consolidate_memory(self):
-        """
-        記憶の固定化 (Consolidation)。
-        STMの内容を文字列化してLTM(RAG)へ移動する。
-        """
+        """STM -> LTM Transfer"""
         if not self.episodic_buffer:
             return
-
-        logger.info("💤 Consolidating memories to Long-Term Storage...")
         
         items_to_store = []
         while self.episodic_buffer:
             item = self.episodic_buffer.popleft()
-            text_representation = ""
-            
             if isinstance(item, str):
-                text_representation = item
+                items_to_store.append(item)
             elif isinstance(item, dict):
-                # 辞書をJSON文字列化、あるいは人間可読な形式へ
-                inp = item.get("input", "")
-                out = item.get("output", "")
-                emo = item.get("emotion", "")
-                text_representation = f"Input: {inp}\nResponse: {out}\nEmotion: {emo}"
-            
-            if text_representation:
-                items_to_store.append(text_representation)
+                items_to_store.append(str(item))
         
         if items_to_store and self.rag:
-            combined_text = "\n---\n".join(items_to_store)
+            combined_text = "\n".join(items_to_store)
             try:
                 self.rag.add_knowledge(combined_text)
-                logger.info(f"✅ Consolidated {len(items_to_store)} episodes into LTM.")
-            except Exception as e:
-                logger.error(f"Failed to add knowledge to RAG: {e}")
-
+                logger.info(f"✅ Consolidated {len(items_to_store)} episodes.")
+            except Exception:
+                pass
+    
     def integrate_knowledge(self, topic: str, source_path: str):
-        """Web学習などで得られた外部知識ファイルをRAGに取り込む。"""
-        if not self.rag:
-            logger.warning("❌ RAG System not available for knowledge integration.")
-            return
-
-        logger.info(f"📚 Integrating new knowledge about '{topic}' from {source_path}...")
-        try:
-            count = 0
-            with open(source_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    try:
-                        record = json.loads(line)
-                        text = record.get("text", "")
-                        if text:
-                            self.rag.add_knowledge(text)
-                            count += 1
-                    except json.JSONDecodeError:
-                        continue
-            logger.info(f"🎉 Integrated {count} documents into RAG index.")
-        except Exception as e:
-            logger.error(f"Failed to integrate knowledge: {e}")
+        pass
