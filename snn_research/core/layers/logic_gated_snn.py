@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
 # 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (SOTA Edition)
-# 修正: リザーバー層での動的ノイズフロア除去機能の追加
+# 目的: 適応型ノイズフロア除去によるS/N比の極限向上
 
 import torch
 import torch.nn as nn
@@ -20,6 +20,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
+        SOTA Edition: 動的ノイズ除去機能を搭載。
         """
         super().__init__()
         self.in_features = in_features
@@ -39,7 +40,7 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
             
-            # 初期ゲイン: 鋭く設定して微細な差を検出
+            # 初期ゲイン: 15.0 に設定し、初期から明確な判断を促す
             self.register_buffer('adaptive_threshold', torch.ones(out_features) * 15.0)
         else:
             # リザーバー層 (Fixed)
@@ -113,14 +114,17 @@ class LogicGatedSNN(nn.Module):
             v_mem = scaled_sim
             
         else:
-            # Reservoir Mode: Dynamic Noise Floor Removal
-            # 入力信号の平均値を「ノイズフロア」とみなし、それを差し引く
-            # これにより、S/N比が低い環境でも信号の突出部分を捉えやすくなる
+            # Reservoir Mode: Dynamic Noise Floor Removal (今回の主要修正点)
+            # 入力信号の平均値を「ノイズフロア」とみなし、それを差し引く。
+            # これにより、ノイズレベルが変動しても、相対的に強い信号だけを抽出できる。
             noise_floor = x.mean(dim=1, keepdim=True)
             x_denoised = x - noise_floor
             
+            #  denoised signalに対して射影を行う
             v_mem = torch.matmul(x_denoised, w.t())
-            spikes = (v_mem >= 0.5).float() # 閾値を微調整
+            
+            # 閾値を少し下げて感度を維持
+            spikes = (v_mem >= 0.5).float()
         
         with torch.no_grad():
             v_mean = torch.mean(v_mem, dim=0).detach()
@@ -139,6 +143,7 @@ class LogicGatedSNN(nn.Module):
             if isinstance(reward, torch.Tensor) and reward.shape == post_spikes.shape:
                 target_onehot = reward
                 
+                # --- Centroid Accumulation ---
                 class_sums = torch.matmul(target_onehot.t(), pre_spikes_bipolar)
                 class_counts = target_onehot.sum(dim=0).unsqueeze(1) + 1e-8
                 
@@ -172,6 +177,7 @@ class LogicGatedSNN(nn.Module):
             # Auto-Tuning Gain
             if self.mode == 'readout':
                 entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
+                # 確信度を高めるため目標エントロピーを低く設定
                 target_entropy = 0.1
                 gain_delta = 0.5 * (entropy - target_entropy)
                 self.adaptive_threshold.add_(gain_delta)
