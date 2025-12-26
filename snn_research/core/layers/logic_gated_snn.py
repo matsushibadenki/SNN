@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Adaptive Top-K Relaxation)
-# 修正: 学習初期の信号通過率を高める適応型Top-K緩和の導入
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Tuned Relaxation)
+# 修正: Top-K緩和の初期値調整(0.7)と自動調整ロジックの改善
 
 import torch
 import torch.nn as nn
@@ -16,12 +16,12 @@ class LogicGatedSNN(nn.Module):
     frozen_weight: torch.Tensor
     momentum_buffer: torch.Tensor
     adaptive_threshold: torch.Tensor
-    topk_relaxation: torch.Tensor # 新規追加
+    topk_relaxation: torch.Tensor
 
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: Adaptive Top-K Relaxationによる探索・活用の最適化。
+        SOTA Edition: Tuned Adaptive Top-K Relaxation.
         """
         super().__init__()
         self.in_features = in_features
@@ -43,7 +43,7 @@ class LogicGatedSNN(nn.Module):
             
             # 初期ゲイン: 10.0
             self.register_buffer('adaptive_threshold', torch.ones(out_features) * 10.0)
-            self.register_buffer('topk_relaxation', torch.tensor(1.0)) # Readoutでは未使用だが定義
+            self.register_buffer('topk_relaxation', torch.tensor(1.0)) 
         else:
             # リザーバー層 (Fixed)
             std_dev = 3.0 / math.sqrt(in_features)
@@ -62,10 +62,9 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('synapse_states', torch.zeros(1))
             self.register_buffer('momentum_buffer', torch.zeros(1))
             self.register_buffer('adaptive_threshold', torch.ones(1))
-            # 初期緩和係数: 1.0 (緩和なし) からスタートし、学習状況に応じて調整可能にする
-            # ここではシンプルに学習初期の探索を助けるため、最初は少し緩める設計も可能だが、
-            # update_plasticityがないため、forward内で動的に調整する
-            self.register_buffer('topk_relaxation', torch.tensor(0.5)) # 初期は閾値を下げる
+            
+            # [修正] 初期緩和係数を 0.7 に変更（少し厳しくしてノイズを抑制）
+            self.register_buffer('topk_relaxation', torch.tensor(0.7)) 
             
         self.register_buffer('membrane_potential', torch.zeros(out_features))
         self.trainable = trainable
@@ -90,15 +89,14 @@ class LogicGatedSNN(nn.Module):
     def reset_state(self):
         """内部状態（膜電位）のリセット"""
         self.membrane_potential.zero_()
-        # エピソードごとに緩和係数をリセットして探索を再開させる
         if self.mode != 'readout':
-             self.topk_relaxation.fill_(0.5) 
+             # リセット時も0.7に戻す
+             self.topk_relaxation.fill_(0.7) 
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
         w = self.get_effective_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # 変数初期化
         v_mem = None
         spikes = None
         
@@ -127,7 +125,7 @@ class LogicGatedSNN(nn.Module):
             v_mem = scaled_sim
             
         else:
-            # [修正] Reservoir Mode: Top-K & Energy Gating Hybrid with Relaxation
+            # Reservoir Mode: Top-K & Energy Gating Hybrid with Relaxation
             input_energy = x.norm(dim=1, keepdim=True)
             energy_threshold = input_energy.mean() * 1.0
             gate = torch.sigmoid((input_energy - (energy_threshold + 1e-6)) * 10.0)
@@ -135,28 +133,31 @@ class LogicGatedSNN(nn.Module):
             
             v_mem = torch.matmul(x_gated, w.t())
             
-            # Top-K フィルタリング (上位20%)
             k = int(self.out_features * 0.2)
             if k < 1: k = 1
             
             topk_vals, _ = torch.topk(v_mem, k, dim=1)
             kth_val = topk_vals[:, -1].unsqueeze(1)
             
-            # [修正] 緩和係数(relaxation)を適用
-            # relaxation=0.5 の場合、閾値が半分になり、より多くの信号が通過する（探索促進）
-            # 時間経過や学習と共に relaxation -> 1.0 に近づける制御を想定
+            # 緩和係数の適用
             dynamic_threshold = torch.maximum(torch.tensor(0.5, device=x.device), kth_val)
             dynamic_threshold = dynamic_threshold * self.topk_relaxation
             
             spikes = (v_mem >= dynamic_threshold).float()
             
-            # 自己調整: 発火率が高すぎる場合は緩和を弱める（閾値を上げる）
+            # [修正] 自己調整ロジックの改善
+            # 発火率が高すぎる(>0.15) -> 閾値を上げる(relaxation増加)
+            # 発火率が低すぎる(<0.05) -> 閾値を下げる(relaxation減少)
+            # 探索と活用のバランスを保つ
             if self.training:
                 firing_rate = spikes.mean()
-                target_rate = 0.1
-                # 発火過多 -> relaxationを上げる(閾値上昇), 発火過少 -> 下げる
-                rate_error = firing_rate - target_rate
-                self.topk_relaxation.add_(rate_error * 0.05).clamp_(0.2, 1.5)
+                if firing_rate > 0.15:
+                    self.topk_relaxation.add_(0.01)
+                elif firing_rate < 0.05:
+                    self.topk_relaxation.sub_(0.01)
+                
+                # 範囲制限 (0.5 ~ 1.2)
+                self.topk_relaxation.clamp_(0.5, 1.2)
         
         if v_mem is None:
              v_mem = torch.zeros((x.shape[0], self.out_features), device=x.device)
