@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Top-K Gating)
-# 修正: ゲート機構にTop-Kスパース性を組み合わせ、信号純度を最大化
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Adaptive Top-K Relaxation)
+# 修正: 学習初期の信号通過率を高める適応型Top-K緩和の導入
 
 import torch
 import torch.nn as nn
@@ -16,11 +16,12 @@ class LogicGatedSNN(nn.Module):
     frozen_weight: torch.Tensor
     momentum_buffer: torch.Tensor
     adaptive_threshold: torch.Tensor
+    topk_relaxation: torch.Tensor # 新規追加
 
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: Top-K Gating による究極のノイズ除去。
+        SOTA Edition: Adaptive Top-K Relaxationによる探索・活用の最適化。
         """
         super().__init__()
         self.in_features = in_features
@@ -42,6 +43,7 @@ class LogicGatedSNN(nn.Module):
             
             # 初期ゲイン: 10.0
             self.register_buffer('adaptive_threshold', torch.ones(out_features) * 10.0)
+            self.register_buffer('topk_relaxation', torch.tensor(1.0)) # Readoutでは未使用だが定義
         else:
             # リザーバー層 (Fixed)
             std_dev = 3.0 / math.sqrt(in_features)
@@ -60,6 +62,10 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('synapse_states', torch.zeros(1))
             self.register_buffer('momentum_buffer', torch.zeros(1))
             self.register_buffer('adaptive_threshold', torch.ones(1))
+            # 初期緩和係数: 1.0 (緩和なし) からスタートし、学習状況に応じて調整可能にする
+            # ここではシンプルに学習初期の探索を助けるため、最初は少し緩める設計も可能だが、
+            # update_plasticityがないため、forward内で動的に調整する
+            self.register_buffer('topk_relaxation', torch.tensor(0.5)) # 初期は閾値を下げる
             
         self.register_buffer('membrane_potential', torch.zeros(out_features))
         self.trainable = trainable
@@ -84,6 +90,9 @@ class LogicGatedSNN(nn.Module):
     def reset_state(self):
         """内部状態（膜電位）のリセット"""
         self.membrane_potential.zero_()
+        # エピソードごとに緩和係数をリセットして探索を再開させる
+        if self.mode != 'readout':
+             self.topk_relaxation.fill_(0.5) 
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
         w = self.get_effective_weights()
@@ -118,29 +127,36 @@ class LogicGatedSNN(nn.Module):
             v_mem = scaled_sim
             
         else:
-            # [修正] Reservoir Mode: Top-K & Energy Gating Hybrid
-            # エネルギーゲートによる粗いフィルタリング
+            # [修正] Reservoir Mode: Top-K & Energy Gating Hybrid with Relaxation
             input_energy = x.norm(dim=1, keepdim=True)
             energy_threshold = input_energy.mean() * 1.0
             gate = torch.sigmoid((input_energy - (energy_threshold + 1e-6)) * 10.0)
             x_gated = x * gate
             
-            # 射影
             v_mem = torch.matmul(x_gated, w.t())
             
-            # Top-K フィルタリング (上位20%のみを発火)
-            # これにより、ノイズによる弱い発火を完全にカットする
+            # Top-K フィルタリング (上位20%)
             k = int(self.out_features * 0.2)
             if k < 1: k = 1
             
             topk_vals, _ = torch.topk(v_mem, k, dim=1)
-            # k番目の値を閾値とする
             kth_val = topk_vals[:, -1].unsqueeze(1)
             
-            # 固定閾値(0.5) と Top-K閾値 の高い方採用
+            # [修正] 緩和係数(relaxation)を適用
+            # relaxation=0.5 の場合、閾値が半分になり、より多くの信号が通過する（探索促進）
+            # 時間経過や学習と共に relaxation -> 1.0 に近づける制御を想定
             dynamic_threshold = torch.maximum(torch.tensor(0.5, device=x.device), kth_val)
+            dynamic_threshold = dynamic_threshold * self.topk_relaxation
             
             spikes = (v_mem >= dynamic_threshold).float()
+            
+            # 自己調整: 発火率が高すぎる場合は緩和を弱める（閾値を上げる）
+            if self.training:
+                firing_rate = spikes.mean()
+                target_rate = 0.1
+                # 発火過多 -> relaxationを上げる(閾値上昇), 発火過少 -> 下げる
+                rate_error = firing_rate - target_rate
+                self.topk_relaxation.add_(rate_error * 0.05).clamp_(0.2, 1.5)
         
         if v_mem is None:
              v_mem = torch.zeros((x.shape[0], self.out_features), device=x.device)
