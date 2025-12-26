@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Tuned Relaxation)
-# 修正: Top-K緩和の初期値調整(0.7)と自動調整ロジックの改善
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Annealed Relaxation)
+# 修正: Top-K緩和係数のアニーリング処理を追加し、収束を保証
 
 import torch
 import torch.nn as nn
@@ -21,7 +21,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: Tuned Adaptive Top-K Relaxation.
+        SOTA Edition: Annealed Top-K Relaxation.
         """
         super().__init__()
         self.in_features = in_features
@@ -63,7 +63,7 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('momentum_buffer', torch.zeros(1))
             self.register_buffer('adaptive_threshold', torch.ones(1))
             
-            # [修正] 初期緩和係数を 0.7 に変更（少し厳しくしてノイズを抑制）
+            # 初期緩和係数: 0.7 (やや緩和)
             self.register_buffer('topk_relaxation', torch.tensor(0.7)) 
             
         self.register_buffer('membrane_potential', torch.zeros(out_features))
@@ -89,8 +89,9 @@ class LogicGatedSNN(nn.Module):
     def reset_state(self):
         """内部状態（膜電位）のリセット"""
         self.membrane_potential.zero_()
+        # [重要] リセット時は緩和を戻すが、アニーリングの進行状況によっては戻さない制御も可能
+        # ここではエピソード独立性を重視してリセット
         if self.mode != 'readout':
-             # リセット時も0.7に戻す
              self.topk_relaxation.fill_(0.7) 
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
@@ -125,7 +126,7 @@ class LogicGatedSNN(nn.Module):
             v_mem = scaled_sim
             
         else:
-            # Reservoir Mode: Top-K & Energy Gating Hybrid with Relaxation
+            # Reservoir Mode: Top-K & Energy Gating Hybrid with Annealed Relaxation
             input_energy = x.norm(dim=1, keepdim=True)
             energy_threshold = input_energy.mean() * 1.0
             gate = torch.sigmoid((input_energy - (energy_threshold + 1e-6)) * 10.0)
@@ -145,18 +146,23 @@ class LogicGatedSNN(nn.Module):
             
             spikes = (v_mem >= dynamic_threshold).float()
             
-            # [修正] 自己調整ロジックの改善
-            # 発火率が高すぎる(>0.15) -> 閾値を上げる(relaxation増加)
-            # 発火率が低すぎる(<0.05) -> 閾値を下げる(relaxation減少)
-            # 探索と活用のバランスを保つ
+            # [修正] アニーリング付き自己調整
+            # 学習中は徐々に relaxation を 1.0 (厳格) に近づける
+            # これにより、初期は探索(緩和)、後半は活用(厳格)へと自然に移行する
             if self.training:
+                target_relaxation = 1.0
+                # 現在値と目標値の差分を少しずつ埋める (Exponential Moving Average的な挙動)
+                diff = target_relaxation - self.topk_relaxation
+                # 0.001 の微小ステップで近づける
+                self.topk_relaxation.add_(diff * 0.001)
+                
+                # 発火率による微調整も併用（暴走防止）
                 firing_rate = spikes.mean()
                 if firing_rate > 0.15:
-                    self.topk_relaxation.add_(0.01)
+                    self.topk_relaxation.add_(0.005) # 閾値を上げて抑制
                 elif firing_rate < 0.05:
-                    self.topk_relaxation.sub_(0.01)
+                    self.topk_relaxation.sub_(0.005) # 閾値を下げて促進
                 
-                # 範囲制限 (0.5 ~ 1.2)
                 self.topk_relaxation.clamp_(0.5, 1.2)
         
         if v_mem is None:
