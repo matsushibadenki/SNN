@@ -1,8 +1,11 @@
 # ファイルパス: scripts/run_benchmark_suite.py
-# Title: SNN Benchmark Suite v2.0 (Accuracy & Training Bench)
+# Title: SNN Benchmark Suite v2.1 (Robust Fix)
 # Description:
-#   モデルの推論速度だけでなく、短期学習による収束速度と実効精度を測定する。
-#   修正: 'training' モードを追加し、ダミーデータではなく単純なパターン学習を行う。
+#   モデルの推論速度と学習能力を測定するベンチマークスイート。
+#   修正 (v2.1):
+#   - モデル出力がタプル (logits, auxiliary) の場合のハンドリングを追加。
+#   - 出力がシーケンス (B, T, V) か単一ステップ (B, V) かを判定し、
+#     損失計算時のターゲット形状を自動調整するように修正。
 
 import sys
 import os
@@ -13,7 +16,7 @@ import argparse
 import time
 import json
 import datetime
-from typing import Dict, Any, cast
+from typing import Dict, Any, cast, Union
 from omegaconf import OmegaConf
 
 # プロジェクトルートの設定
@@ -38,7 +41,7 @@ except ImportError as e:
 
 class BenchmarkSuite:
     def __init__(self, output_dir: str = "benchmarks/results"):
-        print("⚙️ Initializing Benchmark Suite v2.0...")
+        print("⚙️ Initializing Benchmark Suite v2.1...")
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
         
@@ -72,7 +75,6 @@ class BenchmarkSuite:
     def run_smoke_test(self, model_name: str, config_path: str):
         """スモークテスト: 構築と推論の確認"""
         print(f"\n🧪 [Smoke Test] {model_name} ... ", end="", flush=True)
-        start_time = time.time()
         
         try:
             # Config読み込み
@@ -103,7 +105,7 @@ class BenchmarkSuite:
     def run_training_benchmark(self, model_name: str, steps: int = 50):
         """
         学習ベンチマーク:
-        単純な反復パターン (例: 1,2,1,2...) を学習させ、Lossの収束と速度を測定する。
+        単純な反復パターンを学習させ、Lossの収束と速度を測定する。
         """
         print(f"\n📈 [Training Bench] {model_name} ({steps} steps) ... ", end="", flush=True)
         
@@ -111,7 +113,8 @@ class BenchmarkSuite:
             # モデル準備
             arch = "sformer" if "SFormer" in model_name else "dsa_transformer"
             config = self._get_dummy_config(arch)
-            config["vocab_size"] = 10 # 小さな語彙で確実に学習させる
+            # 学習を容易にするため小さな語彙サイズに設定
+            config["vocab_size"] = 10 
             
             model = SNNCore(config=config, vocab_size=10).to(self.device)
             model.train()
@@ -119,7 +122,7 @@ class BenchmarkSuite:
             optimizer = torch.optim.AdamW(model.parameters(), lr=0.005)
             criterion = nn.CrossEntropyLoss()
             
-            # データ生成: 単純な繰り返しパターン [1, 2, 1, 2, ...]
+            # データ生成: [1, 2, 1, 2...]
             batch_size = 8
             seq_len = 16
             x = torch.tensor([[1, 2] * (seq_len // 2) for _ in range(batch_size)]).to(self.device)
@@ -131,13 +134,27 @@ class BenchmarkSuite:
             
             for step in range(steps):
                 optimizer.zero_grad()
-                outputs = model(x) # (B, T, Vocab)
+                outputs = model(x) # (B, T, V) or (B, V) or Tuple
                 
-                # Reshape for Loss
-                outputs_flat = outputs.reshape(-1, 10)
-                y_flat = y.reshape(-1)
+                # --- Output Handling Fix ---
+                # 1. Tuple処理: (logits, auxiliary_info) の場合は logits を取り出す
+                if isinstance(outputs, tuple):
+                    outputs = outputs[0]
                 
-                loss = criterion(outputs_flat, y_flat)
+                # 2. Shape処理: Sequence output (B, T, V) vs Last-step output (B, V)
+                if outputs.dim() == 3:
+                    # (B, T, V) -> Flatten to (B*T, V)
+                    outputs_flat = outputs.reshape(-1, 10)
+                    y_flat = y.reshape(-1)
+                    loss = criterion(outputs_flat, y_flat)
+                elif outputs.dim() == 2:
+                    # (B, V) -> Compare with last target y[:, -1]
+                    # モデルが最終ステップのみを出力している場合
+                    loss = criterion(outputs, y[:, -1])
+                else:
+                    raise ValueError(f"Unexpected output shape: {outputs.shape}")
+                # ---------------------------
+
                 loss.backward()
                 optimizer.step()
                 
@@ -162,6 +179,7 @@ class BenchmarkSuite:
 
         except Exception as e:
             print(f"❌ FAILED: {e}")
+            # traceback.print_exc() # デバッグ時に有効化
             self.results["tests"][f"train_{model_name}"] = {"status": "FAILED", "error": str(e)}
 
     def run_efficiency_benchmark(self, model_name: str):
@@ -176,7 +194,8 @@ class BenchmarkSuite:
             input_ids = torch.randint(0, 100, (1, 16)).to(self.device)
             
             # Warmup
-            for _ in range(5): _ = model(input_ids)
+            for _ in range(5): 
+                _ = model(input_ids)
                 
             num_runs = 50
             total_spikes = 0.0
@@ -186,15 +205,19 @@ class BenchmarkSuite:
                 for _ in range(num_runs):
                     if hasattr(model.model, 'reset_spike_stats'):
                          model.model.reset_spike_stats() # type: ignore
+                    
                     out = model(input_ids, return_spikes=True)
                     
-                    # スパイク数カウントの簡易ロジック
+                    # スパイク数カウント (Tuple対応)
+                    spike_data = None
                     if isinstance(out, tuple) and len(out) >= 2:
                         spike_data = out[1]
+                    
+                    if spike_data is not None:
                         if isinstance(spike_data, torch.Tensor):
                             total_spikes += spike_data.sum().item()
                         elif isinstance(spike_data, list): # List of tensors
-                            total_spikes += sum([s.sum().item() for s in spike_data])
+                            total_spikes += sum([s.sum().item() for s in spike_data if isinstance(s, torch.Tensor)])
 
             end_time = time.time()
             avg_latency = ((end_time - start_time) / num_runs) * 1000
@@ -247,7 +270,7 @@ def main():
         
         if args.mode in ["all", "full"]:
             suite.run_efficiency_benchmark(name)
-            suite.run_training_benchmark(name) # 新機能
+            suite.run_training_benchmark(name)
             
     suite.save_report()
     print("🏁 Benchmark Suite Completed.")
