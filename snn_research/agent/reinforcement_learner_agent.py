@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
-# Title: RL Agent with Hybrid Core (Exploration Tuned)
-# Description: 学習時の温度パラメータを上げ、初期の探索不足を解消。
+# Title: RL Agent (Temperature Adjusted)
+# Description: 高ゲインコアに対応するため、探索時の温度パラメータを3.0へ引き上げ。
 
 import torch
 import numpy as np
@@ -47,9 +47,8 @@ class ReinforcementLearnerAgent:
             out = self.model.output_gate(r)
             
             if self.model.training:
-                # [修正] 温度を上げて探索を強制する (Temperature=2.0)
-                # LogicGatedSNNの出力は既にGain倍されているため、ここで割ってマイルドにする
-                probs = torch.softmax(out / 2.0, dim=1)
+                # [修正] 高ゲイン(x6.0)に対応するため、温度を 3.0 に引き上げ
+                probs = torch.softmax(out / 3.0, dim=1)
             else:
                 probs = torch.softmax(out, dim=1)
             
@@ -82,7 +81,6 @@ class ReinforcementLearnerAgent:
         
         total_rewards = torch.tensor([t['total_reward'] for t in trajectories], dtype=torch.float32)
         
-        # 正規化による安定化
         if len(total_rewards) > 1:
             mean_reward = total_rewards.mean()
             std_reward = total_rewards.std() + 1e-8
