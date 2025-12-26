@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
-# Title: RL Agent (Temperature 4.0 - Optimized Exploitation)
-# Description: ノイズ除去による信号品質向上に伴い、探索パラメータを最適化。
+# Title: RL Agent (Optimized)
+# Description: 信号品質向上に伴い、温度パラメータと学習率を最適化。
 
 import torch
 import numpy as np
@@ -47,8 +47,8 @@ class ReinforcementLearnerAgent:
             out = self.model.output_gate(r)
             
             if self.model.training:
-                # [修正] 信号品質向上により、温度を 4.0 に調整して収束を早める
-                probs = torch.softmax(out / 4.0, dim=1)
+                # [修正] 温度を2.0に下げ、より確信度の高い行動選択を行う
+                probs = torch.softmax(out / 2.0, dim=1)
             else:
                 probs = torch.softmax(out, dim=1)
             
@@ -108,9 +108,10 @@ class ReinforcementLearnerAgent:
                 post_spikes_target = torch.zeros((1, self.output_size), device=self.device)
                 post_spikes_target[0, action_idx] = 1.0
                 
+                # [修正] 学習率を 0.02 に調整し、過学習を防ぎつつ安定させる
                 self.model.output_gate.update_plasticity(
                     pre_spikes=pre_spikes,
                     post_spikes=post_spikes_target, 
                     reward=reward_signal, 
-                    learning_rate=0.05
+                    learning_rate=0.02
                 )
