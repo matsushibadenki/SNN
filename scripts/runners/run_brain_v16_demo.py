@@ -1,15 +1,15 @@
 # ファイルパス: scripts/runners/run_brain_v16_demo.py
-# Title: Brain v16.3 Integrated Demo (Fixed ReasoningEngine Init)
+# Title: Brain v16.3 Integrated Demo (Type Safe)
 # Description: 
 #   SCAL (Statistical Centroid Alignment Learning) 統合後の動作確認用デモ。
-#   [Fix] ReasoningEngineに必要な引数(generative_model, astrocyte, tokenizer)を追加。
+#   [Fix] Mypyエラー(型への代入、常に真となる条件)を修正。
 
 import sys
 import os
 import torch
 import logging
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 # パス設定
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -28,14 +28,15 @@ from snn_research.cognitive_architecture.meta_cognitive_snn import MetaCognitive
 from snn_research.cognitive_architecture.hippocampus import Hippocampus
 from snn_research.models.experimental.world_model_snn import SpikingWorldModel
 from snn_research.modules.reflex_module import ReflexModule
-# [Fix] Import SFormer
 from snn_research.models.transformer.sformer import SFormer
 
-# [Fix] Import Tokenizer
+# [Fix] Type-safe optional import
+HAS_TRANSFORMERS = False
 try:
-    from transformers import AutoTokenizer
+    from transformers import AutoTokenizer  # type: ignore
+    HAS_TRANSFORMERS = True
 except ImportError:
-    AutoTokenizer = None
+    AutoTokenizer = None  # type: ignore
 
 # ログ設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -91,7 +92,7 @@ def build_demo_brain(device):
     motor = MotorCortex()
     
     # 4. 高次機能
-    # [Fix] SFormerの初期化 (ReasoningEngine用)
+    # SFormerの初期化 (ReasoningEngine用)
     sformer_model = SFormer(
         vocab_size=50257, # GPT-2 default
         d_model=128,
@@ -101,9 +102,9 @@ def build_demo_brain(device):
         max_seq_len=128
     ).to(device)
 
-    # [Fix] Tokenizerの初期化
+    # [Fix] Tokenizerの初期化 (安全な条件分岐)
     tokenizer = None
-    if AutoTokenizer:
+    if HAS_TRANSFORMERS and AutoTokenizer is not None:
         try:
             tokenizer = AutoTokenizer.from_pretrained("gpt2")
             if tokenizer.pad_token is None:
@@ -111,7 +112,7 @@ def build_demo_brain(device):
         except Exception as e:
             logger.warning(f"Could not load tokenizer: {e}")
 
-    # [Fix] ReasoningEngineに必須引数を渡す
+    # ReasoningEngineに必須引数を渡す
     reasoning = ReasoningEngine(
         generative_model=sformer_model,
         astrocyte=astrocyte,
