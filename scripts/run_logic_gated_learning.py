@@ -59,33 +59,37 @@ def run_simulation():
 
     IN_FEATURES = 784
     OUT_FEATURES = 10
-    # [修正] バッチサイズをさらに縮小(1024)。
-    # 勾配の更新頻度を高め、局所解からの脱出と微細な境界調整を可能にする。
-    BATCH_SIZE = 1024
+    # [修正] バッチサイズを2048に戻し、安定した勾配統計量を利用する。
+    # 1024では勾配ノイズが大きすぎ、ニューロンの不活発化(V_Mean低下)を招いたため。
+    BATCH_SIZE = 2048
     TOTAL_SAMPLES = 60000
     
-    # [修正] カリキュラム: Hyper-Contrast Boosting v8 (Deep Resonance Convergence)
-    # v7の反省: ターゲットを固定しすぎてニューロンの活動(V_Mean)が低下し、学習が停滞した。
-    # v8の戦略:
-    # 1. 範囲を(0.42, 0.46)に戻し、適度な信号強度を維持してニューロンを活性化させる。
-    # 2. バッチサイズ縮小(1024) x エポック数倍増(100) x 極小LR(0.0002) の組み合わせで、
-    #    「数千回の微修正」を行い、確率的なノイズ分布の重心を捉える。
+    # [修正] カリキュラム: Hyper-Contrast Boosting v9 (Neuro-Regenerative Mix)
+    # v8の反省: ターゲットを絞りすぎてV_Meanが0.6まで低下し、学習不能に陥った。
+    # v9の戦略: 
+    # 1. 最終段階であえて下限を「0.15」まで広げる。
+    #    -> 易しいデータでニューロンを強く発火させ、V_Meanを回復させる。
+    # 2. 上限は「0.46」を維持。
+    #    -> 活性化したニューロンの勢いを利用して、高ノイズデータの決定境界を押し広げる。
+    # 3. 学習率を0.001で維持。
+    #    -> 活性を維持するため、学習率を下げすぎない。
     curriculum_stages = [
         {'range': (0.0, 0.30), 'epochs': 10, 'lr': 0.1},
         {'range': (0.2, 0.40), 'epochs': 10, 'lr': 0.05},
         {'range': (0.35, 0.46), 'epochs': 20, 'lr': 0.02}, 
-        # メインフェーズ: ここで大枠を掴む
         {'range': (0.40, 0.46), 'epochs': 30, 'lr': 0.005}, 
-        # Deep Convergence Phase:
-        # 範囲を維持しつつ、LRを極限まで下げて長期間学習する。
-        # これにより、0.45付近の難しいデータに対する「勘」を養う。
-        {'range': (0.42, 0.46), 'epochs': 100, 'lr': 0.0002}, 
+        # Regenerative Phase:
+        # 広帯域学習(0.15〜0.46)。
+        # 「自信(0.15)」と「挑戦(0.46)」を交互に経験させることで、
+        # 萎縮したニューロンを再生させつつ、0.45の壁を突破する。
+        # データ範囲が広いため、エポック数を60確保して0.45の出現回数を担保する。
+        {'range': (0.15, 0.46), 'epochs': 60, 'lr': 0.001}, 
     ]
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
     print(f"\nModel initialized: LogicGatedSNN (Statistical Averaging Mode)")
-    print(f"Training Logic: Granular Curriculum Learning (Hyper-Contrast Boosting v8).")
+    print(f"Training Logic: Granular Curriculum Learning (Hyper-Contrast Boosting v9).")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
