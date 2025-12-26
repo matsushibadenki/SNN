@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Balanced Momentum)
-# 修正: MomentumとGain Limitを適正値に戻し、安定性を回復
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Sensitivity Boost)
+# 修正: Gain Limitの緩和と閾値の引き下げにより、微弱信号の検出能力を向上
 
 import torch
 import torch.nn as nn
@@ -21,7 +21,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: Balanced Momentum & Adaptive Thresholding.
+        SOTA Edition: Sensitivity Boost & Balanced Momentum.
         """
         super().__init__()
         self.in_features = in_features
@@ -30,13 +30,13 @@ class LogicGatedSNN(nn.Module):
         self.mode = mode
         
         # [修正] 次元数に応じたハイパーパラメータの自動設定
-        # 0.999は過剰反応を引き起こしたため、0.995に調整し、Gain Limitも抑制
+        # 感度を上げ(Gain 80.0)、迷いを減らす(Entropy 0.20)設定へ
         if in_features > 64:
             self.hparams = {
-                'momentum': 0.995,         # 0.999 -> 0.995: 安定性と慣性のバランス
-                'target_entropy': 0.25,    # 0.1 -> 0.25: 過学習/過信を防ぐ
-                'gain_limit': 50.0,        # 200.0 -> 50.0: ノイズ増幅を防ぐ
-                'gain_update_rate': 0.01   # 標準的な更新速度に戻す
+                'momentum': 0.995,         # 維持
+                'target_entropy': 0.20,    # 0.25 -> 0.20: よりシャープな判断を促す
+                'gain_limit': 80.0,        # 50.0 -> 80.0: ノイズに埋もれた信号を拾うため感度上限を緩和
+                'gain_update_rate': 0.01   
             }
         else:
             self.hparams = {
@@ -164,7 +164,9 @@ class LogicGatedSNN(nn.Module):
             if k < 1: k = 1
             topk_vals, _ = torch.topk(v_exploit, k, dim=1)
             kth_val = topk_vals[:, -1].unsqueeze(1)
-            dynamic_thresh = torch.maximum(torch.tensor(0.6, device=x.device), kth_val)
+            
+            # [修正] 閾値下限を 0.6 -> 0.55 に緩和し、発火率を向上させる
+            dynamic_thresh = torch.maximum(torch.tensor(0.55, device=x.device), kth_val)
             spikes_exploit = (v_exploit >= dynamic_thresh).float()
             
             # Path Mixing
@@ -173,8 +175,8 @@ class LogicGatedSNN(nn.Module):
             # v_mem の混合
             v_mem = v_explore * (1.0 - mixer) + v_exploit * mixer
             
-            # 閾値混合
-            mixed_threshold = adaptive_thresh_explore * (1.0 - mixer) + 0.6 * mixer
+            # 閾値混合 (ベース閾値を0.55に設定)
+            mixed_threshold = adaptive_thresh_explore * (1.0 - mixer) + 0.55 * mixer
             spikes = (v_mem >= mixed_threshold).float()
             
             if self.training:
