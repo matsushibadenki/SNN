@@ -62,30 +62,30 @@ def run_simulation():
     BATCH_SIZE = 4096 
     TOTAL_SAMPLES = 60000
     
-    # [修正] カリキュラム: Hyper-Contrast Boosting v4 (Target Sharpening)
-    # v3の反省: 最終ステージで範囲を広げすぎ(0.35~)て、ターゲット(0.45)の学習密度が薄まった。
-    # v4の戦略: 
-    # 1. 破壊的な0.47は回避し、上限を0.46とする。
-    # 2. 中盤以降は下限を0.40に保ち、高難度データの出現頻度を確保する。
-    # 3. 最終ステージで学習率を極小にしつつ、範囲を(0.42, 0.46)に絞って0.45の精度を研ぎ澄ます。
+    # [修正] カリキュラム: Hyper-Contrast Boosting v5 (Wide-Stance Stabilization)
+    # v4の反省: 最終段階で(0.42, 0.46)に絞った結果、V_Meanが低下し、モデルが過度に保守的になった。
+    # v5の戦略: 
+    # 1. 0.40を含む範囲(0.40, 0.46)を最後まで維持する。これによりニューロンの活性(V_Mean)を維持。
+    # 2. 範囲を絞る代わりに、学習率を段階的かつ徹底的に下げることで、
+    #    「活性を保ったまま」0.46のノイズに対応できる微妙な重み調整を行う。
     curriculum_stages = [
         {'range': (0.0, 0.30), 'epochs': 10, 'lr': 0.1},
         {'range': (0.2, 0.40), 'epochs': 10, 'lr': 0.05},
         {'range': (0.35, 0.45), 'epochs': 15, 'lr': 0.02}, 
-        # 強化フェーズ: ここまではv3と同じだが、ここから「逃げ道」を塞いでいく
+        # メイン学習フェーズ: ここで大まかな適応を完了させる
         {'range': (0.40, 0.46), 'epochs': 30, 'lr': 0.005}, 
-        # 修正: 範囲を広げず(0.40, 0.46)を維持し、LRを下げて定着させる。
-        # これにより0.35-0.40の「簡単なデータ」に勾配を支配されるのを防ぐ。
-        {'range': (0.40, 0.46), 'epochs': 40, 'lr': 0.001}, 
-        # 最終仕上げ (Target Sharpening): ターゲット0.45を中心に、
-        # わずかに狭めた範囲で徹底的に微調整を行う。v2の失敗(0.47)を避け、安全圏内(0.46)で攻める。
-        {'range': (0.42, 0.46), 'epochs': 30, 'lr': 0.0005}, 
+        # 安定化フェーズ1: 範囲を変えずにLRを下げる。
+        # 0.40のデータが「正解への道しるべ」となり、0.46の迷いを消す。
+        {'range': (0.40, 0.46), 'epochs': 30, 'lr': 0.001},
+        # 安定化フェーズ2 (Final Polish): さらにLRを下げ、決定境界をミクロ単位で修正。
+        # 範囲を絞らないことが重要。
+        {'range': (0.40, 0.46), 'epochs': 40, 'lr': 0.0005}, 
     ]
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
     print(f"\nModel initialized: LogicGatedSNN (Statistical Averaging Mode)")
-    print(f"Training Logic: Granular Curriculum Learning (Hyper-Contrast Boosting v4).")
+    print(f"Training Logic: Granular Curriculum Learning (Hyper-Contrast Boosting v5).")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
