@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Non-linear Gating)
-# 修正: エネルギー計算に非線形性を導入し、コントラストを強調
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Top-K Gating)
+# 修正: ゲート機構にTop-Kスパース性を組み合わせ、信号純度を最大化
 
 import torch
 import torch.nn as nn
@@ -20,7 +20,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: 非線形ゲート機構による究極のノイズ除去。
+        SOTA Edition: Top-K Gating による究極のノイズ除去。
         """
         super().__init__()
         self.in_features = in_features
@@ -118,22 +118,29 @@ class LogicGatedSNN(nn.Module):
             v_mem = scaled_sim
             
         else:
-            # [修正] Reservoir Mode: Non-linear Energy Gating
-            # エネルギーを二乗することで、強い信号と弱い信号の差（コントラスト）を拡大する
-            input_energy = x.pow(2).mean(dim=1, keepdim=True)
-            
-            # 閾値設定 (平均エネルギーの1.0倍)
-            # 二乗により差が開いているため、係数は控えめでも分離可能
+            # [修正] Reservoir Mode: Top-K & Energy Gating Hybrid
+            # エネルギーゲートによる粗いフィルタリング
+            input_energy = x.norm(dim=1, keepdim=True)
             energy_threshold = input_energy.mean() * 1.0
-            
-            # ゲート開度 (シグモイドの傾きを急峻にする: x10.0)
             gate = torch.sigmoid((input_energy - (energy_threshold + 1e-6)) * 10.0)
-            
-            # ゲート適用
             x_gated = x * gate
+            
+            # 射影
             v_mem = torch.matmul(x_gated, w.t())
             
-            spikes = (v_mem >= 0.5).float()
+            # Top-K フィルタリング (上位20%のみを発火)
+            # これにより、ノイズによる弱い発火を完全にカットする
+            k = int(self.out_features * 0.2)
+            if k < 1: k = 1
+            
+            topk_vals, _ = torch.topk(v_mem, k, dim=1)
+            # k番目の値を閾値とする
+            kth_val = topk_vals[:, -1].unsqueeze(1)
+            
+            # 固定閾値(0.5) と Top-K閾値 の高い方採用
+            dynamic_threshold = torch.maximum(torch.tensor(0.5, device=x.device), kth_val)
+            
+            spikes = (v_mem >= dynamic_threshold).float()
         
         if v_mem is None:
              v_mem = torch.zeros((x.shape[0], self.out_features), device=x.device)
