@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Protective Tuning)
-# 修正: 高ノイズ下での重み汚染を防ぐため、Gain Limitを拡大しつつ閾値を厳格化
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Robust Delta Clipping)
+# 修正: 更新量のクリッピング(Delta Clipping)を導入し、高ノイズ下でも安全に学習率を上げられるように改良
 
 import torch
 import torch.nn as nn
@@ -21,7 +21,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: Protective Tuning & Dynamic Gain Scaling.
+        SOTA Edition: Robust Delta Clipping & High-Gain Dynamics.
         """
         super().__init__()
         self.in_features = in_features
@@ -30,12 +30,12 @@ class LogicGatedSNN(nn.Module):
         self.mode = mode
         
         # [修正] 次元数に応じたハイパーパラメータの自動設定
-        # Gain Limitを100.0に拡大し、Target Entropyを0.25に戻して汎化性能を維持
+        # Delta Clipping導入に伴い、Momentumを少し緩め(0.99)、Gain Limitを最大化(150.0)
         if in_features > 64:
             self.hparams = {
-                'momentum': 0.995,         # 高Momentumで安定化
-                'target_entropy': 0.25,    # 0.20 -> 0.25: 過学習を防ぐ適度な余裕
-                'gain_limit': 100.0,       # 80.0 -> 100.0: 低LRでも十分に感度を上げられるようにする
+                'momentum': 0.99,          # 0.995 -> 0.99: Clippingがあるため、少し反応を良くする
+                'target_entropy': 0.2,     # ターゲットエントロピー
+                'gain_limit': 150.0,       # 100.0 -> 150.0: 圧倒的なコントラストを許容
                 'gain_update_rate': 0.01   
             }
         else:
@@ -149,7 +149,6 @@ class LogicGatedSNN(nn.Module):
             gate_explore = torch.sigmoid((input_energy - (energy_threshold * 0.5)) * 2.0)
             v_explore = torch.matmul(x * gate_explore, w.t())
             
-            # 入力エネルギーに応じた適応的閾値
             ratio = input_energy.mean() / (energy_threshold + 1e-8)
             adaptive_thresh_explore = 0.1 * ratio
             adaptive_thresh_explore = torch.clamp(adaptive_thresh_explore, 0.05, 0.2)
@@ -165,7 +164,7 @@ class LogicGatedSNN(nn.Module):
             topk_vals, _ = torch.topk(v_exploit, k, dim=1)
             kth_val = topk_vals[:, -1].unsqueeze(1)
             
-            # [修正] 0.55だとノイズを拾いすぎたため 0.6 に戻す
+            # 閾値は0.6に戻して安定性を確保
             dynamic_thresh = torch.maximum(torch.tensor(0.6, device=x.device), kth_val)
             spikes_exploit = (v_exploit >= dynamic_thresh).float()
             
@@ -175,7 +174,7 @@ class LogicGatedSNN(nn.Module):
             # v_mem の混合
             v_mem = v_explore * (1.0 - mixer) + v_exploit * mixer
             
-            # 閾値混合 (ベース閾値を0.6に設定)
+            # 閾値混合
             mixed_threshold = adaptive_thresh_explore * (1.0 - mixer) + 0.6 * mixer
             spikes = (v_mem >= mixed_threshold).float()
             
@@ -210,6 +209,11 @@ class LogicGatedSNN(nn.Module):
                 batch_centroids = F.normalize(batch_centroids, p=2, dim=1)
                 
                 delta = batch_centroids - F.normalize(self.states, p=2, dim=1)
+                
+                # [修正] Robust Delta Clipping: ノイズによる極端な更新をクリップする
+                # これにより、LRを上げても安定して重心へ向かえる
+                delta.clamp_(-0.05, 0.05)
+                
                 update_mask = (target_onehot.sum(dim=0).unsqueeze(1) > 0).float()
                 delta = delta * update_mask
                 
@@ -219,6 +223,8 @@ class LogicGatedSNN(nn.Module):
                 else:
                     reward_tensor = reward
                 delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes_bipolar) / batch_size
+                # ここでもクリップ
+                delta.clamp_(-0.05, 0.05)
 
             # 次元数に応じたMomentum設定を使用
             momentum_val = self.hparams['momentum'] if hasattr(self, 'hparams') else 0.95
@@ -237,7 +243,6 @@ class LogicGatedSNN(nn.Module):
             self.states.clamp_(-20.0, 20.0)
             
             # Auto-Tuning Gain
-            # 学習率が低くてもGainは独立して更新されるため、プロテクト・チューニングが成立する
             if self.mode == 'readout':
                 entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
                 
