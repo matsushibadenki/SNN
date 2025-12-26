@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Ultra Robust v2)
-# 修正: ゲイン上限(200.0)への解放、目標エントロピーの低減(0.1)による確信度向上
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (SOTA Edition)
+# 修正: リザーバー層での動的ノイズフロア除去機能の追加
 
 import torch
 import torch.nn as nn
@@ -39,8 +39,8 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
             
-            # [修正] 初期ゲインを 10.0 に強化し、初期から信号を強く掴む
-            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 10.0)
+            # 初期ゲイン: 鋭く設定して微細な差を検出
+            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 15.0)
         else:
             # リザーバー層 (Fixed)
             std_dev = 3.0 / math.sqrt(in_features)
@@ -89,7 +89,7 @@ class LogicGatedSNN(nn.Module):
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
         if self.mode == 'readout':
-            # 1. Bipolar Transformation (-1/1)
+            # 1. Bipolar Transformation
             x_bipolar = (x - 0.5) * 2.0
             
             # 2. Normalization
@@ -99,8 +99,7 @@ class LogicGatedSNN(nn.Module):
             # 3. Cosine Similarity
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
-            # 4. Adaptive Gain
-            # [修正] 上限を 200.0 まで大幅解放。微弱な信号差を強力に拡大する。
+            # 4. Adaptive Gain (High Range)
             gain = self.adaptive_threshold.mean().clamp(1.0, 200.0)
             scaled_sim = cosine_sim * gain
             
@@ -114,9 +113,14 @@ class LogicGatedSNN(nn.Module):
             v_mem = scaled_sim
             
         else:
-            # Reservoir Mode
-            v_mem = torch.matmul(x, w.t())
-            spikes = (v_mem >= 1.0).float()
+            # Reservoir Mode: Dynamic Noise Floor Removal
+            # 入力信号の平均値を「ノイズフロア」とみなし、それを差し引く
+            # これにより、S/N比が低い環境でも信号の突出部分を捉えやすくなる
+            noise_floor = x.mean(dim=1, keepdim=True)
+            x_denoised = x - noise_floor
+            
+            v_mem = torch.matmul(x_denoised, w.t())
+            spikes = (v_mem >= 0.5).float() # 閾値を微調整
         
         with torch.no_grad():
             v_mean = torch.mean(v_mem, dim=0).detach()
@@ -135,7 +139,6 @@ class LogicGatedSNN(nn.Module):
             if isinstance(reward, torch.Tensor) and reward.shape == post_spikes.shape:
                 target_onehot = reward
                 
-                # --- Centroid Accumulation ---
                 class_sums = torch.matmul(target_onehot.t(), pre_spikes_bipolar)
                 class_counts = target_onehot.sum(dim=0).unsqueeze(1) + 1e-8
                 
@@ -169,9 +172,7 @@ class LogicGatedSNN(nn.Module):
             # Auto-Tuning Gain
             if self.mode == 'readout':
                 entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
-                # [修正] 目標エントロピーを 0.1 に下げ、より自信のある（尖った）分布を目指す
                 target_entropy = 0.1
-                # [修正] ゲインの学習速度を上げ(0.5)、状況変化に即応させる
                 gain_delta = 0.5 * (entropy - target_entropy)
                 self.adaptive_threshold.add_(gain_delta)
                 self.adaptive_threshold.clamp_(5.0, 200.0)
