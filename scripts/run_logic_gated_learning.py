@@ -59,37 +59,34 @@ def run_simulation():
 
     IN_FEATURES = 784
     OUT_FEATURES = 10
-    # [修正] バッチサイズを2048に戻し、安定した勾配統計量を利用する。
-    # 1024では勾配ノイズが大きすぎ、ニューロンの不活発化(V_Mean低下)を招いたため。
+    # Batch Size 2048: 勾配の安定性と更新頻度のバランスが良い
     BATCH_SIZE = 2048
     TOTAL_SAMPLES = 60000
     
-    # [修正] カリキュラム: Hyper-Contrast Boosting v9 (Neuro-Regenerative Mix)
-    # v8の反省: ターゲットを絞りすぎてV_Meanが0.6まで低下し、学習不能に陥った。
-    # v9の戦略: 
-    # 1. 最終段階であえて下限を「0.15」まで広げる。
-    #    -> 易しいデータでニューロンを強く発火させ、V_Meanを回復させる。
-    # 2. 上限は「0.46」を維持。
-    #    -> 活性化したニューロンの勢いを利用して、高ノイズデータの決定境界を押し広げる。
-    # 3. 学習率を0.001で維持。
-    #    -> 活性を維持するため、学習率を下げすぎない。
+    # [修正] カリキュラム: Hyper-Contrast Boosting v10 (Target-Cap Strategy)
+    # 過去の実験から、0.46以上のデータを含めると0.45の精度が逆に下がることが判明。
+    # 戦略:
+    # 1. 上限をターゲットである「0.45」に完全固定(Cap)する。これ以上のノイズは学習させない。
+    # 2. 下限を段階的に引き上げ、0.45への対応力を「下から押し上げる」。
+    # 3. 学習率を極端に下げず(0.001維持)、ニューロンの活性(V_Mean)を保つ。
     curriculum_stages = [
         {'range': (0.0, 0.30), 'epochs': 10, 'lr': 0.1},
         {'range': (0.2, 0.40), 'epochs': 10, 'lr': 0.05},
-        {'range': (0.35, 0.46), 'epochs': 20, 'lr': 0.02}, 
-        {'range': (0.40, 0.46), 'epochs': 30, 'lr': 0.005}, 
-        # Regenerative Phase:
-        # 広帯域学習(0.15〜0.46)。
-        # 「自信(0.15)」と「挑戦(0.46)」を交互に経験させることで、
-        # 萎縮したニューロンを再生させつつ、0.45の壁を突破する。
-        # データ範囲が広いため、エポック数を60確保して0.45の出現回数を担保する。
-        {'range': (0.15, 0.46), 'epochs': 60, 'lr': 0.001}, 
+        # 中盤: ここで初めて0.45に触れるが、上限は0.45で止める
+        {'range': (0.35, 0.45), 'epochs': 20, 'lr': 0.02}, 
+        # 終盤1: 下限を引き上げ、0.45の密度を高める
+        {'range': (0.40, 0.45), 'epochs': 30, 'lr': 0.005}, 
+        # 終盤2: さらに下限を引き上げ、(0.43-0.45)という「ギリギリ解けるゾーン」に集中。
+        # 0.46の毒を排除しているため、ここで精度が向上するはず。
+        {'range': (0.43, 0.45), 'epochs': 40, 'lr': 0.001}, 
+        # 仕上げ: 範囲を絞り切る。
+        {'range': (0.44, 0.45), 'epochs': 40, 'lr': 0.001}, 
     ]
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
     print(f"\nModel initialized: LogicGatedSNN (Statistical Averaging Mode)")
-    print(f"Training Logic: Granular Curriculum Learning (Hyper-Contrast Boosting v9).")
+    print(f"Training Logic: Granular Curriculum Learning (Target-Cap v10).")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
