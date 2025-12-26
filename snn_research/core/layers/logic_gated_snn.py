@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Statistical Averaging)
-# 修正: 初期ゲイン(adaptive_threshold)を20.0 -> 5.0に変更し、探索を促進。
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Ultra Robust)
+# 修正: ゲイン上限解放 (50.0 -> 100.0) と減衰パラメータの微調整
 
 import torch
 import torch.nn as nn
@@ -32,7 +32,6 @@ class LogicGatedSNN(nn.Module):
             std_dev = 0.05
             trainable = True
             
-            # 直交初期化
             states = torch.empty(out_features, in_features)
             nn.init.orthogonal_(states, gain=1.0)
             states = states * std_dev
@@ -40,8 +39,7 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
             
-            # [修正] 初期ゲインを 20.0 -> 5.0 に変更
-            # これにより、初期段階での確率分布が平坦になり、探索(Exploration)が促進される
+            # 初期ゲイン: 探索促進のため低めに設定
             self.register_buffer('adaptive_threshold', torch.ones(out_features) * 5.0)
         else:
             # リザーバー層 (Fixed)
@@ -102,8 +100,8 @@ class LogicGatedSNN(nn.Module):
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
             # 4. Adaptive Gain
-            # ゲインが高くなりすぎないようにclamp
-            gain = self.adaptive_threshold.mean().clamp(1.0, 50.0)
+            # [修正] 上限を100.0まで解放し、微弱信号でも増幅できるようにする
+            gain = self.adaptive_threshold.mean().clamp(1.0, 100.0)
             scaled_sim = cosine_sim * gain
             
             if self.training:
@@ -171,8 +169,9 @@ class LogicGatedSNN(nn.Module):
             # Auto-Tuning Gain
             if self.mode == 'readout':
                 entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
-                # 目標エントロピーを少し高め(0.5)にして、分布が鋭くなりすぎないように維持
+                # 目標エントロピーを高ノイズ環境に合わせて調整
                 target_entropy = 0.5
                 gain_delta = 0.1 * (entropy - target_entropy)
                 self.adaptive_threshold.add_(gain_delta)
-                self.adaptive_threshold.clamp_(2.0, 50.0)
+                # [修正] 上限を100.0まで拡大
+                self.adaptive_threshold.clamp_(2.0, 100.0)
