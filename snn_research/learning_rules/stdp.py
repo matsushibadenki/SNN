@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/learning_rules/stdp.py
-# 日本語タイトル: 高精度 STDP & TripletSTDP 学習則 (Shape-Aware Fix)
-# 目的: 重み行列の形状(Pre,Post)に合わせて更新量の形状を自動調整し、エラーを防ぐ。
+# 日本語タイトル: 高精度 STDP & TripletSTDP 学習則 (State Reset Supported)
+# 目的: エピソード間での学習干渉を防ぐため、resetメソッドを追加。
 
 import torch
 import math
@@ -22,6 +22,11 @@ class STDP(BioLearningRule):
         
         self.pre_trace: Optional[torch.Tensor] = None
         self.post_trace: Optional[torch.Tensor] = None
+
+    def reset(self):
+        """内部状態（トレース）のリセット"""
+        self.pre_trace = None
+        self.post_trace = None
 
     def update(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, weights: torch.Tensor,
                optional_params: Optional[Dict[str, Any]] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -50,10 +55,8 @@ class STDP(BioLearningRule):
         batch_size = pre_spikes.size(0)
         dw = (self.learning_rate / batch_size) * (self.a_plus * ltp - self.a_minus * ltd)
         
-        # [修正] 重み行列の形状に合わせて転置を行う
-        # weightsが (Pre, Post) の場合、dw (Post, Pre) を転置して (Pre, Post) にする
+        # 重み行列の形状に合わせて転置を行う
         if weights is not None:
-            # (Pre, Post) 判定: weights[0] == pre_dim
             if weights.shape[0] == pre_spikes.shape[1] and weights.shape[1] == post_spikes.shape[1]:
                 dw = dw.t()
 
@@ -72,6 +75,13 @@ class TripletSTDP(BioLearningRule):
         
         self.pre_trace: Optional[torch.Tensor] = None
         self.avg_firing_rate: Optional[torch.Tensor] = None
+
+    def reset(self):
+        """内部状態のリセット"""
+        self.pre_trace = None
+        # avg_firing_rate は長期統計なのでリセットするか検討が必要だが、
+        # 完全なエピソード独立性を保つならリセットすべき
+        self.avg_firing_rate = None
 
     def update(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, weights: torch.Tensor,
                optional_params: Optional[Dict[str, Any]] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -93,10 +103,8 @@ class TripletSTDP(BioLearningRule):
         reward = (optional_params or {}).get("reward", 1.0)
         
         batch_size = pre_spikes.size(0)
-        # dw: (Post, Pre)
         dw = (self.learning_rate * reward / batch_size) * torch.matmul(post_spikes.t(), self.pre_trace)
         
-        # [修正] 重み形状に合わせた転置
         if weights is not None:
             if weights.shape[0] == pre_spikes.shape[1] and weights.shape[1] == post_spikes.shape[1]:
                 dw = dw.t()
