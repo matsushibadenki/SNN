@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: High-Momentum Stabilization)
-# 修正: 高次元データのMomentumを0.999に強化し、ノイズキャンセリング能力を極限まで高める
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Balanced Momentum)
+# 修正: MomentumとGain Limitを適正値に戻し、安定性を回復
 
 import torch
 import torch.nn as nn
@@ -21,7 +21,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: Adaptive Thresholding & Extended Gain Limit with High Momentum.
+        SOTA Edition: Balanced Momentum & Adaptive Thresholding.
         """
         super().__init__()
         self.in_features = in_features
@@ -30,16 +30,15 @@ class LogicGatedSNN(nn.Module):
         self.mode = mode
         
         # [修正] 次元数に応じたハイパーパラメータの自動設定
-        # 高次元(画像等): Momentumを0.999にし、直近のノイズよりも長期的な統計的重心を重視する
+        # 0.999は過剰反応を引き起こしたため、0.995に調整し、Gain Limitも抑制
         if in_features > 64:
             self.hparams = {
-                'momentum': 0.999,         # 0.99 -> 0.999: 強力な慣性でノイズによる振動を抑制
-                'target_entropy': 0.1,     # 0.25 -> 0.1: 曖昧さを許容せず、鋭い判断を促す
-                'gain_limit': 200.0,       # 感度上限は維持
-                'gain_update_rate': 0.005  # 0.015 -> 0.005: ゲイン変動を安定化
+                'momentum': 0.995,         # 0.999 -> 0.995: 安定性と慣性のバランス
+                'target_entropy': 0.25,    # 0.1 -> 0.25: 過学習/過信を防ぐ
+                'gain_limit': 50.0,        # 200.0 -> 50.0: ノイズ増幅を防ぐ
+                'gain_update_rate': 0.01   # 標準的な更新速度に戻す
             }
         else:
-            # 低次元(GRPO等)は変更なし
             self.hparams = {
                 'momentum': 0.90,          
                 'target_entropy': 0.60,    
