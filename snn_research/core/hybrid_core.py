@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (Final Fix: 厳格Top-K & ハイパーゲイン)
-# 修正: reset_state メソッドの追加
+# 日本語タイトル: 統合ニューロモルフィック・コア (High Gain Variant)
+# 修正: TopKゲイン強化 (4.0 -> 6.0)
 
 import torch
 import torch.nn as nn
@@ -8,9 +8,10 @@ from typing import Dict, Optional, cast
 from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
 
 class TopKActivation(nn.Module):
-    def __init__(self, sparsity: float = 0.10, gain: float = 4.0) -> None:
+    def __init__(self, sparsity: float = 0.10, gain: float = 6.0) -> None:
         super().__init__()
         self.sparsity = sparsity
+        # [修正] ゲインを 6.0 に強化して信号消失を防ぐ
         self.gain = gain
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -27,9 +28,8 @@ class ActivePredictiveLayer(nn.Module):
     def __init__(self, features: int) -> None: 
         super().__init__()
         self.norm = nn.LayerNorm(features)
-        # sparsity 0.10: 上位10%の「エリート」のみを通す
-        # gain 4.0: 選ばれた信号を超強力にブーストする
-        self.activation = TopKActivation(sparsity=0.10, gain=4.0)
+        # [修正] gain=6.0
+        self.activation = TopKActivation(sparsity=0.10, gain=6.0)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
         x = self.norm(x)
