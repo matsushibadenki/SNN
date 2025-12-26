@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
-# Title: RL Agent (Temperature Adjusted)
-# Description: 高ゲインコアに対応するため、探索時の温度パラメータを3.0へ引き上げ。
+# Title: RL Agent (Temperature 5.0)
+# Description: 超高ゲインコアに対応するため、探索時の温度パラメータを5.0へ引き上げ。
 
 import torch
 import numpy as np
@@ -47,8 +47,8 @@ class ReinforcementLearnerAgent:
             out = self.model.output_gate(r)
             
             if self.model.training:
-                # [修正] 高ゲイン(x6.0)に対応するため、温度を 3.0 に引き上げ
-                probs = torch.softmax(out / 3.0, dim=1)
+                # [修正] コアのゲインが高い(x8.0 & x200.0)ため、温度を 5.0 にして探索を確保
+                probs = torch.softmax(out / 5.0, dim=1)
             else:
                 probs = torch.softmax(out, dim=1)
             
@@ -103,15 +103,12 @@ class ReinforcementLearnerAgent:
                 pre_spikes = step_data['pre_spikes'] 
                 action_idx = step_data['action']
                 
-                # 報酬ベクトル作成
                 reward_signal = torch.zeros((1, self.output_size), device=self.device)
                 reward_signal[0, action_idx] = clipped_reward
                 
-                # ダミーTarget
                 post_spikes_target = torch.zeros((1, self.output_size), device=self.device)
                 post_spikes_target[0, action_idx] = 1.0
                 
-                # SCAL更新
                 self.model.output_gate.update_plasticity(
                     pre_spikes=pre_spikes,
                     post_spikes=post_spikes_target, 
