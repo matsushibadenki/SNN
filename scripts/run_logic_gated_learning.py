@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Precision Tuning)
-# 内容: 統計的重心平均化とバイポーラ相殺による、ノイズ耐性の物理的限界への到達。学習率とカリキュラムを最適化。
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Pinpoint Tuning)
+# 内容: 統計的重心平均化とバイポーラ相殺による、ノイズ耐性の物理的限界への到達。ターゲットノイズ領域へ集中学習。
 
 import sys
 import os
@@ -62,21 +62,20 @@ def run_simulation():
     BATCH_SIZE = 4096 
     TOTAL_SAMPLES = 60000
     
-    # [修正] カリキュラムの最適化: 後半のLRを下げ、Momentumバッファの肥大化に対応
+    # [修正] カリキュラムの最終仕上げ: 0.45周辺へピンポイントに集中
     curriculum_stages = [
         {'range': (0.0, 0.30), 'epochs': 10, 'lr': 0.1},
         {'range': (0.2, 0.40), 'epochs': 10, 'lr': 0.05},
         {'range': (0.35, 0.45), 'epochs': 15, 'lr': 0.02}, 
-        # ここから高ノイズ対応。LRを下げて微調整モードへ。
         {'range': (0.40, 0.46), 'epochs': 15, 'lr': 0.005}, 
-        # 最終仕上げ: ターゲットノイズ周辺で徹底的に平均化。LRを極小に。
-        {'range': (0.43, 0.47), 'epochs': 10, 'lr': 0.001}, 
+        # 最終ステージ: 0.44-0.46の範囲で徹底的にチューニング。Epoch数も15に増加。
+        {'range': (0.44, 0.46), 'epochs': 15, 'lr': 0.001}, 
     ]
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
     print(f"\nModel initialized: LogicGatedSNN (Statistical Averaging Mode)")
-    print(f"Training Logic: Granular Curriculum Learning (Precision Tuning).")
+    print(f"Training Logic: Granular Curriculum Learning (Pinpoint Tuning).")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
