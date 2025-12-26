@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/learning_rules/reward_modulated_stdp.py
-# Title: Reward Modulated STDP (Shape Consistent)
-# Description: STDPの出力形状修正に対応し、クレジット割り当て計算を適正化。
+# Title: Reward Modulated STDP (State Reset Supported)
+# Description: エピソード間での適格度トレース持ち越しを防ぐリセット機能を追加。
 
 import torch
 from typing import Dict, Any, Optional, Tuple
@@ -15,6 +15,11 @@ class RewardModulatedSTDP(STDP):
 
     def _initialize_eligibility_trace(self, weight_shape: torch.Size, device: torch.device):
         self.eligibility_trace = torch.zeros(weight_shape, device=device)
+
+    def reset(self):
+        """内部状態と適格度トレースのリセット"""
+        super().reset()
+        self.eligibility_trace = None
 
     def update(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, weights: torch.Tensor, 
                optional_params: Optional[Dict[str, Any]] = None) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -34,19 +39,13 @@ class RewardModulatedSTDP(STDP):
         dw = reward * self.eligibility_trace
         
         # 次レイヤーへのクレジット伝播（Feedback Alignment的近似）
-        # dw: (Pre, Post), post_spikes: (Batch, Post)
-        # backward_credit: (Batch, Pre) or (Pre,) depending on usage. Here assuming neuron-wise accumulation.
-        # Target: (Pre) magnitude of update
-        
         if post_spikes.dim() > 1:
             post_mean = post_spikes.mean(dim=0).unsqueeze(1) # (Post, 1)
             
             # dw が (Pre, Post) なので、そのまま matmul
             if dw.shape[0] == weights.shape[0] and dw.shape[1] == weights.shape[1]:
-                # (Pre, Post) @ (Post, 1) -> (Pre, 1) -> (Pre)
                 backward_credit = torch.matmul(dw, post_mean).squeeze()
             else:
-                # 万が一 (Post, Pre) の場合
                 backward_credit = torch.matmul(dw.t(), post_mean).squeeze()
         else:
             backward_credit = torch.zeros_like(pre_spikes[0])
