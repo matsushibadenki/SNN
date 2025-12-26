@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Annealed Relaxation)
-# 修正: Top-K緩和係数のアニーリング処理を追加し、収束を保証
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Dual-Path Gating)
+# 修正: 探索用と活用用の2つのゲートパスを統合し、動的にブレンドする
 
 import torch
 import torch.nn as nn
@@ -16,12 +16,12 @@ class LogicGatedSNN(nn.Module):
     frozen_weight: torch.Tensor
     momentum_buffer: torch.Tensor
     adaptive_threshold: torch.Tensor
-    topk_relaxation: torch.Tensor
+    path_mixer: torch.Tensor # 新規追加: パス混合係数
 
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: Annealed Top-K Relaxation.
+        SOTA Edition: Dual-Path Gating Mechanism.
         """
         super().__init__()
         self.in_features = in_features
@@ -40,10 +40,8 @@ class LogicGatedSNN(nn.Module):
             
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
-            
-            # 初期ゲイン: 10.0
             self.register_buffer('adaptive_threshold', torch.ones(out_features) * 10.0)
-            self.register_buffer('topk_relaxation', torch.tensor(1.0)) 
+            self.register_buffer('path_mixer', torch.tensor(0.0)) # 未使用
         else:
             # リザーバー層 (Fixed)
             std_dev = 3.0 / math.sqrt(in_features)
@@ -63,8 +61,9 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('momentum_buffer', torch.zeros(1))
             self.register_buffer('adaptive_threshold', torch.ones(1))
             
-            # 初期緩和係数: 0.7 (やや緩和)
-            self.register_buffer('topk_relaxation', torch.tensor(0.7)) 
+            # 初期ミキサー値: 0.5 (探索と活用のバランス)
+            # 0.0: 完全探索(高感度), 1.0: 完全活用(高精度)
+            self.register_buffer('path_mixer', torch.tensor(0.5))
             
         self.register_buffer('membrane_potential', torch.zeros(out_features))
         self.trainable = trainable
@@ -89,10 +88,10 @@ class LogicGatedSNN(nn.Module):
     def reset_state(self):
         """内部状態（膜電位）のリセット"""
         self.membrane_potential.zero_()
-        # [重要] リセット時は緩和を戻すが、アニーリングの進行状況によっては戻さない制御も可能
-        # ここではエピソード独立性を重視してリセット
+        # ミキサー値は学習進行度を表すため、エピソード間ではリセットしない方が良い場合もあるが
+        # ここでは初期状態(0.5)に戻して、毎回公平に探索させる
         if self.mode != 'readout':
-             self.topk_relaxation.fill_(0.7) 
+             self.path_mixer.fill_(0.5)
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
         w = self.get_effective_weights()
@@ -104,15 +103,9 @@ class LogicGatedSNN(nn.Module):
         if self.mode == 'readout':
             # 1. Bipolar Transformation
             x_bipolar = (x - 0.5) * 2.0
-            
-            # 2. Normalization
             x_norm = F.normalize(x_bipolar, p=2, dim=1, eps=1e-8)
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
-            
-            # 3. Cosine Similarity
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
-            
-            # 4. Adaptive Gain
             gain = self.adaptive_threshold.mean().clamp(1.0, 200.0)
             scaled_sim = cosine_sim * gain
             
@@ -126,44 +119,51 @@ class LogicGatedSNN(nn.Module):
             v_mem = scaled_sim
             
         else:
-            # Reservoir Mode: Top-K & Energy Gating Hybrid with Annealed Relaxation
+            # [修正] Reservoir Mode: Dual-Path Gating
+            
+            # 共通の前処理: エネルギー計算
             input_energy = x.norm(dim=1, keepdim=True)
             energy_threshold = input_energy.mean() * 1.0
-            gate = torch.sigmoid((input_energy - (energy_threshold + 1e-6)) * 10.0)
-            x_gated = x * gate
             
-            v_mem = torch.matmul(x_gated, w.t())
+            # Path A: Exploration (High Sensitivity)
+            # 閾値を低くし、弱い信号も通す
+            gate_explore = torch.sigmoid((input_energy - (energy_threshold * 0.5)) * 2.0)
+            v_explore = torch.matmul(x * gate_explore, w.t())
+            spikes_explore = (v_explore >= 0.3).float() # 低閾値
             
-            k = int(self.out_features * 0.2)
+            # Path B: Exploitation (High Precision)
+            # 閾値を高くし、強い信号のみ通す
+            gate_exploit = torch.sigmoid((input_energy - (energy_threshold * 1.5)) * 10.0)
+            v_exploit = torch.matmul(x * gate_exploit, w.t())
+            
+            # Top-K (上位10%)
+            k = int(self.out_features * 0.1)
             if k < 1: k = 1
-            
-            topk_vals, _ = torch.topk(v_mem, k, dim=1)
+            topk_vals, _ = torch.topk(v_exploit, k, dim=1)
             kth_val = topk_vals[:, -1].unsqueeze(1)
+            dynamic_thresh = torch.maximum(torch.tensor(0.8, device=x.device), kth_val)
+            spikes_exploit = (v_exploit >= dynamic_thresh).float()
             
-            # 緩和係数の適用
-            dynamic_threshold = torch.maximum(torch.tensor(0.5, device=x.device), kth_val)
-            dynamic_threshold = dynamic_threshold * self.topk_relaxation
+            # Path Mixing
+            # mixer=0 -> explore, mixer=1 -> exploit
+            mixer = self.path_mixer.clamp(0.0, 1.0)
             
-            spikes = (v_mem >= dynamic_threshold).float()
+            # 確率的選択ではなく、加重平均的な統合を行う
+            # ただし出力はバイナリスパイクなので、膜電位レベルで混合するか、スパイク確率として扱うか
+            # ここではシンプルに「OR」に近い動作をミキサーで制御
+            # mixerが低いとexploreの発火が優先され、高いとexploitの発火が優先される
             
-            # [修正] アニーリング付き自己調整
-            # 学習中は徐々に relaxation を 1.0 (厳格) に近づける
-            # これにより、初期は探索(緩和)、後半は活用(厳格)へと自然に移行する
+            # v_mem の混合
+            v_mem = v_explore * (1.0 - mixer) + v_exploit * mixer
+            
+            # スパイク生成（混合後の膜電位に対して）
+            # 閾値も混合する
+            mixed_threshold = 0.3 * (1.0 - mixer) + 0.8 * mixer
+            spikes = (v_mem >= mixed_threshold).float()
+            
+            # 自己調整: 学習が進むにつれて mixer を 1.0 (Exploit) に近づける
             if self.training:
-                target_relaxation = 1.0
-                # 現在値と目標値の差分を少しずつ埋める (Exponential Moving Average的な挙動)
-                diff = target_relaxation - self.topk_relaxation
-                # 0.001 の微小ステップで近づける
-                self.topk_relaxation.add_(diff * 0.001)
-                
-                # 発火率による微調整も併用（暴走防止）
-                firing_rate = spikes.mean()
-                if firing_rate > 0.15:
-                    self.topk_relaxation.add_(0.005) # 閾値を上げて抑制
-                elif firing_rate < 0.05:
-                    self.topk_relaxation.sub_(0.005) # 閾値を下げて促進
-                
-                self.topk_relaxation.clamp_(0.5, 1.2)
+                self.path_mixer.add_(0.001).clamp_(0.0, 1.0)
         
         if v_mem is None:
              v_mem = torch.zeros((x.shape[0], self.out_features), device=x.device)
