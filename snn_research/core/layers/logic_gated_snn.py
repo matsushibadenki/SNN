@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (SOTA Edition)
-# 修正: リザーバー層へのインスタンス正規化導入、適応型ゲインの最適化
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Adaptive Gating Edition)
+# 修正: リザーバー層に適応型ゲート機構を導入し、S/N比を劇的に向上
 
 import torch
 import torch.nn as nn
@@ -20,7 +20,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: インスタンス正規化とバランスの取れたバイポーラ入力を前提とする。
+        SOTA Edition: 適応型ゲート機構による高度なノイズ除去。
         """
         super().__init__()
         self.in_features = in_features
@@ -90,9 +90,7 @@ class LogicGatedSNN(nn.Module):
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
         if self.mode == 'readout':
-            # 1. Bipolar Transformation (-1/1)
-            # 入力が 0-1 付近であることを前提に、0 -> -1, 1 -> +1 に変換
-            # これにより「無信号」が「抑制信号」となり、ノイズ耐性が向上する
+            # 1. Bipolar Transformation
             x_bipolar = (x - 0.5) * 2.0
             
             # 2. Normalization
@@ -102,7 +100,7 @@ class LogicGatedSNN(nn.Module):
             # 3. Cosine Similarity
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
-            # 4. Adaptive Gain (High Range)
+            # 4. Adaptive Gain
             gain = self.adaptive_threshold.mean().clamp(1.0, 200.0)
             scaled_sim = cosine_sim * gain
             
@@ -116,16 +114,19 @@ class LogicGatedSNN(nn.Module):
             v_mem = scaled_sim
             
         else:
-            # [修正] Reservoir Mode: Instance Normalization
-            # 入力信号ごとの統計的ばらつきを正規化し、構造のみを抽出する
-            mean = x.mean(dim=1, keepdim=True)
-            std = x.std(dim=1, keepdim=True)
-            x_norm = (x - mean) / (std + 1e-5)
+            # [修正] Reservoir Mode: Adaptive Gating Mechanism
+            # 入力のエネルギー（ノルム）に基づいて、シグモイド関数でゲート開度を決定
+            # エネルギーが低い（ノイズのみ）場合はゲートを閉じ、高い場合は開く
+            input_energy = x.norm(dim=1, keepdim=True)
+            # 閾値を動的に設定 (平均エネルギーの1.2倍)
+            energy_threshold = input_energy.mean() * 1.2
+            gate = torch.sigmoid((input_energy - energy_threshold) * 5.0)
             
-            v_mem = torch.matmul(x_norm, w.t())
+            # ゲート適用後の信号に対して射影
+            x_gated = x * gate
+            v_mem = torch.matmul(x_gated, w.t())
             
-            # 正規化されているため、固定閾値(0.1)で安定して特徴を抽出可能
-            spikes = (v_mem >= 0.1).float()
+            spikes = (v_mem >= 0.5).float()
         
         with torch.no_grad():
             v_mean = torch.mean(v_mem, dim=0).detach()
@@ -144,7 +145,6 @@ class LogicGatedSNN(nn.Module):
             if isinstance(reward, torch.Tensor) and reward.shape == post_spikes.shape:
                 target_onehot = reward
                 
-                # --- Centroid Accumulation ---
                 class_sums = torch.matmul(target_onehot.t(), pre_spikes_bipolar)
                 class_counts = target_onehot.sum(dim=0).unsqueeze(1) + 1e-8
                 
