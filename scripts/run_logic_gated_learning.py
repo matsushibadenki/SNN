@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Signal Boosting)
-# 内容: Signal Boost機能と長期微調整により、Acc 88%の壁を突破する。
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Squared ReLU Strategy)
+# 内容: Squared ReLUによる高コントラスト学習を利用し、Acc 88%の壁を超える。
 
 import sys
 import os
@@ -62,20 +62,21 @@ def run_simulation():
     BATCH_SIZE = 4096 
     TOTAL_SAMPLES = 60000
     
-    # [修正] カリキュラム: 最終段階のEpoch数を30に増やし、Signal Boostの効果を浸透させる
+    # [修正] カリキュラム: Squared ReLUはノイズ耐性が強いため、
+    # 最終段階で0.44-0.47のノイズを与え続けても崩れず、逆に適応が進む。
     curriculum_stages = [
         {'range': (0.0, 0.30), 'epochs': 10, 'lr': 0.1},
         {'range': (0.2, 0.40), 'epochs': 10, 'lr': 0.05},
         {'range': (0.35, 0.45), 'epochs': 15, 'lr': 0.02}, 
         {'range': (0.40, 0.46), 'epochs': 15, 'lr': 0.005}, 
-        # 最終仕上げ: 30 Epochsかけてじっくりと発火タイミングを調整
-        {'range': (0.43, 0.47), 'epochs': 30, 'lr': 0.002}, 
+        # 最終仕上げ: 30 Epochs, LR 0.002
+        {'range': (0.44, 0.47), 'epochs': 30, 'lr': 0.002}, 
     ]
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
     print(f"\nModel initialized: LogicGatedSNN (Statistical Averaging Mode)")
-    print(f"Training Logic: Granular Curriculum Learning (Signal Boosting).")
+    print(f"Training Logic: Granular Curriculum Learning (Squared ReLU Strategy).")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
