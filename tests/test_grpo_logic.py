@@ -1,5 +1,5 @@
 # ファイルパス: tests/test_grpo_logic.py
-# Title: GRPO Logic Test (Fix Check)
+# Title: GRPO Logic Test (Final Ver)
 # 修正内容: 変更なし
 
 import torch
@@ -71,7 +71,7 @@ class TestGRPO(unittest.TestCase):
         self.target_seq = [0, 1]
         
     def test_grpo_improvement(self):
-        print("\n[Test] GRPO Logic Improvement (Adaptive Gating Fix)")
+        print("\n[Test] GRPO Logic Improvement (Non-linear Gating)")
         env = SimpleLogicEnv(self.target_seq)
         
         iterations = 100 
