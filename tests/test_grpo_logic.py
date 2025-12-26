@@ -1,6 +1,6 @@
 # ファイルパス: tests/test_grpo_logic.py
-# Title: GRPO Logic Test (Reset Fixed)
-# 修正内容: 学習則リセットの実装に伴い、学習成功を期待してテストを実行
+# Title: GRPO Logic Test with Hybrid Core
+# 修正内容: HybridNeuromorphicCore搭載エージェント向けのテスト調整
 
 import torch
 import unittest
@@ -13,7 +13,6 @@ from typing import List
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from snn_research.agent.reinforcement_learner_agent import ReinforcementLearnerAgent
-from snn_research.learning_rules.reward_modulated_stdp import RewardModulatedSTDP
 
 class SimpleLogicEnv:
     def __init__(self, target_sequence: list):
@@ -45,13 +44,13 @@ class SimpleLogicEnv:
         
         if current_idx < target_len:
             if self.history[current_idx] == self.target_sequence[current_idx]:
-                reward = 0.5 
+                reward = 1.0 # 明確な報酬を与える
             else:
                 reward = -1.0 
                 done = True   
         
         if len(self.history) == target_len and not done:
-            reward += 2.0
+            reward += 5.0 # 完了ボーナスを大きく
             done = True
                 
         return self._get_state(), reward, done, {}
@@ -63,33 +62,23 @@ class TestGRPO(unittest.TestCase):
         self.input_size = 4
         self.output_size = 3 
         
-        self.rule = RewardModulatedSTDP(
-            learning_rate=0.08,
-            a_plus=1.2,
-            a_minus=0.8,
-            tau_trace=15.0,
-            tau_eligibility=50.0,
-            dt=1.0
-        )
-        
+        # HybridCoreを使用するため、複雑なLearningRule設定は不要
         self.agent = ReinforcementLearnerAgent(
             input_size=self.input_size,
             output_size=self.output_size,
-            device=self.device,
-            synaptic_rule=self.rule
+            device=self.device
         )
         
         self.target_seq = [0, 1]
         
     def test_grpo_improvement(self):
-        print("\n[Test] GRPO Logic Improvement Check (Reset Logic)")
+        print("\n[Test] GRPO Logic Improvement (Hybrid Core)")
         env = SimpleLogicEnv(self.target_seq)
         
-        iterations = 150 
-        group_size = 16 
+        iterations = 50 
+        group_size = 16
         
         max_success_rate = 0.0
-        recent_rates = []
         
         for it in range(iterations):
             trajectories = []
@@ -97,7 +86,6 @@ class TestGRPO(unittest.TestCase):
             
             for _ in range(group_size):
                 state = env.reset()
-                self.agent.model.reset_state(batch_size=1, device=torch.device("cpu"))
                 self.agent.experience_buffer = [] 
                 
                 traj_data = {'actions': [], 'rewards': [], 'spikes_history': [], 'total_reward': 0.0}
@@ -113,6 +101,7 @@ class TestGRPO(unittest.TestCase):
                     if done:
                         break
                 
+                # HybridCore版エージェントは辞書リストを保存している
                 traj_data['spikes_history'] = list(self.agent.experience_buffer)
                 trajectories.append(traj_data)
                 
@@ -121,25 +110,20 @@ class TestGRPO(unittest.TestCase):
             
             rate = success_count / group_size
             max_success_rate = max(max_success_rate, rate)
-            recent_rates.append(rate)
-            if len(recent_rates) > 5:
-                recent_rates.pop(0)
-            
-            avg_recent_rate = sum(recent_rates) / len(recent_rates)
             
             if (it + 1) % 10 == 0:
                 print(f"Iteration {it+1}/{iterations}: Success Rate {rate:.2f} (Max: {max_success_rate:.2f})")
             
             self.agent.learn_with_grpo(trajectories)
             
-            if avg_recent_rate >= 0.5:
-                print(f"Early Success at iteration {it+1} (Avg Rate: {avg_recent_rate:.2f})")
+            if rate >= 0.8: # HybridCoreなら非常に高い精度が出るはず
+                print(f"Early Success at iteration {it+1}")
                 break
             
         print(f"Final Max Success Rate: {max_success_rate}")
         
-        # 学習の成功判定: ランダム(約0.11)を有意に超える 0.25 以上
-        self.assertTrue(max_success_rate >= 0.25, f"Learning failed. Max rate: {max_success_rate}")
+        # SCALロジックは強力なので、期待値を高く設定
+        self.assertTrue(max_success_rate >= 0.4, f"Learning failed. Max rate: {max_success_rate}")
 
 if __name__ == '__main__':
     unittest.main()
