@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
 # 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (SOTA Edition)
-# 目的: 適応型ノイズフロア除去によるS/N比の極限向上
+# 修正: リザーバー層へのインスタンス正規化導入、適応型ゲインの最適化
 
 import torch
 import torch.nn as nn
@@ -20,7 +20,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: 動的ノイズ除去機能を搭載。
+        SOTA Edition: インスタンス正規化とバランスの取れたバイポーラ入力を前提とする。
         """
         super().__init__()
         self.in_features = in_features
@@ -40,8 +40,8 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
             
-            # 初期ゲイン: 15.0 に設定し、初期から明確な判断を促す
-            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 15.0)
+            # 初期ゲイン: 10.0
+            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 10.0)
         else:
             # リザーバー層 (Fixed)
             std_dev = 3.0 / math.sqrt(in_features)
@@ -90,7 +90,9 @@ class LogicGatedSNN(nn.Module):
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
         if self.mode == 'readout':
-            # 1. Bipolar Transformation
+            # 1. Bipolar Transformation (-1/1)
+            # 入力が 0-1 付近であることを前提に、0 -> -1, 1 -> +1 に変換
+            # これにより「無信号」が「抑制信号」となり、ノイズ耐性が向上する
             x_bipolar = (x - 0.5) * 2.0
             
             # 2. Normalization
@@ -114,17 +116,16 @@ class LogicGatedSNN(nn.Module):
             v_mem = scaled_sim
             
         else:
-            # Reservoir Mode: Dynamic Noise Floor Removal (今回の主要修正点)
-            # 入力信号の平均値を「ノイズフロア」とみなし、それを差し引く。
-            # これにより、ノイズレベルが変動しても、相対的に強い信号だけを抽出できる。
-            noise_floor = x.mean(dim=1, keepdim=True)
-            x_denoised = x - noise_floor
+            # [修正] Reservoir Mode: Instance Normalization
+            # 入力信号ごとの統計的ばらつきを正規化し、構造のみを抽出する
+            mean = x.mean(dim=1, keepdim=True)
+            std = x.std(dim=1, keepdim=True)
+            x_norm = (x - mean) / (std + 1e-5)
             
-            #  denoised signalに対して射影を行う
-            v_mem = torch.matmul(x_denoised, w.t())
+            v_mem = torch.matmul(x_norm, w.t())
             
-            # 閾値を少し下げて感度を維持
-            spikes = (v_mem >= 0.5).float()
+            # 正規化されているため、固定閾値(0.1)で安定して特徴を抽出可能
+            spikes = (v_mem >= 0.1).float()
         
         with torch.no_grad():
             v_mean = torch.mean(v_mem, dim=0).detach()
@@ -177,7 +178,6 @@ class LogicGatedSNN(nn.Module):
             # Auto-Tuning Gain
             if self.mode == 'readout':
                 entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
-                # 確信度を高めるため目標エントロピーを低く設定
                 target_entropy = 0.1
                 gain_delta = 0.5 * (entropy - target_entropy)
                 self.adaptive_threshold.add_(gain_delta)
