@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: The Law of Large Numbers)
-# 内容: 統計的重心平均化とバイポーラ相殺による、ノイズ耐性の物理的限界への到達
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Granular Curriculum)
+# 内容: 統計的重心平均化とバイポーラ相殺による、ノイズ耐性の物理的限界への到達。カリキュラムを細分化。
 
 import sys
 import os
@@ -59,18 +59,23 @@ def run_simulation():
 
     IN_FEATURES = 784
     OUT_FEATURES = 10
-    # ノイズキャンセルのため、メモリが許す限りの最大バッチサイズ
     BATCH_SIZE = 4096 
     TOTAL_SAMPLES = 60000
-    EPOCHS = 40
     
-    # 学習率: 平均化の速度。後半は極小にする。
-    INITIAL_LR = 0.1
+    # [修正] 他AI提案: カリキュラムを細分化し、急激な難易度上昇を防ぐ
+    # Epoch数を合計で調整 (10+10+15+15+10 = 60 Epochs)
+    curriculum_stages = [
+        {'range': (0.0, 0.30), 'epochs': 10, 'lr': 0.1},
+        {'range': (0.2, 0.40), 'epochs': 10, 'lr': 0.05},
+        {'range': (0.35, 0.45), 'epochs': 15, 'lr': 0.02},  # 新規追加: 中間層
+        {'range': (0.42, 0.48), 'epochs': 15, 'lr': 0.01},  # 新規追加: 高ノイズ導入層
+        {'range': (0.45, 0.50), 'epochs': 10, 'lr': 0.005}, # 仕上げ層
+    ]
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
     print(f"\nModel initialized: LogicGatedSNN (Statistical Averaging Mode)")
-    print(f"Training Logic: Bipolar Input + Centroid Averaging (Noise Cancellation).")
+    print(f"Training Logic: Granular Curriculum Learning.")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -80,75 +85,67 @@ def run_simulation():
     print("-" * 96)
     
     start_time = time.time()
-    current_lr = INITIAL_LR
     
-    for epoch in range(EPOCHS):
-        # カリキュラム: 0.48ノイズでの「微小な重心のズレ」を修正するため、
-        # 後半はノイズレベルを高めたまま、学習率を極限まで下げて「揺らぎ」を吸収する
-        if epoch < 10:
-            current_noise_range = (0.0, 0.35)
-            current_lr = INITIAL_LR
-        elif epoch < 20:
-            current_noise_range = (0.20, 0.45)
-            current_lr = INITIAL_LR * 0.5
-        elif epoch < 30:
-            current_noise_range = (0.40, 0.49)
-            current_lr = INITIAL_LR * 0.1
-        else:
-            # 最終仕上げ: 重みをほぼ固定 (Running Averageの収束)
-            current_noise_range = (0.45, 0.50)
-            current_lr = 0.001 
-            
-        x_train, y_train, _ = generate_synthetic_data(
-            num_samples=TOTAL_SAMPLES, 
-            in_features=IN_FEATURES, 
-            out_features=OUT_FEATURES,
-            prototypes=shared_prototypes,
-            noise_level=current_noise_range
-        )
-        x_train, y_train = x_train.to(device), y_train.to(device)
+    current_epoch = 0
+    
+    # カリキュラムステージごとのループ
+    for stage in curriculum_stages:
+        noise_range = stage['range']
+        stage_epochs = stage['epochs']
+        lr = stage['lr']
         
-        dataset = TensorDataset(x_train, y_train)
-        loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=(device.type=='cuda'))
+        for _ in range(stage_epochs):
+            current_epoch += 1
+            
+            x_train, y_train, _ = generate_synthetic_data(
+                num_samples=TOTAL_SAMPLES, 
+                in_features=IN_FEATURES, 
+                out_features=OUT_FEATURES,
+                prototypes=shared_prototypes,
+                noise_level=noise_range
+            )
+            x_train, y_train = x_train.to(device), y_train.to(device)
+            
+            dataset = TensorDataset(x_train, y_train)
+            loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=(device.type=='cuda'))
 
-        epoch_correct = 0
-        total_seen = 0
-        epoch_loss = 0.0
-        
-        layer.train()
-        
-        for data, target in loader:
-            data, target = data.to(device, non_blocking=True), target.to(device, non_blocking=True)
+            epoch_correct = 0
+            total_seen = 0
+            epoch_loss = 0.0
             
-            out = layer(data)
-            target_onehot = torch.zeros_like(out)
-            target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
+            layer.train()
             
-            # 純粋な重心平均化更新
-            layer.update_plasticity(data, out, target_onehot, learning_rate=current_lr)
+            for data, target in loader:
+                data, target = data.to(device, non_blocking=True), target.to(device, non_blocking=True)
+                
+                out = layer(data)
+                target_onehot = torch.zeros_like(out)
+                target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
+                
+                layer.update_plasticity(data, out, target_onehot, learning_rate=lr)
+                
+                loss = (target_onehot - out).pow(2).mean().item()
+                pred = out.argmax(dim=1)
+                acc = (pred == target).float().sum().item()
+                
+                epoch_correct += acc
+                total_seen += data.size(0)
+                epoch_loss += loss
+                
+            epoch_acc = epoch_correct / total_seen * 100
+            avg_loss = epoch_loss / len(loader)
+            elapsed = time.time() - start_time
             
-            loss = (target_onehot - out).pow(2).mean().item()
-            pred = out.argmax(dim=1)
-            acc = (pred == target).float().sum().item()
+            v_mean_val = layer.membrane_potential.mean().item()
+            temp_val = layer.adaptive_threshold.mean().item()
             
-            epoch_correct += acc
-            total_seen += data.size(0)
-            epoch_loss += loss
-            
-        epoch_acc = epoch_correct / total_seen * 100
-        avg_loss = epoch_loss / len(loader)
-        elapsed = time.time() - start_time
-        
-        v_mean_val = layer.membrane_potential.mean().item()
-        temp_val = layer.adaptive_threshold.mean().item()
-        
-        print(f"{epoch+1:<6} | {str(current_noise_range):<15} | "
-              f"{epoch_acc:5.1f}% | "
-              f"{avg_loss:6.4f} | "
-              f"{current_lr:.6f} | "
-              f"{temp_val:5.1f}  | "
-              f"{v_mean_val:6.3f} | "
-              f"{elapsed:.0f}s")
+            print(f"{current_epoch:<6} | {str(noise_range):<15} | "
+                  f"{epoch_acc:5.1f}% | "
+                  f"{avg_loss:6.4f} | "
+                  f"{lr:.6f} | "
+                  f"{temp_val:5.1f}  | "
+                  f"{v_mean_val:6.3f} | "
+                  f"{elapsed:.0f}s")
         
     print("Optimization Complete.")
     
