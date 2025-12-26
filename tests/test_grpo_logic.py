@@ -1,6 +1,6 @@
 # ファイルパス: tests/test_grpo_logic.py
-# Title: GRPO Logic Test with Shaping Reward
-# 修正内容: 部分報酬(0.5)の導入、エピソード毎のリセット、判定基準の調整
+# Title: GRPO Logic Test (Exploration Fix)
+# 修正内容: エージェントの探索改善を確認するテスト構成
 
 import torch
 import unittest
@@ -42,17 +42,15 @@ class SimpleLogicEnv:
         target_len = len(self.target_sequence)
         current_idx = len(self.history) - 1
         
-        # [修正] 部分報酬 (Shaping) の導入
-        # 正しい行動をとれば、即座に小さな報酬を与える
         if current_idx < target_len:
             if self.history[current_idx] == self.target_sequence[current_idx]:
-                reward = 0.5 # 部分報酬
+                reward = 0.5 
             else:
-                reward = -1.0 # 罰則
+                reward = -1.0 
                 done = True   
         
         if len(self.history) == target_len and not done:
-            reward += 5.0 # 完了ボーナス
+            reward += 5.0 
             done = True
                 
         return self._get_state(), reward, done, {}
@@ -73,7 +71,7 @@ class TestGRPO(unittest.TestCase):
         self.target_seq = [0, 1]
         
     def test_grpo_improvement(self):
-        print("\n[Test] GRPO Logic Improvement (Hybrid Core + Shaping)")
+        print("\n[Test] GRPO Logic Improvement (Fixed Exploration)")
         env = SimpleLogicEnv(self.target_seq)
         
         iterations = 50 
@@ -87,7 +85,6 @@ class TestGRPO(unittest.TestCase):
             
             for _ in range(group_size):
                 state = env.reset()
-                # [重要] エピソード開始時にエージェントの状態をリセット
                 self.agent.model.reset_state()
                 self.agent.experience_buffer = [] 
                 
