@@ -1,6 +1,6 @@
 # ファイルパス: tests/test_grpo_logic.py
-# Title: GRPO Logic Test (Momentum & Z-Score)
-# 修正内容: 変更なし (High Standard 0.4 を維持)
+# Title: GRPO Logic Test (Fix Check)
+# 修正内容: 変更なし
 
 import torch
 import unittest
@@ -71,7 +71,7 @@ class TestGRPO(unittest.TestCase):
         self.target_seq = [0, 1]
         
     def test_grpo_improvement(self):
-        print("\n[Test] GRPO Logic Improvement (Momentum & Z-Score)")
+        print("\n[Test] GRPO Logic Improvement (Adaptive Gating Fix)")
         env = SimpleLogicEnv(self.target_seq)
         
         iterations = 100 
