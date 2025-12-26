@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Precision Thresholding)
-# 修正: Exploit閾値を0.58に微調整し、Acc 88%突破を狙う
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Squared ReLU Contrast)
+# 修正: Squared ReLUによりS/N比を劇的に改善し、ノイズを自然に減衰させる
 
 import torch
 import torch.nn as nn
@@ -21,7 +21,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: Precision Thresholding & Signal Boosting.
+        SOTA Edition: Squared ReLU Contrast & Robust Clipping.
         """
         super().__init__()
         self.in_features = in_features
@@ -33,7 +33,7 @@ class LogicGatedSNN(nn.Module):
             self.hparams = {
                 'momentum': 0.99,          
                 'target_entropy': 0.25,    
-                'gain_limit': 150.0,       
+                'gain_limit': 200.0,       # 150.0 -> 200.0: 二乗則による減衰を補償するため上限拡大
                 'gain_update_rate': 0.01   
             }
         else:
@@ -55,7 +55,8 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
             
-            initial_gain = 8.0 if in_features > 64 else 5.0
+            # [修正] Squared ReLUで値が小さくなるため、初期ゲインを大きく設定
+            initial_gain = 20.0 if in_features > 64 else 5.0
             self.register_buffer('adaptive_threshold', torch.ones(out_features) * initial_gain)
             self.register_buffer('path_mixer', torch.tensor(0.0)) 
         else:
@@ -115,12 +116,14 @@ class LogicGatedSNN(nn.Module):
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
-            boost_mask = (cosine_sim > 0.1).float() 
-            boosted_sim = cosine_sim * (1.0 + boost_mask) 
+            # [修正] Squared ReLU Activation: コサイン類似度を二乗することで、
+            # 強い信号(0.8->0.64)は残し、弱いノイズ(0.2->0.04)を劇的に減衰させる。
+            # これが88%突破の鍵となる。
+            sharpened_sim = F.relu(cosine_sim).pow(2.0)
 
             gain_limit = self.hparams['gain_limit'] if hasattr(self, 'hparams') else 50.0
             gain = self.adaptive_threshold.mean().clamp(1.0, gain_limit)
-            scaled_sim = boosted_sim * gain
+            scaled_sim = sharpened_sim * gain
             
             if self.training:
                 spikes = F.softmax(scaled_sim, dim=1)
@@ -132,6 +135,7 @@ class LogicGatedSNN(nn.Module):
             v_mem = scaled_sim
             
         else:
+            # Reservoir Mode (変更なし)
             input_energy = x.norm(dim=1, keepdim=True)
             energy_threshold = input_energy.mean() * 1.0
             if energy_threshold == 0: energy_threshold = 1.0
@@ -152,14 +156,13 @@ class LogicGatedSNN(nn.Module):
             topk_vals, _ = torch.topk(v_exploit, k, dim=1)
             kth_val = topk_vals[:, -1].unsqueeze(1)
             
-            # [修正] 閾値を0.58に微調整し、限界まで精度を引き出す
+            # 閾値微調整 (0.58)
             dynamic_thresh = torch.maximum(torch.tensor(0.58, device=x.device), kth_val)
             spikes_exploit = (v_exploit >= dynamic_thresh).float()
             
             mixer = self.path_mixer.clamp(0.0, 1.0)
             v_mem = v_explore * (1.0 - mixer) + v_exploit * mixer
             
-            # [修正] 混合閾値も連動して調整
             mixed_threshold = adaptive_thresh_explore * (1.0 - mixer) + 0.58 * mixer
             spikes = (v_mem >= mixed_threshold).float()
             
