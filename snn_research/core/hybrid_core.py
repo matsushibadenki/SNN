@@ -1,5 +1,6 @@
 # ファイルパス: snn_research/core/hybrid_core.py
 # 日本語タイトル: 統合ニューロモルフィック・コア (Final Fix: 厳格Top-K & ハイパーゲイン)
+# 修正: reset_state メソッドの追加
 
 import torch
 import torch.nn as nn
@@ -40,6 +41,11 @@ class HybridNeuromorphicCore(nn.Module):
         self.fast_process = LogicGatedSNN(in_features, hidden_features, mode='reservoir')
         self.deep_process = ActivePredictiveLayer(hidden_features)
         self.output_gate = LogicGatedSNN(hidden_features, out_features, mode='readout')
+
+    def reset_state(self):
+        """全層の状態リセット"""
+        self.fast_process.reset_state()
+        self.output_gate.reset_state()
 
     def forward(self, x_input: torch.Tensor) -> torch.Tensor:
         f = self.fast_process(x_input)
