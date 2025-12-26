@@ -1,10 +1,13 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
-# Title: 強化学習エージェント (Mypy完全修正 & インターフェース整合版)
-# Description: Callable, numpy のインポート追加と experience_buffer の型定義を修正。
+# Title: 強化学習エージェント (Exploration-Aware Spike Recording Fix)
+# Description:
+#   強化学習において、ランダム探索(randint)で選択された行動も学習できるよう、
+#   Experience Bufferに記録する出力スパイクを「選択された行動」で上書きする修正を追加。
+#   閾値を下げて初期発火を促進。
 
 import torch
-import numpy as np  # [修正] np が未定義だったため追加
-from typing import Dict, Any, List, Optional, Tuple, Callable, cast  # [修正] Callable を追加
+import numpy as np
+from typing import Dict, Any, List, Optional, Tuple, Callable, cast
 
 from snn_research.models.bio.simple_network import BioSNN
 from snn_research.learning_rules.base_rule import BioLearningRule
@@ -29,19 +32,22 @@ class ReinforcementLearnerAgent:
         layer_sizes = [input_size, (input_size + output_size) * 2, output_size]
         
         # BioSNNの初期化
+        # [修正] v_threshold を 1.0 -> 0.6 に下げて初期学習を促進
         self.model = BioSNN(
             layer_sizes=layer_sizes,
-            neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0},
+            neuron_params={'tau_mem': 10.0, 'v_threshold': 0.6, 'v_reset': 0.0, 'v_rest': 0.0},
             synaptic_rule=synaptic_rule,
             homeostatic_rule=homeostatic_rule,
             neuron_type="adaptive_lif"
         ).to(device)
 
-        # [修正] 型アノテーションを明示して mypy [has-type] エラーを解消
         self.experience_buffer: List[List[torch.Tensor]] = []
 
     def get_action(self, state: torch.Tensor, record_experience: bool = True) -> int:
-        """状態に基づきアクションを選択し、必要に応じてスパイク履歴を保存。"""
+        """
+        状態に基づきアクションを選択し、必要に応じてスパイク履歴を保存。
+        ランダム探索時でも学習が進むよう、選択したアクションのスパイクを記録する。
+        """
         self.model.eval()
         with torch.no_grad():
             # 入力エンコーディング
@@ -49,17 +55,44 @@ class ReinforcementLearnerAgent:
                 input_spikes = state
             else:
                 input_spikes = (torch.rand_like(state) < (state * 0.5 + 0.5)).float()
+            
+            # (Batch dimension might be missing, ensure shape consistency if needed)
+            if input_spikes.dim() == 1:
+                input_spikes = input_spikes.unsqueeze(0) # (1, InputSize)
 
             output_spikes, hidden_history = self.model(input_spikes)
             
-            if record_experience:
-                # 履歴の保存
-                self.experience_buffer.append([input_spikes] + hidden_history)
-            
+            # アクション決定ロジック
+            is_random_action = False
+            # 出力層の発火合計を確認
             if output_spikes.sum() > 0:
                 action_idx = torch.argmax(output_spikes).item()
             else:
+                # 発火なし -> ランダムアクション (探索)
                 action_idx = torch.randint(0, self.output_size, (1,)).item()
+                is_random_action = True
+
+            if record_experience:
+                # [重要修正]
+                # モデルが発火しなかった(または異なる行動をとった)場合でも、
+                # 「実際に選択した行動」を教師信号的に学習させるため、履歴上の出力スパイクを書き換える。
+                # これにより STDP が Input -> ChosenAction の結合を強化できる。
+                
+                # hidden_history は各層の出力リストを想定 (最後が出力層)
+                # リストをコピーして修正
+                recorded_history = [h.clone() for h in hidden_history]
+                
+                # 出力層のスパイクを強制的に設定
+                # output_spikes の形状は (Batch, OutputSize)
+                target_spike = torch.zeros_like(output_spikes)
+                target_spike[0, int(action_idx)] = 1.0
+                
+                # BioSNNの実装依存だが、通常 hidden_history の最後が出力層
+                if len(recorded_history) > 0:
+                    recorded_history[-1] = target_spike
+                
+                # バッファには [入力, 隠れ層..., 出力] の順で保存
+                self.experience_buffer.append([input_spikes] + recorded_history)
                 
             return int(action_idx)
 
@@ -71,7 +104,7 @@ class ReinforcementLearnerAgent:
         self.model.train()
         optional_params: Dict[str, Any] = {
             "reward": reward + causal_credit * 10.0,
-            "uncertainty": 0.5  # デフォルト値
+            "uncertainty": 0.5
         }
         if global_context:
             optional_params["global_workspace_context"] = global_context
@@ -82,7 +115,6 @@ class ReinforcementLearnerAgent:
                 optional_params=optional_params
             )
         
-        # [修正] 再初期化時にも型推論を助ける
         self.experience_buffer = []
 
     def sample_thought_trajectories(
@@ -103,6 +135,7 @@ class ReinforcementLearnerAgent:
                 'total_reward': 0.0
             }
             
+            # 各軌跡の開始時にバッファをクリア
             self.experience_buffer = []
             
             for _ in range(max_steps):
@@ -130,13 +163,22 @@ class ReinforcementLearnerAgent:
 
         self.model.train()
         total_rewards = torch.tensor([t['total_reward'] for t in trajectories], dtype=torch.float32)
+        
+        # 報酬の正規化 (分散が0の場合は除算を避ける)
         mean_reward = total_rewards.mean()
-        std_reward = total_rewards.std() + 1e-8
+        std_reward = total_rewards.std()
+        if std_reward < 1e-6:
+            std_reward = 1.0
+            
         advantages = (total_rewards - mean_reward) / std_reward
         
         for i, trajectory in enumerate(trajectories):
-            # [修正] np.clip を安全に呼び出し
-            optional_params = {"reward": float(np.clip(advantages[i].item(), -2.0, 2.0))}
+            # アドバンテージを報酬として学習則に渡す
+            advantage = advantages[i].item()
+            
+            # 大きすぎる勾配を防ぐためのクリッピング
+            clipped_reward = float(np.clip(advantage, -2.0, 2.0))
+            optional_params = {"reward": clipped_reward}
             
             for step_spikes in cast(List[List[torch.Tensor]], trajectory['spikes_history']):
                 self.model.update_weights(
