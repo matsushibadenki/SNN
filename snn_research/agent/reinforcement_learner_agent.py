@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
 # Title: RL Agent (Optimized)
-# Description: 信号品質向上に伴い、温度パラメータと学習率を最適化。
+# 修正内容: 変更なし
 
 import torch
 import numpy as np
@@ -10,9 +10,6 @@ from snn_research.core.hybrid_core import HybridNeuromorphicCore
 from snn_research.learning_rules.base_rule import BioLearningRule
 
 class ReinforcementLearnerAgent:
-    """
-    SCAL (Statistical Centroid Alignment Learning) を搭載した次世代強化学習エージェント。
-    """
     def __init__(
         self, 
         input_size: int, 
@@ -47,7 +44,6 @@ class ReinforcementLearnerAgent:
             out = self.model.output_gate(r)
             
             if self.model.training:
-                # [修正] 温度を2.0に下げ、より確信度の高い行動選択を行う
                 probs = torch.softmax(out / 2.0, dim=1)
             else:
                 probs = torch.softmax(out, dim=1)
@@ -108,7 +104,6 @@ class ReinforcementLearnerAgent:
                 post_spikes_target = torch.zeros((1, self.output_size), device=self.device)
                 post_spikes_target[0, action_idx] = 1.0
                 
-                # [修正] 学習率を 0.02 に調整し、過学習を防ぎつつ安定させる
                 self.model.output_gate.update_plasticity(
                     pre_spikes=pre_spikes,
                     post_spikes=post_spikes_target, 
