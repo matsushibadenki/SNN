@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Signal Boost Path)
-# 修正: 低エネルギーでも高信頼度な信号を救済する「シグナル・ブースト・パス」を実装し、発火率を改善
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Precision Thresholding)
+# 修正: Exploit閾値を0.58に微調整し、Acc 88%突破を狙う
 
 import torch
 import torch.nn as nn
@@ -21,7 +21,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: Signal Boost Path & Robust Clipping.
+        SOTA Edition: Precision Thresholding & Signal Boosting.
         """
         super().__init__()
         self.in_features = in_features
@@ -110,18 +110,14 @@ class LogicGatedSNN(nn.Module):
         spikes = None
         
         if self.mode == 'readout':
-            # 1. Bipolar Transformation
             x_bipolar = (x - 0.5) * 2.0
             x_norm = F.normalize(x_bipolar, p=2, dim=1, eps=1e-8)
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
-            # [修正] Signal Boost: 類似度が非常に高い場合、ゲインをさらに2倍にする
-            # これにより、ノイズに埋もれた正解信号だけを選択的に増幅する
             boost_mask = (cosine_sim > 0.1).float() 
             boosted_sim = cosine_sim * (1.0 + boost_mask) 
 
-            # パラメータに基づいたゲイン制限
             gain_limit = self.hparams['gain_limit'] if hasattr(self, 'hparams') else 50.0
             gain = self.adaptive_threshold.mean().clamp(1.0, gain_limit)
             scaled_sim = boosted_sim * gain
@@ -136,12 +132,10 @@ class LogicGatedSNN(nn.Module):
             v_mem = scaled_sim
             
         else:
-            # Reservoir Mode: Dual-Path Gating
             input_energy = x.norm(dim=1, keepdim=True)
             energy_threshold = input_energy.mean() * 1.0
             if energy_threshold == 0: energy_threshold = 1.0
             
-            # Path A: Exploration
             gate_explore = torch.sigmoid((input_energy - (energy_threshold * 0.5)) * 2.0)
             v_explore = torch.matmul(x * gate_explore, w.t())
             
@@ -150,7 +144,6 @@ class LogicGatedSNN(nn.Module):
             adaptive_thresh_explore = torch.clamp(adaptive_thresh_explore, 0.05, 0.2)
             spikes_explore = (v_explore >= adaptive_thresh_explore).float()
             
-            # Path B: Exploitation
             gate_exploit = torch.sigmoid((input_energy - (energy_threshold * 1.5)) * 10.0)
             v_exploit = torch.matmul(x * gate_exploit, w.t())
             
@@ -159,13 +152,15 @@ class LogicGatedSNN(nn.Module):
             topk_vals, _ = torch.topk(v_exploit, k, dim=1)
             kth_val = topk_vals[:, -1].unsqueeze(1)
             
-            dynamic_thresh = torch.maximum(torch.tensor(0.6, device=x.device), kth_val)
+            # [修正] 閾値を0.58に微調整し、限界まで精度を引き出す
+            dynamic_thresh = torch.maximum(torch.tensor(0.58, device=x.device), kth_val)
             spikes_exploit = (v_exploit >= dynamic_thresh).float()
             
             mixer = self.path_mixer.clamp(0.0, 1.0)
             v_mem = v_explore * (1.0 - mixer) + v_exploit * mixer
             
-            mixed_threshold = adaptive_thresh_explore * (1.0 - mixer) + 0.6 * mixer
+            # [修正] 混合閾値も連動して調整
+            mixed_threshold = adaptive_thresh_explore * (1.0 - mixer) + 0.58 * mixer
             spikes = (v_mem >= mixed_threshold).float()
             
             if self.training:
