@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Squared ReLU Contrast)
-# 修正: Squared ReLUによりS/N比を劇的に改善し、ノイズを自然に減衰させる
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Adaptive Offset)
+# 修正: 低信号時の適応型オフセットと動的Top-Kにより、Acc 88%突破を目指す
 
 import torch
 import torch.nn as nn
@@ -21,7 +21,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: Squared ReLU Contrast & Robust Clipping.
+        SOTA Edition: Adaptive Offset & Dynamic Top-K.
         """
         super().__init__()
         self.in_features = in_features
@@ -33,7 +33,7 @@ class LogicGatedSNN(nn.Module):
             self.hparams = {
                 'momentum': 0.99,          
                 'target_entropy': 0.25,    
-                'gain_limit': 200.0,       # 150.0 -> 200.0: 二乗則による減衰を補償するため上限拡大
+                'gain_limit': 200.0,       
                 'gain_update_rate': 0.01   
             }
         else:
@@ -55,7 +55,6 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
             
-            # [修正] Squared ReLUで値が小さくなるため、初期ゲインを大きく設定
             initial_gain = 20.0 if in_features > 64 else 5.0
             self.register_buffer('adaptive_threshold', torch.ones(out_features) * initial_gain)
             self.register_buffer('path_mixer', torch.tensor(0.0)) 
@@ -116,9 +115,6 @@ class LogicGatedSNN(nn.Module):
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
-            # [修正] Squared ReLU Activation: コサイン類似度を二乗することで、
-            # 強い信号(0.8->0.64)は残し、弱いノイズ(0.2->0.04)を劇的に減衰させる。
-            # これが88%突破の鍵となる。
             sharpened_sim = F.relu(cosine_sim).pow(2.0)
 
             gain_limit = self.hparams['gain_limit'] if hasattr(self, 'hparams') else 50.0
@@ -135,28 +131,33 @@ class LogicGatedSNN(nn.Module):
             v_mem = scaled_sim
             
         else:
-            # Reservoir Mode (変更なし)
             input_energy = x.norm(dim=1, keepdim=True)
             energy_threshold = input_energy.mean() * 1.0
             if energy_threshold == 0: energy_threshold = 1.0
             
-            gate_explore = torch.sigmoid((input_energy - (energy_threshold * 0.5)) * 2.0)
-            v_explore = torch.matmul(x * gate_explore, w.t())
+            # [修正] Adaptive Offset: エネルギー不足時(V_Mean低下時)に底上げを行う
+            energy_ratio = input_energy.mean() / (energy_threshold + 1e-8)
+            low_energy_boost = torch.clamp(0.1 - energy_ratio, min=0.0) * 2.0 # 0.1以下で発動
             
-            ratio = input_energy.mean() / (energy_threshold + 1e-8)
-            adaptive_thresh_explore = 0.1 * ratio
+            gate_explore = torch.sigmoid((input_energy - (energy_threshold * 0.5)) * 2.0)
+            v_explore = torch.matmul(x * gate_explore, w.t()) + low_energy_boost # オフセット加算
+            
+            adaptive_thresh_explore = 0.1 * energy_ratio
             adaptive_thresh_explore = torch.clamp(adaptive_thresh_explore, 0.05, 0.2)
             spikes_explore = (v_explore >= adaptive_thresh_explore).float()
             
             gate_exploit = torch.sigmoid((input_energy - (energy_threshold * 1.5)) * 10.0)
             v_exploit = torch.matmul(x * gate_exploit, w.t())
             
-            k = int(self.out_features * 0.15)
+            # [修正] Dynamic Top-K: 低エネルギー時はTop-Kを20%に拡大して情報を拾う
+            base_k = 0.15
+            adaptive_k = base_k + (0.05 if energy_ratio < 0.2 else 0.0)
+            k = int(self.out_features * adaptive_k)
             if k < 1: k = 1
+            
             topk_vals, _ = torch.topk(v_exploit, k, dim=1)
             kth_val = topk_vals[:, -1].unsqueeze(1)
             
-            # 閾値微調整 (0.58)
             dynamic_thresh = torch.maximum(torch.tensor(0.58, device=x.device), kth_val)
             spikes_exploit = (v_exploit >= dynamic_thresh).float()
             
