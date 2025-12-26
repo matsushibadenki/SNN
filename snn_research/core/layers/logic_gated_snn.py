@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
 # 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Ultra Robust)
-# 修正: ゲイン上限解放 (50.0 -> 100.0) と減衰パラメータの微調整
+# 修正: ゲイン上限解放 (50.0 -> 100.0)
 
 import torch
 import torch.nn as nn
