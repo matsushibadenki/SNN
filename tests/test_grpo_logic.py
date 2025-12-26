@@ -1,6 +1,6 @@
 # ファイルパス: tests/test_grpo_logic.py
-# Title: GRPO Logic Test (High Standard)
-# 修正内容: 合格基準を0.4に引き上げ
+# Title: GRPO Logic Test (Final)
+# 修正内容: 変更なし
 
 import torch
 import unittest
@@ -71,7 +71,7 @@ class TestGRPO(unittest.TestCase):
         self.target_seq = [0, 1]
         
     def test_grpo_improvement(self):
-        print("\n[Test] GRPO Logic Improvement (High Standard)")
+        print("\n[Test] GRPO Logic Improvement (Final Check)")
         env = SimpleLogicEnv(self.target_seq)
         
         iterations = 100 
@@ -121,7 +121,6 @@ class TestGRPO(unittest.TestCase):
             
         print(f"Final Max Success Rate: {max_success_rate}")
         
-        # [修正] 信号精度向上に伴い、合格基準を 0.4 に引き上げ
         self.assertTrue(max_success_rate >= 0.4, f"Learning failed. Max rate: {max_success_rate}")
 
 if __name__ == '__main__':
