@@ -1,5 +1,5 @@
 # ファイルパス: tests/test_grpo_logic.py
-# Title: GRPO Logic Test (Annealing Check)
+# Title: GRPO Logic Test (Dual-Path Check)
 # 修正内容: 変更なし
 
 import torch
@@ -71,7 +71,7 @@ class TestGRPO(unittest.TestCase):
         self.target_seq = [0, 1]
         
     def test_grpo_improvement(self):
-        print("\n[Test] GRPO Logic Improvement (Annealing)")
+        print("\n[Test] GRPO Logic Improvement (Dual-Path)")
         env = SimpleLogicEnv(self.target_seq)
         
         iterations = 100 
