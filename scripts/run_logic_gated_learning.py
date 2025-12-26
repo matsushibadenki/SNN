@@ -42,6 +42,7 @@ def generate_synthetic_data(num_samples: int = 5000,
     patterns = prototypes[labels]
     
     if isinstance(noise_level, (tuple, list)):
+        # noise_levelがタプルの場合でも、値が同じ(0.45, 0.45)なら固定値として機能する
         probs = torch.rand(num_samples, 1, device=device) * (noise_level[1] - noise_level[0]) + noise_level[0]
     else:
         probs = torch.full((num_samples, 1), noise_level, device=device)
@@ -59,33 +60,31 @@ def run_simulation():
 
     IN_FEATURES = 784
     OUT_FEATURES = 10
-    BATCH_SIZE = 4096 
+    # [修正] バッチサイズを4096から2048へ変更。
+    # 更新回数を増やし、より柔軟な探索で局所解(87%)からの脱出を図る。
+    BATCH_SIZE = 2048
     TOTAL_SAMPLES = 60000
     
-    # [修正] カリキュラム: Hyper-Contrast Boosting v5 (Wide-Stance Stabilization)
-    # v4の反省: 最終段階で(0.42, 0.46)に絞った結果、V_Meanが低下し、モデルが過度に保守的になった。
-    # v5の戦略: 
-    # 1. 0.40を含む範囲(0.40, 0.46)を最後まで維持する。これによりニューロンの活性(V_Mean)を維持。
-    # 2. 範囲を絞る代わりに、学習率を段階的かつ徹底的に下げることで、
-    #    「活性を保ったまま」0.46のノイズに対応できる微妙な重み調整を行う。
+    # [修正] カリキュラム: Hyper-Contrast Boosting v7 (Target Fixation)
+    # 以前の戦略では「範囲」を持たせていたため、モデルのリソースが分散していた。
+    # 今回は、最終段階でターゲットである「0.45」に一点集中(Fixation)する。
+    # ノイズマスク自体はランダム生成されるため、過学習ではなく「分布への最適化」となる。
     curriculum_stages = [
         {'range': (0.0, 0.30), 'epochs': 10, 'lr': 0.1},
         {'range': (0.2, 0.40), 'epochs': 10, 'lr': 0.05},
-        {'range': (0.35, 0.45), 'epochs': 15, 'lr': 0.02}, 
-        # メイン学習フェーズ: ここで大まかな適応を完了させる
-        {'range': (0.40, 0.46), 'epochs': 30, 'lr': 0.005}, 
-        # 安定化フェーズ1: 範囲を変えずにLRを下げる。
-        # 0.40のデータが「正解への道しるべ」となり、0.46の迷いを消す。
-        {'range': (0.40, 0.46), 'epochs': 30, 'lr': 0.001},
-        # 安定化フェーズ2 (Final Polish): さらにLRを下げ、決定境界をミクロ単位で修正。
-        # 範囲を絞らないことが重要。
-        {'range': (0.40, 0.46), 'epochs': 40, 'lr': 0.0005}, 
+        {'range': (0.35, 0.46), 'epochs': 20, 'lr': 0.02}, # 広範囲で基礎体力をつける
+        {'range': (0.40, 0.46), 'epochs': 30, 'lr': 0.005}, # 高ノイズ耐性の下地作り
+        # 修正: Target Fixation Phase
+        # 範囲を(0.45, 0.45)に固定。
+        # "0.45の壁"を越えるために、全ての勾配を0.45の解決に向ける。
+        # エポック数を50確保し、バッチサイズ縮小と合わせて徹底的に学習させる。
+        {'range': (0.45, 0.45), 'epochs': 50, 'lr': 0.001}, 
     ]
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
     print(f"\nModel initialized: LogicGatedSNN (Statistical Averaging Mode)")
-    print(f"Training Logic: Granular Curriculum Learning (Hyper-Contrast Boosting v5).")
+    print(f"Training Logic: Granular Curriculum Learning (Target Fixation v7).")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
