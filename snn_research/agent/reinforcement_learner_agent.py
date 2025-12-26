@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
-# Title: RL Agent (Optimized Encoding)
-# 修正内容: 入力エンコーディングの改善（ポアソン的な確率発火の導入）
+# Title: RL Agent (Tuned Noise)
+# 修正内容: 入力ノイズを微調整 (0.05 -> 0.02) して信号精度を向上
 
 import torch
 import numpy as np
@@ -25,17 +25,17 @@ class ReinforcementLearnerAgent:
         self.input_size = input_size
         self.output_size = output_size
         
-        # 隠れ層を十分に大きくする (Sparseな表現力を高める)
+        # 隠れ層設定
         hidden_dim = 64 
         layer_sizes = [input_size, hidden_dim, output_size]
         
-        # ノイズと閾値の設定
+        # ニューロンパラメータ
         neuron_params = {
             'tau_mem': 20.0, 
-            'v_threshold': 0.5, # 発火しやすく
+            'v_threshold': 0.5, 
             'v_reset': 0.0, 
             'dt': 1.0,
-            'noise_std': 0.2    # ノイズで探索を促す
+            'noise_std': 0.2
         }
         
         self.model = BioSNN(
@@ -51,16 +51,14 @@ class ReinforcementLearnerAgent:
     def get_action(self, state: torch.Tensor, record_experience: bool = True) -> int:
         self.model.eval() 
         
-        # 探索時(record_experience=True)はノイズを入れたいので train() にする
         if record_experience:
             self.model.train()
         
         with torch.no_grad():
-            # [修正] 入力エンコーディングの改善
-            # 完全に0または1のバイナリ入力でも、確率的なゆらぎを持たせて活性化を促す
-            # 0.0 -> 0.05 (低確率で発火), 1.0 -> 0.95 (高確率で発火)
-            # これにより、完全に無音な状態を防ぎ、STDPの学習機会を増やす
-            prob_input = state * 0.9 + 0.05
+            # [修正] ノイズレベルの調整
+            # state * 0.95 + 0.02 : 1.0 -> 0.97 (高確率), 0.0 -> 0.02 (低確率)
+            # 誤作動を減らしつつ、最低限の探索を維持
+            prob_input = state * 0.95 + 0.02
             input_spikes = (torch.rand_like(state) < prob_input).float()
 
             if input_spikes.dim() == 1:
@@ -68,25 +66,17 @@ class ReinforcementLearnerAgent:
 
             output_spikes, hidden_history = self.model(input_spikes)
             
-            # 発火に基づく確率的選択
             if output_spikes.sum() > 0:
-                # Softmax的な確率選択にするか、Argmaxか。
-                # ここではArgmaxだが、ノイズが乗っているため確率的になる。
                 action_idx = int(torch.argmax(output_spikes).item())
             else:
-                # 発火がない場合はランダム探索
                 action_idx = int(torch.randint(0, self.output_size, (1,)).item())
 
             if record_experience:
                 final_history = [h.clone() for h in hidden_history]
-                
-                # ターゲット出力（選択したアクション）の記録
                 target_output = torch.zeros_like(output_spikes)
                 if output_spikes.shape[1] > action_idx:
                      target_output[0, action_idx] = 1.0
                 
-                # 最終層の履歴をターゲット出力で上書きするか、あるいはそのまま使うか。
-                # ここではSTDPのPost側として、実際に選択されたアクションを教師信号的に扱う（Policy Gradient的）
                 if len(final_history) > 0:
                     final_history[-1] = target_output
                 
@@ -95,7 +85,7 @@ class ReinforcementLearnerAgent:
             return action_idx
 
     def learn(self, reward: float, causal_credit: float = 0.0, global_context: Optional[Dict[str, Any]] = None):
-        pass # Not used in GRPO test directly
+        pass 
 
     def learn_with_grpo(self, trajectories: List[Dict[str, Any]], baseline_reward: float = 0.0):
         if not trajectories:
@@ -104,7 +94,6 @@ class ReinforcementLearnerAgent:
         self.model.train()
         total_rewards = torch.tensor([t['total_reward'] for t in trajectories], dtype=torch.float32)
         
-        # 単純な正規化
         if len(total_rewards) > 1:
             mean_reward = total_rewards.mean()
             std_reward = total_rewards.std() + 1e-8
@@ -114,7 +103,6 @@ class ReinforcementLearnerAgent:
         
         for i, trajectory in enumerate(trajectories):
             adv = float(advantages[i].item())
-            # 報酬クリッピング (大きすぎると重みが吹き飛ぶ)
             clipped_reward = float(np.clip(adv, -1.0, 1.0))
             optional_params = {"reward": clipped_reward}
             
