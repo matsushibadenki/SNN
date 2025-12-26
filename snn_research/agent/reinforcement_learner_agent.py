@@ -1,5 +1,6 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
-# Title: RL Agent (Updated Config)
+# Title: RL Agent (Optimized Encoding)
+# 修正内容: 入力エンコーディングの改善（ポアソン的な確率発火の導入）
 
 import torch
 import numpy as np
@@ -48,17 +49,19 @@ class ReinforcementLearnerAgent:
         self.experience_buffer: List[List[torch.Tensor]] = []
 
     def get_action(self, state: torch.Tensor, record_experience: bool = True) -> int:
-        self.model.eval() # ノイズはforward内で self.training フラグを見るなら切り替える必要あり
+        self.model.eval() 
         
         # 探索時(record_experience=True)はノイズを入れたいので train() にする
         if record_experience:
             self.model.train()
         
         with torch.no_grad():
-            if state.dtype == torch.float32 and state.max() <= 1.0 and state.min() >= 0.0:
-                input_spikes = state
-            else:
-                input_spikes = (torch.rand_like(state) < (state * 0.5 + 0.5)).float()
+            # [修正] 入力エンコーディングの改善
+            # 完全に0または1のバイナリ入力でも、確率的なゆらぎを持たせて活性化を促す
+            # 0.0 -> 0.05 (低確率で発火), 1.0 -> 0.95 (高確率で発火)
+            # これにより、完全に無音な状態を防ぎ、STDPの学習機会を増やす
+            prob_input = state * 0.9 + 0.05
+            input_spikes = (torch.rand_like(state) < prob_input).float()
 
             if input_spikes.dim() == 1:
                 input_spikes = input_spikes.unsqueeze(0)
@@ -71,12 +74,19 @@ class ReinforcementLearnerAgent:
                 # ここではArgmaxだが、ノイズが乗っているため確率的になる。
                 action_idx = int(torch.argmax(output_spikes).item())
             else:
+                # 発火がない場合はランダム探索
                 action_idx = int(torch.randint(0, self.output_size, (1,)).item())
 
             if record_experience:
                 final_history = [h.clone() for h in hidden_history]
+                
+                # ターゲット出力（選択したアクション）の記録
                 target_output = torch.zeros_like(output_spikes)
-                target_output[0, action_idx] = 1.0
+                if output_spikes.shape[1] > action_idx:
+                     target_output[0, action_idx] = 1.0
+                
+                # 最終層の履歴をターゲット出力で上書きするか、あるいはそのまま使うか。
+                # ここではSTDPのPost側として、実際に選択されたアクションを教師信号的に扱う（Policy Gradient的）
                 if len(final_history) > 0:
                     final_history[-1] = target_output
                 
