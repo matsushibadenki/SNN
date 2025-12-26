@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/models/bio/simple_network.py
-# Title: BioSNN with Noise Injection
-# Description: 膜電位にガウシアンノイズを加え、確率的な発火(Exploration)を促進する。
+# Title: BioSNN with Learning Reset
+# Description: 学習則の状態をリセットする機能を追加し、バッチ学習に対応。
 
 import torch
 import torch.nn as nn
@@ -56,6 +56,12 @@ class BioSNN(BaseModel):
         for size in self.layer_sizes[1:]:
             self.mem_potentials.append(torch.zeros(batch_size, size, device=device))
 
+    def reset_learning_rules(self):
+        """全てのシナプス学習則の内部状態をリセットする"""
+        for rule in self.synaptic_rules:
+            if hasattr(rule, 'reset'):
+                rule.reset()
+
     def update_weights(self, all_layer_spikes: List[torch.Tensor], optional_params: Optional[Dict[str, Any]] = None) -> None:
         uncertainty = (optional_params or {}).get("uncertainty", 1.0)
         
@@ -84,7 +90,7 @@ class BioSNN(BaseModel):
             # 電流入力
             current = torch.matmul(current_input, weight)
             
-            # [追加] ノイズ注入 (確率的発火の促進)
+            # ノイズ注入 (確率的発火の促進)
             if self.training and self.noise_std > 0:
                 noise = torch.randn_like(current) * self.noise_std
                 current = current + noise
