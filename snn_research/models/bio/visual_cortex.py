@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/models/bio/visual_cortex.py
-# Title: Visual Cortex V2.1 (Stateless Norm & Robust Reset)
-# Description: BatchNormをGroupNormに変更し、リセット時の再現性を確保。
+# Title: Visual Cortex V2.1 (Stateless Norm)
+# Description: BatchNormをGroupNormに変更し、リセット時の完全な再現性を確保。
 
 import torch
 import torch.nn as nn
@@ -13,27 +13,26 @@ class VisualCortexLayer(nn.Module):
     """
     視覚野の単一層 (例: V1)。
     SCAL -> BitNet Conv -> GroupNorm -> LIF
-    Note: BatchNormは学習中にrunning statsを更新するため、リセットテストで不整合を起こす。
-          より生物学的でバッチ非依存なGroupNormを採用。
     """
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int, stride: int, neuron_params: Dict[str, Any]):
         super().__init__()
         
-        # Padding計算
         padding = kernel_size // 2
-        
         self.conv = BitSpikeConv2d(in_channels, out_channels, kernel_size, stride=stride, padding=padding)
         
-        # GroupNorm: チャネルをグループ化して正規化 (バッチサイズ1でも安定)
+        # [修正] BatchNorm はステートフルなので GroupNorm に変更
+        # チャネル数が少ない場合のエラー回避ロジック
         num_groups = 1
-        if out_channels % 8 == 0: num_groups = 8
-        elif out_channels % 4 == 0: num_groups = 4
-        elif out_channels % 2 == 0: num_groups = 2
+        if out_channels >= 8 and out_channels % 8 == 0:
+            num_groups = 8
+        elif out_channels >= 4 and out_channels % 4 == 0:
+            num_groups = 4
+        elif out_channels >= 2 and out_channels % 2 == 0:
+            num_groups = 2
+            
         self.norm = nn.GroupNorm(num_groups, out_channels)
-        
         self.neuron = AdaptiveLIFNeuron(features=out_channels, **neuron_params)
         
-        # Top-down attention gate
         self.gate_proj = BitSpikeConv2d(out_channels, out_channels, kernel_size=1)
         self.gate_sigmoid = nn.Sigmoid()
 
@@ -69,6 +68,7 @@ class VisualCortex(nn.Module):
             neuron_params = {}
         
         self.time_steps = time_steps
+        self.out_dim = base_channels * 8
             
         self.v1 = VisualCortexLayer(in_channels, base_channels, kernel_size=5, stride=1, neuron_params=neuron_params)
         self.v2 = VisualCortexLayer(base_channels, base_channels*2, kernel_size=3, stride=2, neuron_params=neuron_params)
@@ -76,8 +76,6 @@ class VisualCortex(nn.Module):
         self.it = VisualCortexLayer(base_channels*4, base_channels*8, kernel_size=3, stride=2, neuron_params=neuron_params)
         
         self.global_pool = nn.AdaptiveAvgPool2d(1)
-        # Flatten size
-        self.out_dim = base_channels * 8
 
     def reset_state(self):
         self.v1.reset_state()
@@ -97,9 +95,7 @@ class VisualCortex(nn.Module):
         self.reset_state()
         outputs = []
         
-        # x: (B, T, C, H, W) or (B, C, H, W) -> T loop
         if x.dim() == 4:
-            # Static image repeated over time
             for t in range(self.time_steps):
                 out_t = self.forward_step(x)
                 outputs.append(out_t)
