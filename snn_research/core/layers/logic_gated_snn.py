@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Ultra Robust)
-# 修正: ゲイン上限解放 (50.0 -> 100.0)
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Ultra Robust v2)
+# 修正: ゲイン上限(200.0)への解放、目標エントロピーの低減(0.1)による確信度向上
 
 import torch
 import torch.nn as nn
@@ -39,8 +39,8 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
             
-            # 初期ゲイン: 探索促進のため低めに設定
-            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 5.0)
+            # [修正] 初期ゲインを 10.0 に強化し、初期から信号を強く掴む
+            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 10.0)
         else:
             # リザーバー層 (Fixed)
             std_dev = 3.0 / math.sqrt(in_features)
@@ -100,8 +100,8 @@ class LogicGatedSNN(nn.Module):
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
             # 4. Adaptive Gain
-            # [修正] 上限を100.0まで解放し、微弱信号でも増幅できるようにする
-            gain = self.adaptive_threshold.mean().clamp(1.0, 100.0)
+            # [修正] 上限を 200.0 まで大幅解放。微弱な信号差を強力に拡大する。
+            gain = self.adaptive_threshold.mean().clamp(1.0, 200.0)
             scaled_sim = cosine_sim * gain
             
             if self.training:
@@ -169,9 +169,9 @@ class LogicGatedSNN(nn.Module):
             # Auto-Tuning Gain
             if self.mode == 'readout':
                 entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
-                # 目標エントロピーを高ノイズ環境に合わせて調整
-                target_entropy = 0.5
-                gain_delta = 0.1 * (entropy - target_entropy)
+                # [修正] 目標エントロピーを 0.1 に下げ、より自信のある（尖った）分布を目指す
+                target_entropy = 0.1
+                # [修正] ゲインの学習速度を上げ(0.5)、状況変化に即応させる
+                gain_delta = 0.5 * (entropy - target_entropy)
                 self.adaptive_threshold.add_(gain_delta)
-                # [修正] 上限を100.0まで拡大
-                self.adaptive_threshold.clamp_(2.0, 100.0)
+                self.adaptive_threshold.clamp_(5.0, 200.0)
