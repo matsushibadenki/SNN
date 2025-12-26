@@ -1,7 +1,7 @@
 # ファイルパス: snn_research/models/experimental/dvs_industrial_eye.py
-# 日本語タイトル: Industrial Eye SNN (Robust & Fast)
+# 日本語タイトル: Industrial Eye SNN (Parameter Name Fix)
 # 目的: DVS画像を用いた高速外観検査モデル。
-# 修正: GroupNormを追加してノイズ耐性を向上。パラメータを軽量化しレイテンシを短縮。
+# 修正: AdaptiveLIFNeuronの引数名を v_threshold -> base_threshold に修正し、TypeErrorを解消。
 
 import torch
 import torch.nn as nn
@@ -34,13 +34,15 @@ class IndustrialEyeSNN(nn.Module):
         # 1. Spiking Feature Extractor (DVS Encoder)
         # Layer 1
         self.conv1 = nn.Conv2d(input_channels, 16, kernel_size=3, stride=2, padding=1)
-        self.gn1 = nn.GroupNorm(4, 16) # Robustness: GroupNorm
-        self.lif1 = AdaptiveLIFNeuron(features=16, v_threshold=1.0, tau_mem=10.0)
+        self.gn1 = nn.GroupNorm(4, 16) 
+        # [修正] v_threshold -> base_threshold
+        self.lif1 = AdaptiveLIFNeuron(features=16, base_threshold=1.0, tau_mem=10.0)
         
         # Layer 2
         self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1)
-        self.gn2 = nn.GroupNorm(8, 32) # Robustness: GroupNorm
-        self.lif2 = AdaptiveLIFNeuron(features=32, v_threshold=1.0, tau_mem=10.0)
+        self.gn2 = nn.GroupNorm(8, 32)
+        # [修正] v_threshold -> base_threshold
+        self.lif2 = AdaptiveLIFNeuron(features=32, base_threshold=1.0, tau_mem=10.0)
         
         # 2. Dynamic Sparse Attention (DSA) or GAP
         self.use_dsa = use_dsa
@@ -52,7 +54,7 @@ class IndustrialEyeSNN(nn.Module):
         
         if self.use_dsa:
             self.projection = nn.Linear(flat_dim, feature_dim)
-            self.dsa_layer = DSALayer(d_model=feature_dim, num_heads=2) # Headsを減らして高速化
+            self.dsa_layer = DSALayer(d_model=feature_dim, num_heads=2)
         else:
             self.projection = nn.Linear(flat_dim, feature_dim)
 
@@ -133,7 +135,7 @@ class IndustrialEyeSNN(nn.Module):
         sparsity = 1.0 - (total_spikes / max(1.0, float(features.numel())))
         stats = {
             "sparsity": sparsity,
-            "estimated_power_mw": (1.0 - sparsity) * 40.0 # 軽量化したので係数を調整
+            "estimated_power_mw": (1.0 - sparsity) * 40.0
         }
         
         return logits, stats
