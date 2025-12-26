@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Pinpoint Tuning)
-# 内容: 統計的重心平均化とバイポーラ相殺による、ノイズ耐性の物理的限界への到達。ターゲットノイズ領域へ集中学習。
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Frozen Weight Tuning)
+# 内容: 高ノイズ下での重み破壊を防ぐため、後半の学習率を極小にし、ゲイン調整のみを行う戦略。
 
 import sys
 import os
@@ -62,20 +62,21 @@ def run_simulation():
     BATCH_SIZE = 4096 
     TOTAL_SAMPLES = 60000
     
-    # [修正] カリキュラムの最終仕上げ: 0.45周辺へピンポイントに集中
+    # [修正] カリキュラム: 後半のLRを極小(0.0001)にし、重みを「凍結」しつつゲインのみ最適化する
+    # これによりノイズによる重みの汚染を防ぐ
     curriculum_stages = [
         {'range': (0.0, 0.30), 'epochs': 10, 'lr': 0.1},
         {'range': (0.2, 0.40), 'epochs': 10, 'lr': 0.05},
         {'range': (0.35, 0.45), 'epochs': 15, 'lr': 0.02}, 
-        {'range': (0.40, 0.46), 'epochs': 15, 'lr': 0.005}, 
-        # 最終ステージ: 0.44-0.46の範囲で徹底的にチューニング。Epoch数も15に増加。
-        {'range': (0.44, 0.46), 'epochs': 15, 'lr': 0.001}, 
+        {'range': (0.40, 0.46), 'epochs': 15, 'lr': 0.001}, 
+        # 最終ステージ: LR=0.0001 (事実上の重み固定・Gain調整フェーズ)
+        {'range': (0.44, 0.46), 'epochs': 15, 'lr': 0.0001}, 
     ]
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
     print(f"\nModel initialized: LogicGatedSNN (Statistical Averaging Mode)")
-    print(f"Training Logic: Granular Curriculum Learning (Pinpoint Tuning).")
+    print(f"Training Logic: Granular Curriculum Learning (Frozen Weight Tuning).")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
