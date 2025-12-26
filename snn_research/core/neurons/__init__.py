@@ -7,7 +7,7 @@
 #   - 不応期 (Refractory Period) の完全サポート。
 # - クラスレベルの型アノテーション完備。
 #
-# 修正 (v2): mypyエラー [return-value] を修正。LearnableATan.backward の戻り値型を Optional[Tensor] に変更。
+# 修正 (v3): InferenceModeでのRuntimeError対策。reset()時のzero_()を新規Tensor代入に変更。
 
 from typing import Optional, Tuple, Any, List, cast, Union
 import torch
@@ -133,8 +133,9 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         self.adaptive_threshold = None
         self.refractory_count = None
         # avg_firing_rate はリセットしない (長期学習のため)
-        self.spikes.zero_()
-        self.total_spikes.zero_()
+        # 修正: InferenceTensor対応のため、zero_()ではなく代入で初期化
+        self.spikes = torch.zeros_like(self.spikes)
+        self.total_spikes = torch.zeros_like(self.total_spikes)
     
     def _view_params(self, param: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         if param.ndim != 1:
@@ -310,8 +311,9 @@ class IzhikevichNeuron(base.MemoryModule):
         super().reset()
         self.v = None
         self.u = None
-        self.spikes.zero_()
-        self.total_spikes.zero_()
+        # 修正: InferenceTensor対応
+        self.spikes = torch.zeros_like(self.spikes)
+        self.total_spikes = torch.zeros_like(self.total_spikes)
         
     def _view_params(self, param: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         if param.ndim != 1: return param
@@ -385,8 +387,9 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
     def reset(self):
         super().reset()
         self.mem = None
-        self.spikes.zero_()
-        self.total_spikes.zero_()
+        # 修正: InferenceTensor対応
+        self.spikes = torch.zeros_like(self.spikes)
+        self.total_spikes = torch.zeros_like(self.total_spikes)
 
     def _view_params(self, param: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         if param.ndim != 1: return param
@@ -439,8 +442,9 @@ class GLIFNeuron(base.MemoryModule):
     def reset(self):
         super().reset()
         self.mem = None
-        self.spikes.zero_()
-        self.total_spikes.zero_()
+        # 修正: InferenceTensor対応
+        self.spikes = torch.zeros_like(self.spikes)
+        self.total_spikes = torch.zeros_like(self.total_spikes)
     def _view_params(self, param: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         if param.ndim != 1: return param
         if x.ndim == 4 and x.shape[1] == self.features: return param.view(1, -1, 1, 1)
@@ -495,7 +499,10 @@ class TC_LIF(base.MemoryModule):
         if not stateful: self.reset()
     def reset(self):
         super().reset()
-        self.v_s = None; self.v_d = None; self.spikes.zero_(); self.total_spikes.zero_()
+        self.v_s = None; self.v_d = None
+        # 修正: InferenceTensor対応
+        self.spikes = torch.zeros_like(self.spikes)
+        self.total_spikes = torch.zeros_like(self.total_spikes)
     def _view_params(self, param: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         if param.ndim != 1: return param
         if x.ndim == 4 and x.shape[1] == self.features: return param.view(1, -1, 1, 1)
@@ -542,7 +549,10 @@ class DualThresholdNeuron(base.MemoryModule):
         if not stateful: self.reset()
     def reset(self):
         super().reset()
-        self.mem = None; self.spikes.zero_(); self.total_spikes.zero_()
+        self.mem = None
+        # 修正: InferenceTensor対応
+        self.spikes = torch.zeros_like(self.spikes)
+        self.total_spikes = torch.zeros_like(self.total_spikes)
     def _view_params(self, param: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         if param.ndim != 1: return param
         if x.ndim == 4 and x.shape[1] == self.features: return param.view(1, -1, 1, 1)
@@ -583,8 +593,9 @@ class ScaleAndFireNeuron(base.MemoryModule):
     def set_stateful(self, stateful: bool): pass
     def reset(self):
         super().reset()
-        self.spikes.zero_()
-        self.total_spikes.zero_()
+        # 修正: InferenceTensor対応
+        self.spikes = torch.zeros_like(self.spikes)
+        self.total_spikes = torch.zeros_like(self.total_spikes)
     def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         if x.ndim == 4:
              B, C, H, W = x.shape
