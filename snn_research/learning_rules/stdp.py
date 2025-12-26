@@ -1,8 +1,9 @@
-# /snn_research/learning_rules/stdp.py
-# 日本語タイトル: 高精度 STDP & TripletSTDP 学習則 (安定演算版)
-# 目的: シナプス可塑性を物理的にシミュレートし、学習精度を最大化する。
+# ファイルパス: snn_research/learning_rules/stdp.py
+# 日本語タイトル: 高精度 STDP & TripletSTDP 学習則 (Shape-Aware Fix)
+# 目的: 重み行列の形状(Pre,Post)に合わせて更新量の形状を自動調整し、エラーを防ぐ。
 
 import torch
+import math
 from typing import Dict, Any, Optional, Tuple, cast
 from .base_rule import BioLearningRule
 
@@ -36,27 +37,31 @@ class STDP(BioLearningRule):
         assert self.pre_trace is not None and self.post_trace is not None
         
         # 1. トレースの更新（時間的減衰 + 新規スパイク）
-        decay = math.exp(-self.dt / self.tau_trace) if hasattr(self, 'math') else (1.0 - self.dt / self.tau_trace)
+        decay = math.exp(-self.dt / self.tau_trace)
         with torch.no_grad():
             self.pre_trace = self.pre_trace * decay + pre_spikes
             self.post_trace = self.post_trace * decay + post_spikes
 
         # 2. 重み更新量の計算 (dw)
-        # LTP: ポストが発火した瞬間のプレのトレースに比例
+        # 標準的な計算: LTP = Post @ Pre.T -> (Post, Pre)
         ltp = torch.matmul(post_spikes.t(), self.pre_trace) 
-        # LTD: プレが発火した瞬間のポストのトレースに比例
         ltd = torch.matmul(self.post_trace.t(), pre_spikes)
         
-        # バッチ平均をとってスケールを調整
         batch_size = pre_spikes.size(0)
         dw = (self.learning_rate / batch_size) * (self.a_plus * ltp - self.a_minus * ltd)
         
+        # [修正] 重み行列の形状に合わせて転置を行う
+        # weightsが (Pre, Post) の場合、dw (Post, Pre) を転置して (Pre, Post) にする
+        if weights is not None:
+            # (Pre, Post) 判定: weights[0] == pre_dim
+            if weights.shape[0] == pre_spikes.shape[1] and weights.shape[1] == post_spikes.shape[1]:
+                dw = dw.t()
+
         return dw, None
 
 class TripletSTDP(BioLearningRule):
     """
     高精度トリプレットSTDP。
-    3つのスパイクの相関（プレ1回、ポスト2回など）を考慮し、認識精度を向上させる。
     """
     def __init__(self, learning_rate: float = 0.01, target_rate: float = 0.05, dt: float = 1.0):
         super().__init__()
@@ -77,21 +82,23 @@ class TripletSTDP(BioLearningRule):
             self.pre_trace = torch.zeros_like(pre_spikes)
             self.avg_firing_rate = torch.full((post_spikes.shape[-1],), self.target_rate, device=pre_spikes.device)
 
-        # ホメオスタシス（恒常性）: 平均発火率がターゲットより高い場合は学習を抑制
+        # ホメオスタシス
         firing_scale = torch.clamp(cast(torch.Tensor, self.avg_firing_rate) / self.target_rate, 0.5, 2.0)
         adj_tau = self.tau_plus / firing_scale.mean()
 
         with torch.no_grad():
             self.pre_trace = self.pre_trace * (1.0 - self.dt / adj_tau) + pre_spikes
-            # 移動平均で発火率を追跡
             self.avg_firing_rate = 0.99 * cast(torch.Tensor, self.avg_firing_rate) + 0.01 * post_spikes.mean(dim=0)
         
         reward = (optional_params or {}).get("reward", 1.0)
         
-        # dw計算
         batch_size = pre_spikes.size(0)
+        # dw: (Post, Pre)
         dw = (self.learning_rate * reward / batch_size) * torch.matmul(post_spikes.t(), self.pre_trace)
         
+        # [修正] 重み形状に合わせた転置
+        if weights is not None:
+            if weights.shape[0] == pre_spikes.shape[1] and weights.shape[1] == post_spikes.shape[1]:
+                dw = dw.t()
+        
         return dw, None
-
-import math
