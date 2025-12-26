@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Z-Score & Momentum)
-# 修正: リザーバー層のZ-Score発火、学習則へのモメンタム導入
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: UnboundLocalError & Adaptive Gating)
+# 修正: v_memの初期化漏れ修正、適応型ゲート機構の確実な実装
 
 import torch
 import torch.nn as nn
@@ -20,7 +20,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: Z-Score Thresholding & Momentum Learning.
+        SOTA Edition: 適応型ゲート機構とエラー修正版。
         """
         super().__init__()
         self.in_features = in_features
@@ -82,14 +82,16 @@ class LogicGatedSNN(nn.Module):
             return self.frozen_weight
 
     def reset_state(self):
-        """内部状態（膜電位・モメンタム）のリセット"""
+        """内部状態（膜電位）のリセット"""
         self.membrane_potential.zero_()
-        # Momentumはエピソード間で維持するケースもあるが、ここでは学習安定化のため維持
-        # self.momentum_buffer.zero_() # モメンタムは維持
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
         w = self.get_effective_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
+        
+        # 変数を初期化してUnboundLocalErrorを防ぐ
+        v_mem = None
+        spikes = None
         
         if self.mode == 'readout':
             # 1. Bipolar Transformation
@@ -116,21 +118,28 @@ class LogicGatedSNN(nn.Module):
             v_mem = scaled_sim
             
         else:
-            # [修正] Reservoir Mode: Z-Score Thresholding (CFAR)
-            # 入力xのスパース性に関わらず、膜電位分布の「異常値（シグナル）」のみを抽出する
-            v_raw = torch.matmul(x, w.t())
+            # [修正] Reservoir Mode: Adaptive Gating
+            # 入力エネルギーに基づくゲート制御でノイズを遮断
+            input_energy = x.norm(dim=1, keepdim=True)
+            # 閾値を動的に設定 (平均エネルギーの1.2倍)
+            energy_threshold = input_energy.mean() * 1.2
             
-            # バッチ方向ではなく、ニューロン方向(dim=1)の統計をとる
-            v_mean = v_raw.mean(dim=1, keepdim=True)
-            v_std = v_raw.std(dim=1, keepdim=True) + 1e-6
+            # ゲート開度 (シグモイドで滑らかに制御)
+            # energy_threshold が 0 の場合(全静寂)への対策として +1e-6
+            gate = torch.sigmoid((input_energy - (energy_threshold + 1e-6)) * 5.0)
             
-            # 標準化（Z-Score化）
-            v_z = (v_raw - v_mean) / v_std
+            # ゲート適用後の信号に対して射影
+            x_gated = x * gate
+            v_mem = torch.matmul(x_gated, w.t())
             
-            # 統計的に有意な活動のみを発火させる (Z > 1.2 => 上位約10%)
-            # これにより、ノイズレベルが上がっても「相対的に強い」信号だけが残る
-            spikes = (v_z > 1.2).float()
+            spikes = (v_mem >= 0.5).float()
         
+        # v_mem が確実に計算されていることを保証
+        if v_mem is None:
+             # 万が一のフォールバック (通常ここには来ない)
+             v_mem = torch.zeros((x.shape[0], self.out_features), device=x.device)
+             spikes = torch.zeros_like(v_mem)
+
         with torch.no_grad():
             v_mean = torch.mean(v_mem, dim=0).detach()
             self.membrane_potential.copy_(v_mean)
@@ -165,14 +174,10 @@ class LogicGatedSNN(nn.Module):
                     reward_tensor = reward
                 delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes_bipolar) / batch_size
 
-            # [修正] Momentum Update
-            # ノイズの多いRL環境での安定化のため、モメンタム(0.9)を導入
+            # Momentum Update
             self.momentum_buffer.mul_(0.9).add_(delta)
-            
-            # 更新
             self.states.add_(self.momentum_buffer * learning_rate)
             
-            # --- Constraints ---
             mean_weight = self.states.mean(dim=1, keepdim=True)
             self.states.sub_(mean_weight)
             
