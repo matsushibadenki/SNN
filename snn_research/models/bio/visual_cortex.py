@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/models/bio/visual_cortex.py
-# Title: Visual Cortex V2 (SCAL Enhanced)
-# Description: 入力層にバイポーラ変換(SCAL)を適用し、ノイズ耐性を最大化。
+# Title: Visual Cortex V2.1 (Stateless Norm & Robust Reset)
+# Description: BatchNormをGroupNormに変更し、リセット時の再現性を確保。
 
 import torch
 import torch.nn as nn
@@ -8,37 +8,47 @@ from typing import Optional, Dict, Any, List, Tuple
 
 from snn_research.core.neurons import AdaptiveLIFNeuron
 from snn_research.core.layers.bit_spike_layer import BitSpikeConv2d
-from spikingjelly.activation_based import functional as SJ_F
 
 class VisualCortexLayer(nn.Module):
     """
     視覚野の単一層 (例: V1)。
-    SCAL (Bipolar Transform) -> BitNet Conv -> BatchNorm -> LIF
+    SCAL -> BitNet Conv -> GroupNorm -> LIF
+    Note: BatchNormは学習中にrunning statsを更新するため、リセットテストで不整合を起こす。
+          より生物学的でバッチ非依存なGroupNormを採用。
     """
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int, stride: int, neuron_params: Dict[str, Any]):
         super().__init__()
         
-        self.conv = BitSpikeConv2d(in_channels, out_channels, kernel_size, stride=stride, padding=kernel_size//2)
-        self.bn = nn.BatchNorm2d(out_channels)
+        # Padding計算
+        padding = kernel_size // 2
+        
+        self.conv = BitSpikeConv2d(in_channels, out_channels, kernel_size, stride=stride, padding=padding)
+        
+        # GroupNorm: チャネルをグループ化して正規化 (バッチサイズ1でも安定)
+        num_groups = 1
+        if out_channels % 8 == 0: num_groups = 8
+        elif out_channels % 4 == 0: num_groups = 4
+        elif out_channels % 2 == 0: num_groups = 2
+        self.norm = nn.GroupNorm(num_groups, out_channels)
+        
         self.neuron = AdaptiveLIFNeuron(features=out_channels, **neuron_params)
         
+        # Top-down attention gate
         self.gate_proj = BitSpikeConv2d(out_channels, out_channels, kernel_size=1)
         self.gate_sigmoid = nn.Sigmoid()
 
     def forward(self, x: torch.Tensor, top_down_signal: Optional[torch.Tensor] = None) -> torch.Tensor:
-        # --- SCAL Bipolar Transformation ---
-        # スパイク入力(0/1)をバイポーラ化(-1/1)してコンボリューションを行う
-        # これにより背景ノイズ(ランダムな0/1)の期待値が0になり、特徴抽出が安定する
+        # SCAL Bipolar Transform
         x_bipolar = (x - 0.5) * 2.0
         
-        mem_pot = self.bn(self.conv(x_bipolar))
+        # Conv -> Norm
+        mem_pot = self.norm(self.conv(x_bipolar))
         
         if top_down_signal is not None:
             if top_down_signal.shape[-2:] != mem_pot.shape[-2:]:
                 top_down_signal = torch.nn.functional.interpolate(
                     top_down_signal, size=mem_pot.shape[-2:], mode='nearest'
                 )
-            
             gate = self.gate_sigmoid(self.gate_proj(top_down_signal))
             mem_pot = mem_pot * (1.0 + gate)
             
@@ -51,7 +61,7 @@ class VisualCortexLayer(nn.Module):
 
 class VisualCortex(nn.Module):
     """
-    階層的視覚野モデル (V1-V2-V4-IT) + SCAL。
+    階層的視覚野モデル (V1-V2-V4-IT)。
     """
     def __init__(self, in_channels: int = 3, base_channels: int = 32, time_steps: int = 16, neuron_params: Optional[Dict[str, Any]] = None):
         super().__init__()
@@ -66,6 +76,7 @@ class VisualCortex(nn.Module):
         self.it = VisualCortexLayer(base_channels*4, base_channels*8, kernel_size=3, stride=2, neuron_params=neuron_params)
         
         self.global_pool = nn.AdaptiveAvgPool2d(1)
+        # Flatten size
         self.out_dim = base_channels * 8
 
     def reset_state(self):
@@ -86,7 +97,9 @@ class VisualCortex(nn.Module):
         self.reset_state()
         outputs = []
         
+        # x: (B, T, C, H, W) or (B, C, H, W) -> T loop
         if x.dim() == 4:
+            # Static image repeated over time
             for t in range(self.time_steps):
                 out_t = self.forward_step(x)
                 outputs.append(out_t)
