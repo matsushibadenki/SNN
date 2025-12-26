@@ -1,19 +1,17 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
-# Title: RL Agent with Hybrid Core (SCAL & Reset)
-# Description: エピソード間の状態リセットを実装し、GRPOの安定性を確保。
+# Title: RL Agent with Hybrid Core (Exploration Tuned)
+# Description: 学習時の温度パラメータを上げ、初期の探索不足を解消。
 
 import torch
 import numpy as np
 from typing import Dict, Any, List, Optional, Tuple, Callable, cast
 
-# 新しい検証済みコアを使用
 from snn_research.core.hybrid_core import HybridNeuromorphicCore
 from snn_research.learning_rules.base_rule import BioLearningRule
 
 class ReinforcementLearnerAgent:
     """
     SCAL (Statistical Centroid Alignment Learning) を搭載した次世代強化学習エージェント。
-    HybridNeuromorphicCoreを使用し、ノイズ環境下でも高速かつ堅牢に学習する。
     """
     def __init__(
         self, 
@@ -27,7 +25,6 @@ class ReinforcementLearnerAgent:
         self.input_size = input_size
         self.output_size = output_size
         
-        # 検証済みの強力なコア構造
         hidden_dim = 64
         
         self.model = HybridNeuromorphicCore(
@@ -36,7 +33,6 @@ class ReinforcementLearnerAgent:
             out_features=output_size
         ).to(device)
 
-        # Experience Buffer
         self.experience_buffer: List[Dict[str, torch.Tensor]] = []
 
     def get_action(self, state: torch.Tensor, record_experience: bool = True) -> int:
@@ -51,19 +47,23 @@ class ReinforcementLearnerAgent:
             out = self.model.output_gate(r)
             
             if self.model.training:
-                # 探索時は少し温度を上げてランダム性を増やす (Temperature=1.2)
-                probs = torch.softmax(out / 1.2, dim=1)
+                # [修正] 温度を上げて探索を強制する (Temperature=2.0)
+                # LogicGatedSNNの出力は既にGain倍されているため、ここで割ってマイルドにする
+                probs = torch.softmax(out / 2.0, dim=1)
             else:
                 probs = torch.softmax(out, dim=1)
             
-            # カテゴリカル分布からサンプリング
+            # NaN対策
+            if torch.isnan(probs).any():
+                probs = torch.ones_like(probs) / self.output_size
+            
             dist = torch.distributions.Categorical(probs)
             action = dist.sample()
             action_idx = int(action.item())
 
             if record_experience:
                 step_data = {
-                    'pre_spikes': r.clone(), # Readout層への入力
+                    'pre_spikes': r.clone(), 
                     'action': action_idx,
                     'probs': probs.clone()
                 }
@@ -82,6 +82,7 @@ class ReinforcementLearnerAgent:
         
         total_rewards = torch.tensor([t['total_reward'] for t in trajectories], dtype=torch.float32)
         
+        # 正規化による安定化
         if len(total_rewards) > 1:
             mean_reward = total_rewards.mean()
             std_reward = total_rewards.std() + 1e-8
@@ -90,7 +91,6 @@ class ReinforcementLearnerAgent:
             advantages = torch.zeros_like(total_rewards)
         
         for i, trajectory in enumerate(trajectories):
-            # [修正] 新しいエピソードの学習前に状態をリセットし、干渉を防ぐ
             self.model.reset_state()
             
             adv = float(advantages[i].item())
@@ -105,15 +105,15 @@ class ReinforcementLearnerAgent:
                 pre_spikes = step_data['pre_spikes'] 
                 action_idx = step_data['action']
                 
-                # 教師信号（報酬ベクトル）の作成
+                # 報酬ベクトル作成
                 reward_signal = torch.zeros((1, self.output_size), device=self.device)
                 reward_signal[0, action_idx] = clipped_reward
                 
-                # ダミーのTarget Spike (LogicGatedSNNのインターフェース合わせ)
+                # ダミーTarget
                 post_spikes_target = torch.zeros((1, self.output_size), device=self.device)
                 post_spikes_target[0, action_idx] = 1.0
                 
-                # SCAL則による更新
+                # SCAL更新
                 self.model.output_gate.update_plasticity(
                     pre_spikes=pre_spikes,
                     post_spikes=post_spikes_target, 
