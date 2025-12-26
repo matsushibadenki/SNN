@@ -1,8 +1,8 @@
 # ファイルパス: tests/test_visual_cortex.py
-# 日本語タイトル: 視覚野モデル (VisualCortex) 単体テスト v2.0
+# 日本語タイトル: 視覚野モデル (VisualCortex) 単体テスト v2.1
 # 目的・内容: 
 #   視覚野のBitNet動作および時系列処理の検証。
-#   修正: コンストラクタ引数と戻り値のアンパックを現在の実装に合わせる。
+#   修正: リセットテスト時に model.eval() を適用し、ノイズの影響を排除。
 
 import unittest
 import torch
@@ -18,7 +18,6 @@ class TestVisualCortex(unittest.TestCase):
 
     def test_visual_cortex_static_image(self):
         """静止画入力に対する視覚野の動作テスト"""
-        # 正しい引数でインスタンス化
         model = VisualCortex(
             in_channels=self.in_channels,
             base_channels=self.base_channels,
@@ -67,20 +66,23 @@ class TestVisualCortex(unittest.TestCase):
             neuron_params=self.neuron_params
         )
         
+        # [修正] 決定論的な動作を保証するために eval モードにする
+        # これにより、Dropoutやニューロンのノイズ注入が無効化される
+        model.eval()
+        
         x = torch.randn(1, 3, 16, 16)
         
         # 1回目の実行
         out1 = model(x)
         
-        # リセットを手動で呼ぶ（forward内でも呼ばれるが、明示的な呼び出しを確認）
+        # リセットを手動で呼ぶ
         model.reset_state()
         
-        # 2回目の実行（同じ入力なら、決定論的SNNは同じ出力を返すはず）
-        # ※ ノイズやドロップアウトがない場合
+        # 2回目の実行
         out2 = model(x)
         
-        # 出力が一致することを確認 (リセットが効いていれば初期状態から同じ計算になる)
-        self.assertTrue(torch.allclose(out1, out2))
+        # 出力が厳密に一致することを確認
+        self.assertTrue(torch.allclose(out1, out2), "Output mismatch after reset in eval mode")
 
 if __name__ == "__main__":
     unittest.main()
