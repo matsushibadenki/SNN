@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Adaptive Thresholding)
-# 修正: 他のAIの提案に基づき、Gain Limitの倍増と、Reservoir層におけるエネルギー適応型閾値を導入
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: High-Momentum Stabilization)
+# 修正: 高次元データのMomentumを0.999に強化し、ノイズキャンセリング能力を極限まで高める
 
 import torch
 import torch.nn as nn
@@ -21,7 +21,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: Adaptive Thresholding & Extended Gain Limit.
+        SOTA Edition: Adaptive Thresholding & Extended Gain Limit with High Momentum.
         """
         super().__init__()
         self.in_features = in_features
@@ -30,15 +30,16 @@ class LogicGatedSNN(nn.Module):
         self.mode = mode
         
         # [修正] 次元数に応じたハイパーパラメータの自動設定
-        # 他AI提案: Gain Limitを200.0に倍増し、更新レートを上げる
+        # 高次元(画像等): Momentumを0.999にし、直近のノイズよりも長期的な統計的重心を重視する
         if in_features > 64:
             self.hparams = {
-                'momentum': 0.99,          
-                'target_entropy': 0.25,    
-                'gain_limit': 200.0,       # 100.0 -> 200.0: ノイズに埋もれた信号を増幅する力を強化
-                'gain_update_rate': 0.015  # 0.01 -> 0.015: 環境変化への追従を少し速める
+                'momentum': 0.999,         # 0.99 -> 0.999: 強力な慣性でノイズによる振動を抑制
+                'target_entropy': 0.1,     # 0.25 -> 0.1: 曖昧さを許容せず、鋭い判断を促す
+                'gain_limit': 200.0,       # 感度上限は維持
+                'gain_update_rate': 0.005  # 0.015 -> 0.005: ゲイン変動を安定化
             }
         else:
+            # 低次元(GRPO等)は変更なし
             self.hparams = {
                 'momentum': 0.90,          
                 'target_entropy': 0.60,    
@@ -149,8 +150,7 @@ class LogicGatedSNN(nn.Module):
             gate_explore = torch.sigmoid((input_energy - (energy_threshold * 0.5)) * 2.0)
             v_explore = torch.matmul(x * gate_explore, w.t())
             
-            # [修正] 他AI提案: 入力エネルギーに応じた適応的閾値
-            # 入力が弱いときは閾値を下げて信号を拾いやすくする
+            # 入力エネルギーに応じた適応的閾値
             ratio = input_energy.mean() / (energy_threshold + 1e-8)
             adaptive_thresh_explore = 0.1 * ratio
             adaptive_thresh_explore = torch.clamp(adaptive_thresh_explore, 0.05, 0.2)
@@ -160,12 +160,11 @@ class LogicGatedSNN(nn.Module):
             gate_exploit = torch.sigmoid((input_energy - (energy_threshold * 1.5)) * 10.0)
             v_exploit = torch.matmul(x * gate_exploit, w.t())
             
-            # [修正] 他AI提案: Top-Kの緩和 (10% -> 15%) とベース閾値の低下 (0.8 -> 0.6)
+            # Top-Kの緩和
             k = int(self.out_features * 0.15)
             if k < 1: k = 1
             topk_vals, _ = torch.topk(v_exploit, k, dim=1)
             kth_val = topk_vals[:, -1].unsqueeze(1)
-            # ノイズ下でも強い信号だけは通すため、最小値を0.6に緩和
             dynamic_thresh = torch.maximum(torch.tensor(0.6, device=x.device), kth_val)
             spikes_exploit = (v_exploit >= dynamic_thresh).float()
             
@@ -175,7 +174,7 @@ class LogicGatedSNN(nn.Module):
             # v_mem の混合
             v_mem = v_explore * (1.0 - mixer) + v_exploit * mixer
             
-            # 閾値混合 (Adaptive Explore ThresholdとRelaxed Exploit Thresholdのブレンド)
+            # 閾値混合
             mixed_threshold = adaptive_thresh_explore * (1.0 - mixer) + 0.6 * mixer
             spikes = (v_mem >= mixed_threshold).float()
             
