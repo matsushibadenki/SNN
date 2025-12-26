@@ -40,7 +40,8 @@ class LogicGatedSNN(nn.Module):
             
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
-            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 10.0)
+            # [修正] 初期ゲインを下げ、安定した探索を促す
+            self.register_buffer('adaptive_threshold', torch.ones(out_features) * 5.0)
             self.register_buffer('path_mixer', torch.tensor(0.0)) # 未使用
         else:
             # リザーバー層 (Fixed)
@@ -61,9 +62,9 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('momentum_buffer', torch.zeros(1))
             self.register_buffer('adaptive_threshold', torch.ones(1))
             
-            # 初期ミキサー値: 0.5 (探索と活用のバランス)
+            # [修正] 初期状態は探索(Explore)寄りからスタート (0.5 -> 0.2)
             # 0.0: 完全探索(高感度), 1.0: 完全活用(高精度)
-            self.register_buffer('path_mixer', torch.tensor(0.5))
+            self.register_buffer('path_mixer', torch.tensor(0.2))
             
         self.register_buffer('membrane_potential', torch.zeros(out_features))
         self.trainable = trainable
@@ -89,9 +90,9 @@ class LogicGatedSNN(nn.Module):
         """内部状態（膜電位）のリセット"""
         self.membrane_potential.zero_()
         # ミキサー値は学習進行度を表すため、エピソード間ではリセットしない方が良い場合もあるが
-        # ここでは初期状態(0.5)に戻して、毎回公平に探索させる
+        # ここでは初期状態に近い値に戻して、毎回公平に探索させる
         if self.mode != 'readout':
-             self.path_mixer.fill_(0.5)
+             self.path_mixer.fill_(0.2)
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
         w = self.get_effective_weights()
@@ -106,7 +107,9 @@ class LogicGatedSNN(nn.Module):
             x_norm = F.normalize(x_bipolar, p=2, dim=1, eps=1e-8)
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
-            gain = self.adaptive_threshold.mean().clamp(1.0, 200.0)
+            
+            # [修正] ゲインの爆発を防ぎ、ノイズ耐性を向上 (Max 200 -> 50)
+            gain = self.adaptive_threshold.mean().clamp(1.0, 50.0)
             scaled_sim = cosine_sim * gain
             
             if self.training:
@@ -124,12 +127,14 @@ class LogicGatedSNN(nn.Module):
             # 共通の前処理: エネルギー計算
             input_energy = x.norm(dim=1, keepdim=True)
             energy_threshold = input_energy.mean() * 1.0
+            if energy_threshold == 0: energy_threshold = 1.0 # ゼロ除算/無効化防止
             
             # Path A: Exploration (High Sensitivity)
             # 閾値を低くし、弱い信号も通す
             gate_explore = torch.sigmoid((input_energy - (energy_threshold * 0.5)) * 2.0)
             v_explore = torch.matmul(x * gate_explore, w.t())
-            spikes_explore = (v_explore >= 0.3).float() # 低閾値
+            # [修正] 低エネルギー入力でも発火しやすくする (0.3 -> 0.1)
+            spikes_explore = (v_explore >= 0.1).float() 
             
             # Path B: Exploitation (High Precision)
             # 閾値を高くし、強い信号のみ通す
@@ -149,21 +154,19 @@ class LogicGatedSNN(nn.Module):
             mixer = self.path_mixer.clamp(0.0, 1.0)
             
             # 確率的選択ではなく、加重平均的な統合を行う
-            # ただし出力はバイナリスパイクなので、膜電位レベルで混合するか、スパイク確率として扱うか
-            # ここではシンプルに「OR」に近い動作をミキサーで制御
-            # mixerが低いとexploreの発火が優先され、高いとexploitの発火が優先される
-            
             # v_mem の混合
             v_mem = v_explore * (1.0 - mixer) + v_exploit * mixer
             
             # スパイク生成（混合後の膜電位に対して）
             # 閾値も混合する
-            mixed_threshold = 0.3 * (1.0 - mixer) + 0.8 * mixer
+            # [修正] Explore側の閾値を下げたため、混合閾値も調整 (0.3 -> 0.1)
+            mixed_threshold = 0.1 * (1.0 - mixer) + 0.8 * mixer
             spikes = (v_mem >= mixed_threshold).float()
             
             # 自己調整: 学習が進むにつれて mixer を 1.0 (Exploit) に近づける
             if self.training:
-                self.path_mixer.add_(0.001).clamp_(0.0, 1.0)
+                # [修正] ミキサーの収束を緩やかに (0.001 -> 0.0001)
+                self.path_mixer.add_(0.0001).clamp_(0.0, 1.0)
         
         if v_mem is None:
              v_mem = torch.zeros((x.shape[0], self.out_features), device=x.device)
@@ -204,7 +207,9 @@ class LogicGatedSNN(nn.Module):
                 delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes_bipolar) / batch_size
 
             # Momentum Update
-            self.momentum_buffer.mul_(0.9).add_(delta)
+            # [修正] Momentumを強化し、ノイズに対するロバスト性を向上 (0.9 -> 0.95)
+            # 大数の法則によるノイズキャンセル効果を高める
+            self.momentum_buffer.mul_(0.95).add_(delta)
             self.states.add_(self.momentum_buffer * learning_rate)
             
             mean_weight = self.states.mean(dim=1, keepdim=True)
@@ -220,7 +225,10 @@ class LogicGatedSNN(nn.Module):
             # Auto-Tuning Gain
             if self.mode == 'readout':
                 entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
-                target_entropy = 0.1
-                gain_delta = 0.5 * (entropy - target_entropy)
+                # [修正] ターゲットエントロピーを高め、探索的動作を維持 (0.1 -> 0.4)
+                target_entropy = 0.4
+                # [修正] ゲイン更新速度を抑制し、急激な先鋭化を防ぐ (0.5 -> 0.05)
+                gain_delta = 0.05 * (entropy - target_entropy)
                 self.adaptive_threshold.add_(gain_delta)
-                self.adaptive_threshold.clamp_(5.0, 200.0)
+                # [修正] ゲイン上限を50.0に制限
+                self.adaptive_threshold.clamp_(5.0, 50.0)
