@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Dimensionality-Aware Tuning)
-# 修正: 入力次元数に応じて学習特性（慣性・エントロピー目標）を動的に切り替え、高ノイズ耐性と論理探索を両立する
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Adaptive Thresholding)
+# 修正: 他のAIの提案に基づき、Gain Limitの倍増と、Reservoir層におけるエネルギー適応型閾値を導入
 
 import torch
 import torch.nn as nn
@@ -21,7 +21,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: Dimensionality-Aware Tuning & Dual-Path Gating.
+        SOTA Edition: Adaptive Thresholding & Extended Gain Limit.
         """
         super().__init__()
         self.in_features = in_features
@@ -30,19 +30,18 @@ class LogicGatedSNN(nn.Module):
         self.mode = mode
         
         # [修正] 次元数に応じたハイパーパラメータの自動設定
-        # 高次元(画像等): 強力な慣性と自信でノイズをねじ伏せる
-        # 低次元(論理等): 柔軟な適応と探索を重視する
+        # 他AI提案: Gain Limitを200.0に倍増し、更新レートを上げる
         if in_features > 64:
             self.hparams = {
-                'momentum': 0.99,          # 極限まで過去の統計を信じる（大数の法則）
-                'target_entropy': 0.25,    # 迷いを捨てて断定する（Sharpening）
-                'gain_limit': 100.0,       # 必要なだけ感度を上げる
-                'gain_update_rate': 0.01   # 暴走しないようゆっくり調整
+                'momentum': 0.99,          
+                'target_entropy': 0.25,    
+                'gain_limit': 200.0,       # 100.0 -> 200.0: ノイズに埋もれた信号を増幅する力を強化
+                'gain_update_rate': 0.015  # 0.01 -> 0.015: 環境変化への追従を少し速める
             }
         else:
             self.hparams = {
-                'momentum': 0.90,          # 変化に素早く追従
-                'target_entropy': 0.60,    # 探索の余地を残す（RL向け）
+                'momentum': 0.90,          
+                'target_entropy': 0.60,    
                 'gain_limit': 50.0,
                 'gain_update_rate': 0.05
             }
@@ -59,7 +58,7 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('synapse_states', states.clamp(-20, 20))
             self.register_buffer('momentum_buffer', torch.zeros_like(states))
             
-            # 初期ゲイン: ノイズタスク向けに少し高めに設定
+            # 初期ゲイン
             initial_gain = 8.0 if in_features > 64 else 5.0
             self.register_buffer('adaptive_threshold', torch.ones(out_features) * initial_gain)
             self.register_buffer('path_mixer', torch.tensor(0.0)) # 未使用
@@ -82,7 +81,7 @@ class LogicGatedSNN(nn.Module):
             self.register_buffer('momentum_buffer', torch.zeros(1))
             self.register_buffer('adaptive_threshold', torch.ones(1))
             
-            # 初期状態: 探索(Explore)寄りからスタート
+            # 初期状態: 探索(Explore)寄り
             self.register_buffer('path_mixer', torch.tensor(0.2))
             
         self.register_buffer('membrane_potential', torch.zeros(out_features))
@@ -125,7 +124,7 @@ class LogicGatedSNN(nn.Module):
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
-            # [修正] パラメータに基づいたゲイン制限
+            # パラメータに基づいたゲイン制限
             gain_limit = self.hparams['gain_limit'] if hasattr(self, 'hparams') else 50.0
             gain = self.adaptive_threshold.mean().clamp(1.0, gain_limit)
             scaled_sim = cosine_sim * gain
@@ -142,7 +141,6 @@ class LogicGatedSNN(nn.Module):
         else:
             # Reservoir Mode: Dual-Path Gating
             
-            # 共通の前処理: エネルギー計算
             input_energy = x.norm(dim=1, keepdim=True)
             energy_threshold = input_energy.mean() * 1.0
             if energy_threshold == 0: energy_threshold = 1.0
@@ -150,18 +148,25 @@ class LogicGatedSNN(nn.Module):
             # Path A: Exploration (High Sensitivity)
             gate_explore = torch.sigmoid((input_energy - (energy_threshold * 0.5)) * 2.0)
             v_explore = torch.matmul(x * gate_explore, w.t())
-            spikes_explore = (v_explore >= 0.1).float() 
+            
+            # [修正] 他AI提案: 入力エネルギーに応じた適応的閾値
+            # 入力が弱いときは閾値を下げて信号を拾いやすくする
+            ratio = input_energy.mean() / (energy_threshold + 1e-8)
+            adaptive_thresh_explore = 0.1 * ratio
+            adaptive_thresh_explore = torch.clamp(adaptive_thresh_explore, 0.05, 0.2)
+            spikes_explore = (v_explore >= adaptive_thresh_explore).float()
             
             # Path B: Exploitation (High Precision)
             gate_exploit = torch.sigmoid((input_energy - (energy_threshold * 1.5)) * 10.0)
             v_exploit = torch.matmul(x * gate_exploit, w.t())
             
-            # Top-K (上位10%)
-            k = int(self.out_features * 0.1)
+            # [修正] 他AI提案: Top-Kの緩和 (10% -> 15%) とベース閾値の低下 (0.8 -> 0.6)
+            k = int(self.out_features * 0.15)
             if k < 1: k = 1
             topk_vals, _ = torch.topk(v_exploit, k, dim=1)
             kth_val = topk_vals[:, -1].unsqueeze(1)
-            dynamic_thresh = torch.maximum(torch.tensor(0.8, device=x.device), kth_val)
+            # ノイズ下でも強い信号だけは通すため、最小値を0.6に緩和
+            dynamic_thresh = torch.maximum(torch.tensor(0.6, device=x.device), kth_val)
             spikes_exploit = (v_exploit >= dynamic_thresh).float()
             
             # Path Mixing
@@ -170,11 +175,10 @@ class LogicGatedSNN(nn.Module):
             # v_mem の混合
             v_mem = v_explore * (1.0 - mixer) + v_exploit * mixer
             
-            # 閾値混合
-            mixed_threshold = 0.1 * (1.0 - mixer) + 0.8 * mixer
+            # 閾値混合 (Adaptive Explore ThresholdとRelaxed Exploit Thresholdのブレンド)
+            mixed_threshold = adaptive_thresh_explore * (1.0 - mixer) + 0.6 * mixer
             spikes = (v_mem >= mixed_threshold).float()
             
-            # 自己調整
             if self.training:
                 self.path_mixer.add_(0.0001).clamp_(0.0, 1.0)
         
@@ -216,7 +220,7 @@ class LogicGatedSNN(nn.Module):
                     reward_tensor = reward
                 delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes_bipolar) / batch_size
 
-            # [修正] 次元数に応じたMomentum設定を使用
+            # 次元数に応じたMomentum設定を使用
             momentum_val = self.hparams['momentum'] if hasattr(self, 'hparams') else 0.95
             
             self.momentum_buffer.mul_(momentum_val).add_(delta)
@@ -236,7 +240,7 @@ class LogicGatedSNN(nn.Module):
             if self.mode == 'readout':
                 entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
                 
-                # [修正] 次元数に応じたパラメータを使用
+                # 次元数に応じたパラメータを使用
                 target_ent = self.hparams['target_entropy'] if hasattr(self, 'hparams') else 0.4
                 update_rate = self.hparams['gain_update_rate'] if hasattr(self, 'hparams') else 0.05
                 limit = self.hparams['gain_limit'] if hasattr(self, 'hparams') else 50.0
