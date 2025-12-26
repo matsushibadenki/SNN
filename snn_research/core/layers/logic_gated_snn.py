@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Fix: UnboundLocalError & Adaptive Gating)
-# 修正: v_memの初期化漏れ修正、適応型ゲート機構の確実な実装
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Non-linear Gating)
+# 修正: エネルギー計算に非線形性を導入し、コントラストを強調
 
 import torch
 import torch.nn as nn
@@ -20,7 +20,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: 適応型ゲート機構とエラー修正版。
+        SOTA Edition: 非線形ゲート機構による究極のノイズ除去。
         """
         super().__init__()
         self.in_features = in_features
@@ -89,7 +89,7 @@ class LogicGatedSNN(nn.Module):
         w = self.get_effective_weights()
         x = spike_input if spike_input.dim() > 1 else spike_input.unsqueeze(0)
         
-        # 変数を初期化してUnboundLocalErrorを防ぐ
+        # 変数初期化
         v_mem = None
         spikes = None
         
@@ -118,25 +118,24 @@ class LogicGatedSNN(nn.Module):
             v_mem = scaled_sim
             
         else:
-            # [修正] Reservoir Mode: Adaptive Gating
-            # 入力エネルギーに基づくゲート制御でノイズを遮断
-            input_energy = x.norm(dim=1, keepdim=True)
-            # 閾値を動的に設定 (平均エネルギーの1.2倍)
-            energy_threshold = input_energy.mean() * 1.2
+            # [修正] Reservoir Mode: Non-linear Energy Gating
+            # エネルギーを二乗することで、強い信号と弱い信号の差（コントラスト）を拡大する
+            input_energy = x.pow(2).mean(dim=1, keepdim=True)
             
-            # ゲート開度 (シグモイドで滑らかに制御)
-            # energy_threshold が 0 の場合(全静寂)への対策として +1e-6
-            gate = torch.sigmoid((input_energy - (energy_threshold + 1e-6)) * 5.0)
+            # 閾値設定 (平均エネルギーの1.0倍)
+            # 二乗により差が開いているため、係数は控えめでも分離可能
+            energy_threshold = input_energy.mean() * 1.0
             
-            # ゲート適用後の信号に対して射影
+            # ゲート開度 (シグモイドの傾きを急峻にする: x10.0)
+            gate = torch.sigmoid((input_energy - (energy_threshold + 1e-6)) * 10.0)
+            
+            # ゲート適用
             x_gated = x * gate
             v_mem = torch.matmul(x_gated, w.t())
             
             spikes = (v_mem >= 0.5).float()
         
-        # v_mem が確実に計算されていることを保証
         if v_mem is None:
-             # 万が一のフォールバック (通常ここには来ない)
              v_mem = torch.zeros((x.shape[0], self.out_features), device=x.device)
              spikes = torch.zeros_like(v_mem)
 
