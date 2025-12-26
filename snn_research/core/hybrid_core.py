@@ -26,8 +26,8 @@ class ActivePredictiveLayer(nn.Module):
     def __init__(self, features: int) -> None: 
         super().__init__()
         self.norm = nn.LayerNorm(features)
-        # 【修正】sparsity 0.20 -> 0.10: 上位10%の「エリート」のみを通す
-        # 【修正】gain 2.0 -> 4.0: 選ばれた信号を超強力にブーストする
+        # sparsity 0.10: 上位10%の「エリート」のみを通す
+        # gain 4.0: 選ばれた信号を超強力にブーストする
         self.activation = TopKActivation(sparsity=0.10, gain=4.0)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
