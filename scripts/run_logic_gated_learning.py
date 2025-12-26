@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import time
 import random
 import numpy as np
-from typing import Union, Tuple
+from typing import Union, Tuple, List
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 try:
@@ -32,23 +32,46 @@ def generate_synthetic_data(num_samples: int = 5000,
                           in_features: int = 784, 
                           out_features: int = 10, 
                           prototypes=None, 
-                          noise_level: Union[float, Tuple[float, float]] = 0.1):
+                          mixture_config: List[Tuple[Union[float, Tuple[float, float]], float]] = None):
+    
     device = prototypes.device if prototypes is not None else torch.device('cpu')
 
     if prototypes is None:
         prototypes = (torch.randn(out_features, in_features, device=device) > 0.0).float()
     
-    labels = torch.randint(0, out_features, (num_samples,), device=device)
-    patterns = prototypes[labels]
+    x_list, y_list = [], []
     
-    if isinstance(noise_level, (tuple, list)):
-        probs = torch.rand(num_samples, 1, device=device) * (noise_level[1] - noise_level[0]) + noise_level[0]
+    if mixture_config is None:
+        mixture_config = [(0.1, 1.0)]
+    
+    current_count = 0
+    for i, (n_level, ratio) in enumerate(mixture_config):
+        if i == len(mixture_config) - 1:
+            count = num_samples - current_count
+        else:
+            count = int(num_samples * ratio)
+        
+        current_count += count
+        
+        if count > 0:
+            labels = torch.randint(0, out_features, (count,), device=device)
+            patterns = prototypes[labels]
+            
+            if isinstance(n_level, (tuple, list)):
+                probs = torch.rand(count, 1, device=device) * (n_level[1] - n_level[0]) + n_level[0]
+            else:
+                probs = torch.full((count, 1), n_level, device=device)
+            
+            noise_mask = (torch.rand(count, in_features, device=device) < probs).float()
+            x = torch.abs(patterns - noise_mask)
+            x_list.append(x)
+            y_list.append(labels)
+    
+    if x_list:
+        x = torch.cat(x_list, dim=0)
+        y = torch.cat(y_list, dim=0)
     else:
-        probs = torch.full((num_samples, 1), noise_level, device=device)
-    
-    noise_mask = (torch.rand(num_samples, in_features, device=device) < probs).float()
-    x = torch.abs(patterns - noise_mask)
-    y = labels
+        return torch.empty(0), torch.empty(0), prototypes
     
     return x, y, prototypes
 
@@ -59,42 +82,47 @@ def run_simulation():
 
     IN_FEATURES = 784
     OUT_FEATURES = 10
-    # [修正] バッチサイズを4096に戻す。
-    # v4(成功例)と同じ設定にし、ノイズの統計的平均を安定化させる。
+    # [修正] バッチサイズ4096固定。
+    # 巨大バッチによる勾配安定化と、計算効率のバランスが最も良い。
     BATCH_SIZE = 4096
     TOTAL_SAMPLES = 60000
     
-    # [修正] カリキュラム: Hyper-Contrast Boosting v11 (Wide-Anchor Stabilization)
-    # v10の失敗原因: 下限を上げすぎて「解ける問題」がなくなり、ニューロンが沈黙(V_Mean低下)した。
-    # v11の戦略: 
-    # 1. 最終段階でも下限を「0.38」と低めに設定し、これを「アンカー(活力源)」とする。
-    # 2. 上限は「0.46」とし、0.45を相対的に楽な位置づけにする(マージン効果)。
-    # 3. エポック数を十分に確保し、低LRでじっくりと確率分布に適合させる。
+    # [修正] カリキュラム: Hyper-Contrast Boosting v20 (High-Plasticity Stability)
+    # v19の反省: 最終段階でのバッチ縮小とLR低下が、活性低下(死の谷)を招いた。
+    # v20の戦略: 
+    # 1. 最後までバッチサイズ4096とLR 0.001を維持し、ニューロンを元気に保つ。
+    # 2. ターゲット範囲を(0.42, 0.46)と広めにとり、特定のノイズパターンへの過学習を防ぐ。
+    # 3. サポートデータ(0.25)を15%混ぜ、安定したベースライン活性を供給する。
     curriculum_stages = [
-        {'range': (0.0, 0.30), 'epochs': 10, 'lr': 0.1},
-        {'range': (0.2, 0.40), 'epochs': 10, 'lr': 0.05},
-        {'range': (0.30, 0.45), 'epochs': 20, 'lr': 0.02}, 
-        # メインフェーズ: アンカー(0.35)を広く取り、高ノイズ(0.46)に挑む
-        {'range': (0.35, 0.46), 'epochs': 30, 'lr': 0.005}, 
-        # 仕上げフェーズ1: 範囲を少し狭めるが、下限0.38は死守する。
-        {'range': (0.38, 0.46), 'epochs': 40, 'lr': 0.001}, 
-        # 仕上げフェーズ2 (Stabilization): 
-        # 範囲を変えず、LRを下げて定着させる。
-        # 0.38付近のデータがV_Meanを高く保ち、そのエネルギーで0.45の壁を越える。
-        {'range': (0.38, 0.46), 'epochs': 40, 'lr': 0.0005}, 
+        # 初期: 基礎
+        {'mixture': [((0.0, 0.30), 1.0)], 'epochs': 10, 'lr': 0.1},
+        {'mixture': [((0.2, 0.40), 1.0)], 'epochs': 10, 'lr': 0.05},
+        
+        # 中盤: 混合開始
+        {'mixture': [((0.35, 0.45), 0.8), (0.20, 0.2)], 'epochs': 20, 'lr': 0.02},
+        
+        # 終盤1: 負荷を高める
+        {'mixture': [((0.40, 0.46), 0.8), (0.25, 0.2)], 'epochs': 30, 'lr': 0.005},
+        
+        # 終盤2: ターゲットゾーンへ移行。サポート比率を15%に調整。
+        {'mixture': [((0.42, 0.46), 0.85), (0.25, 0.15)], 'epochs': 40, 'lr': 0.002},
+        
+        # 仕上げ: 高可塑性維持(LR 0.001)。範囲は広めのまま。
+        # これにより、0.45を含む高ノイズ領域全体でのロバスト性を獲得する。
+        {'mixture': [((0.42, 0.46), 0.85), (0.25, 0.15)], 'epochs': 60, 'lr': 0.001}, 
     ]
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
     print(f"\nModel initialized: LogicGatedSNN (Statistical Averaging Mode)")
-    print(f"Training Logic: Granular Curriculum Learning (Wide-Anchor v11).")
+    print(f"Training Logic: Granular Curriculum Learning (High-Plasticity v20).")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
 
     print("\nStarting Curriculum Training Phase...")
-    print(f"{'Epoch':<6} | {'Noise Range':<15} | {'Acc':<6} | {'Loss':<6} | {'LR':<8} | {'Temp':<6} | {'V_Mean':<6} | {'Time'}")
-    print("-" * 96)
+    print(f"{'Epoch':<6} | {'Target Range (Ratio)':<25} | {'Supp':<8} | {'Acc':<6} | {'Loss':<6} | {'LR':<8} | {'V_Mean':<6} | {'Time'}")
+    print("-" * 105)
     
     start_time = time.time()
     
@@ -102,9 +130,15 @@ def run_simulation():
     
     # カリキュラムステージごとのループ
     for stage in curriculum_stages:
-        noise_range = stage['range']
+        mixture = stage['mixture']
         stage_epochs = stage['epochs']
         lr = stage['lr']
+        
+        # 表示用文字列
+        main_conf = mixture[0]
+        supp_conf = mixture[1] if len(mixture) > 1 else (0.0, 0.0)
+        main_str = f"{str(main_conf[0])} ({main_conf[1]*100:.0f}%)"
+        supp_str = f"{str(supp_conf[0])}" if supp_conf[1] > 0 else "-"
         
         for _ in range(stage_epochs):
             current_epoch += 1
@@ -114,7 +148,7 @@ def run_simulation():
                 in_features=IN_FEATURES, 
                 out_features=OUT_FEATURES,
                 prototypes=shared_prototypes,
-                noise_level=noise_range
+                mixture_config=mixture
             )
             x_train, y_train = x_train.to(device), y_train.to(device)
             
@@ -149,13 +183,11 @@ def run_simulation():
             elapsed = time.time() - start_time
             
             v_mean_val = layer.membrane_potential.mean().item()
-            temp_val = layer.adaptive_threshold.mean().item()
             
-            print(f"{current_epoch:<6} | {str(noise_range):<15} | "
+            print(f"{current_epoch:<6} | {main_str:<25} | {supp_str:<8} | "
                   f"{epoch_acc:5.1f}% | "
                   f"{avg_loss:6.4f} | "
                   f"{lr:.6f} | "
-                  f"{temp_val:5.1f}  | "
                   f"{v_mean_val:6.3f} | "
                   f"{elapsed:.0f}s")
         
@@ -176,7 +208,7 @@ def run_simulation():
             in_features=IN_FEATURES, 
             out_features=OUT_FEATURES,
             prototypes=shared_prototypes,
-            noise_level=noise
+            mixture_config=[(noise, 1.0)]
         )
         x_test, y_test = x_test.to(device), y_test.to(device)
         
@@ -186,7 +218,7 @@ def run_simulation():
         
         with torch.no_grad():
             test_dataset = TensorDataset(x_test, y_test)
-            test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
+            test_loader = DataLoader(test_dataset, batch_size=4096)
             
             for data, target in test_loader:
                 out = layer(data)
