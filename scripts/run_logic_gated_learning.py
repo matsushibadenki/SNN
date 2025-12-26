@@ -42,7 +42,6 @@ def generate_synthetic_data(num_samples: int = 5000,
     patterns = prototypes[labels]
     
     if isinstance(noise_level, (tuple, list)):
-        # noise_levelがタプルの場合でも、値が同じ(0.45, 0.45)なら固定値として機能する
         probs = torch.rand(num_samples, 1, device=device) * (noise_level[1] - noise_level[0]) + noise_level[0]
     else:
         probs = torch.full((num_samples, 1), noise_level, device=device)
@@ -60,31 +59,33 @@ def run_simulation():
 
     IN_FEATURES = 784
     OUT_FEATURES = 10
-    # [修正] バッチサイズを4096から2048へ変更。
-    # 更新回数を増やし、より柔軟な探索で局所解(87%)からの脱出を図る。
-    BATCH_SIZE = 2048
+    # [修正] バッチサイズをさらに縮小(1024)。
+    # 勾配の更新頻度を高め、局所解からの脱出と微細な境界調整を可能にする。
+    BATCH_SIZE = 1024
     TOTAL_SAMPLES = 60000
     
-    # [修正] カリキュラム: Hyper-Contrast Boosting v7 (Target Fixation)
-    # 以前の戦略では「範囲」を持たせていたため、モデルのリソースが分散していた。
-    # 今回は、最終段階でターゲットである「0.45」に一点集中(Fixation)する。
-    # ノイズマスク自体はランダム生成されるため、過学習ではなく「分布への最適化」となる。
+    # [修正] カリキュラム: Hyper-Contrast Boosting v8 (Deep Resonance Convergence)
+    # v7の反省: ターゲットを固定しすぎてニューロンの活動(V_Mean)が低下し、学習が停滞した。
+    # v8の戦略:
+    # 1. 範囲を(0.42, 0.46)に戻し、適度な信号強度を維持してニューロンを活性化させる。
+    # 2. バッチサイズ縮小(1024) x エポック数倍増(100) x 極小LR(0.0002) の組み合わせで、
+    #    「数千回の微修正」を行い、確率的なノイズ分布の重心を捉える。
     curriculum_stages = [
         {'range': (0.0, 0.30), 'epochs': 10, 'lr': 0.1},
         {'range': (0.2, 0.40), 'epochs': 10, 'lr': 0.05},
-        {'range': (0.35, 0.46), 'epochs': 20, 'lr': 0.02}, # 広範囲で基礎体力をつける
-        {'range': (0.40, 0.46), 'epochs': 30, 'lr': 0.005}, # 高ノイズ耐性の下地作り
-        # 修正: Target Fixation Phase
-        # 範囲を(0.45, 0.45)に固定。
-        # "0.45の壁"を越えるために、全ての勾配を0.45の解決に向ける。
-        # エポック数を50確保し、バッチサイズ縮小と合わせて徹底的に学習させる。
-        {'range': (0.45, 0.45), 'epochs': 50, 'lr': 0.001}, 
+        {'range': (0.35, 0.46), 'epochs': 20, 'lr': 0.02}, 
+        # メインフェーズ: ここで大枠を掴む
+        {'range': (0.40, 0.46), 'epochs': 30, 'lr': 0.005}, 
+        # Deep Convergence Phase:
+        # 範囲を維持しつつ、LRを極限まで下げて長期間学習する。
+        # これにより、0.45付近の難しいデータに対する「勘」を養う。
+        {'range': (0.42, 0.46), 'epochs': 100, 'lr': 0.0002}, 
     ]
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
     print(f"\nModel initialized: LogicGatedSNN (Statistical Averaging Mode)")
-    print(f"Training Logic: Granular Curriculum Learning (Target Fixation v7).")
+    print(f"Training Logic: Granular Curriculum Learning (Hyper-Contrast Boosting v8).")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
