@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
-# Title: RL Agent (Tuned Noise)
-# 修正内容: 入力ノイズを微調整 (0.05 -> 0.02) して信号精度を向上
+# Title: RL Agent (Correct GRPO Loop)
+# Description: GRPO学習時に軌跡ごとに学習則をリセットし、干渉を防ぐ。
 
 import torch
 import numpy as np
@@ -55,9 +55,7 @@ class ReinforcementLearnerAgent:
             self.model.train()
         
         with torch.no_grad():
-            # [修正] ノイズレベルの調整
-            # state * 0.95 + 0.02 : 1.0 -> 0.97 (高確率), 0.0 -> 0.02 (低確率)
-            # 誤作動を減らしつつ、最低限の探索を維持
+            # 入力エンコーディング: 確率的なゆらぎを持たせる
             prob_input = state * 0.95 + 0.02
             input_spikes = (torch.rand_like(state) < prob_input).float()
 
@@ -102,6 +100,9 @@ class ReinforcementLearnerAgent:
             advantages = torch.zeros_like(total_rewards)
         
         for i, trajectory in enumerate(trajectories):
+            # [修正] 新しい軌跡（エピソード）の学習を始める前に、必ず学習則の内部状態をリセットする
+            self.model.reset_learning_rules()
+
             adv = float(advantages[i].item())
             clipped_reward = float(np.clip(adv, -1.0, 1.0))
             optional_params = {"reward": clipped_reward}
