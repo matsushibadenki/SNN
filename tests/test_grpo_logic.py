@@ -1,6 +1,6 @@
 # ファイルパス: tests/test_grpo_logic.py
-# Title: GRPO Logic Test (High Stability)
-# 修正内容: 反復回数増加(150), GroupSize増加(16), 閾値調整
+# Title: GRPO Logic Test (Reset Fixed)
+# 修正内容: 学習則リセットの実装に伴い、学習成功を期待してテストを実行
 
 import torch
 import unittest
@@ -64,7 +64,7 @@ class TestGRPO(unittest.TestCase):
         self.output_size = 3 
         
         self.rule = RewardModulatedSTDP(
-            learning_rate=0.08, # バランス調整
+            learning_rate=0.08,
             a_plus=1.2,
             a_minus=0.8,
             tau_trace=15.0,
@@ -82,10 +82,9 @@ class TestGRPO(unittest.TestCase):
         self.target_seq = [0, 1]
         
     def test_grpo_improvement(self):
-        print("\n[Test] GRPO Logic Improvement Check (Stable)")
+        print("\n[Test] GRPO Logic Improvement Check (Reset Logic)")
         env = SimpleLogicEnv(self.target_seq)
         
-        # パラメータ調整: より多くのサンプルで安定したアドバンテージを計算
         iterations = 150 
         group_size = 16 
         
