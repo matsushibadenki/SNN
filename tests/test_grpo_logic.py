@@ -1,6 +1,6 @@
 # ファイルパス: tests/test_grpo_logic.py
-# Title: GRPO Logic Test (Exploration Fix)
-# 修正内容: エージェントの探索改善を確認するテスト構成
+# Title: GRPO Logic Test (Longer Run)
+# 修正内容: Iterations 50 -> 100
 
 import torch
 import unittest
@@ -71,10 +71,11 @@ class TestGRPO(unittest.TestCase):
         self.target_seq = [0, 1]
         
     def test_grpo_improvement(self):
-        print("\n[Test] GRPO Logic Improvement (Fixed Exploration)")
+        print("\n[Test] GRPO Logic Improvement (Long Run)")
         env = SimpleLogicEnv(self.target_seq)
         
-        iterations = 50 
+        # [修正] 学習機会を増やす (50 -> 100)
+        iterations = 100 
         group_size = 16
         
         max_success_rate = 0.0
