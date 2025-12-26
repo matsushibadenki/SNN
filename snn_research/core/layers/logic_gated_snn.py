@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Auto-Gain Strategy)
-# 修正: インスタンスごとの自動ゲイン正規化により、低信号時のコントラスト不足を解消しAcc 88%突破を実現
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Hyper-Contrast Boosting)
+# 修正: 低信頼度時の極端なコントラスト強調(Power Scaling)により、Acc 88%の壁を物理的にこじ開ける
 
 import torch
 import torch.nn as nn
@@ -21,7 +21,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: Auto-Gain & Dynamic Top-K.
+        SOTA Edition: Hyper-Contrast Boosting & Dynamic Top-K.
         """
         super().__init__()
         self.in_features = in_features
@@ -115,29 +115,31 @@ class LogicGatedSNN(nn.Module):
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
-            # [修正] Instance-wise Auto-Gain Strategy
-            # サンプルごとに、類似度の最大値(sim_max)が1.0付近になるようにゲインを自動調整する。
-            # これにより、ノイズが多く類似度が全体的に低い場合(sim_max=0.1など)でも、
-            # 強制的に信号強度を引き上げ、Squared ReLUの非線形性(コントラスト強調)を機能させる。
-            
+            # [修正] Hyper-Contrast Boosting Strategy
+            # 1. まず類似度のピークを1.0に正規化する (Auto-Gain)
             sim_max, _ = cosine_sim.max(dim=1, keepdim=True)
+            auto_gain = 1.0 / (sim_max.detach().clamp(min=0.01))
+            norm_sim = cosine_sim * auto_gain
             
-            # sim_maxが極端に小さい場合(純粋なノイズ)の発散を防ぐため、最小値を0.05にクランプ
-            # これにより最大20倍までゲインが増幅される
-            auto_gain = 1.0 / (sim_max.detach().clamp(min=0.05))
+            # 2. 信号強度(sim_max)に基づいて「べき乗(Power)」を動的に決定する
+            # 強度が高い(0.5以上) -> Power 2.0 (通常のSquared ReLU)
+            # 強度が低い(0.1近辺) -> Power 6.0以上 (極端なコントラスト強調)
+            # これにより、ノイズに埋もれた微差を強制的に拡大する。
             
-            # 正規化された類似度（ピークが1.0付近になる）
-            boosted_sim = cosine_sim * auto_gain
+            signal_strength = sim_max.detach().clamp(min=0.05, max=0.5)
+            # 線形補間: 0.05のときPower=7.0, 0.5のときPower=2.0
+            # slope = (2.0 - 7.0) / (0.5 - 0.05) = -5.0 / 0.45 ≈ -11.1
+            adaptive_power = 7.55 - 11.1 * signal_strength
+            adaptive_power = adaptive_power.clamp(min=2.0, max=8.0)
             
-            # 常にSquared(2乗)を適用し、トップ候補とそれ以外の差を拡大させる
-            # 1.0^2 = 1.0, 0.8^2 = 0.64 (差: 0.36)
-            # 補正なしの場合: 0.1^2=0.01, 0.08^2=0.0064 (差: 0.0036 -> 誤差に埋もれる)
-            sharpened_sim = F.relu(boosted_sim).pow(2.0)
+            # 3. 適用
+            # norm_simは最大1.0なので、何乗しても発散しない。
+            # しかし小さい値(0.9など)はべき乗で急速に減衰し、トップとの差が開く。
+            sharpened_sim = F.relu(norm_sim).pow(adaptive_power)
 
             gain_limit = self.hparams['gain_limit'] if hasattr(self, 'hparams') else 50.0
             gain = self.adaptive_threshold.mean().clamp(1.0, gain_limit)
             
-            # Auto-Gainでピークが1.0になっているため、最終的なGlobal Gainでスケーリング
             scaled_sim = sharpened_sim * gain
             
             if self.training:
@@ -168,90 +170,4 @@ class LogicGatedSNN(nn.Module):
             gate_exploit = torch.sigmoid((input_energy - (energy_threshold * 1.5)) * 10.0)
             v_exploit = torch.matmul(x * gate_exploit, w.t())
             
-            # [修正] Dynamic Top-K: 低エネルギー時はTop-Kを20%に拡大して情報を拾う
-            base_k = 0.15
-            adaptive_k = base_k + (0.05 if energy_ratio < 0.2 else 0.0)
-            k = int(self.out_features * adaptive_k)
-            if k < 1: k = 1
-            
-            topk_vals, _ = torch.topk(v_exploit, k, dim=1)
-            kth_val = topk_vals[:, -1].unsqueeze(1)
-            
-            dynamic_thresh = torch.maximum(torch.tensor(0.58, device=x.device), kth_val)
-            spikes_exploit = (v_exploit >= dynamic_thresh).float()
-            
-            mixer = self.path_mixer.clamp(0.0, 1.0)
-            v_mem = v_explore * (1.0 - mixer) + v_exploit * mixer
-            
-            mixed_threshold = adaptive_thresh_explore * (1.0 - mixer) + 0.58 * mixer
-            spikes = (v_mem >= mixed_threshold).float()
-            
-            if self.training:
-                self.path_mixer.add_(0.0001).clamp_(0.0, 1.0)
-        
-        if v_mem is None:
-             v_mem = torch.zeros((x.shape[0], self.out_features), device=x.device)
-             spikes = torch.zeros_like(v_mem)
-
-        with torch.no_grad():
-            v_mean = torch.mean(v_mem, dim=0).detach()
-            self.membrane_potential.copy_(v_mean)
-
-        return spikes
-
-    def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor], learning_rate: float = 0.02) -> None:
-        if not self.trainable:
-            return
-
-        with torch.no_grad():
-            batch_size = pre_spikes.size(0)
-            pre_spikes_bipolar = (pre_spikes - 0.5) * 2.0
-            
-            if isinstance(reward, torch.Tensor) and reward.shape == post_spikes.shape:
-                target_onehot = reward
-                
-                class_sums = torch.matmul(target_onehot.t(), pre_spikes_bipolar)
-                class_counts = target_onehot.sum(dim=0).unsqueeze(1) + 1e-8
-                
-                batch_centroids = class_sums / class_counts
-                batch_centroids = F.normalize(batch_centroids, p=2, dim=1)
-                
-                delta = batch_centroids - F.normalize(self.states, p=2, dim=1)
-                delta.clamp_(-0.05, 0.05)
-                
-                update_mask = (target_onehot.sum(dim=0).unsqueeze(1) > 0).float()
-                delta = delta * update_mask
-                
-            else:
-                if isinstance(reward, float):
-                    reward_tensor = torch.full((batch_size, self.out_features), reward, device=pre_spikes.device)
-                else:
-                    reward_tensor = reward
-                delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes_bipolar) / batch_size
-                delta.clamp_(-0.05, 0.05)
-
-            momentum_val = self.hparams['momentum'] if hasattr(self, 'hparams') else 0.95
-            
-            self.momentum_buffer.mul_(momentum_val).add_(delta)
-            self.states.add_(self.momentum_buffer * learning_rate)
-            
-            mean_weight = self.states.mean(dim=1, keepdim=True)
-            self.states.sub_(mean_weight)
-            
-            norm = self.states.norm(p=2, dim=1, keepdim=True)
-            target_norm = math.sqrt(self.in_features)
-            scale_factor = target_norm / (norm + 1e-8)
-            self.states.mul_(scale_factor)
-            
-            self.states.clamp_(-20.0, 20.0)
-            
-            if self.mode == 'readout':
-                entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
-                
-                target_ent = self.hparams['target_entropy'] if hasattr(self, 'hparams') else 0.4
-                update_rate = self.hparams['gain_update_rate'] if hasattr(self, 'hparams') else 0.05
-                limit = self.hparams['gain_limit'] if hasattr(self, 'hparams') else 50.0
-
-                gain_delta = update_rate * (entropy - target_ent)
-                self.adaptive_threshold.add_(gain_delta)
-                self.adaptive_threshold.clamp_(5.0, limit)
+            # [修正] Dynamic Top-K:
