@@ -1,6 +1,7 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
 # 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final: Statistical Averaging)
 # 内容: バイポーラ重心学習と適応型ゲインによる、純粋な統計的ノイズ除去 (SCAL法)
+# 修正: reset_state メソッドの追加
 
 import torch
 import torch.nn as nn
@@ -80,6 +81,10 @@ class LogicGatedSNN(nn.Module):
             return self.states
         else:
             return self.frozen_weight
+
+    def reset_state(self):
+        """内部状態（膜電位）のリセット"""
+        self.membrane_potential.zero_()
 
     def forward(self, spike_input: torch.Tensor) -> torch.Tensor:
         w = self.get_effective_weights()
