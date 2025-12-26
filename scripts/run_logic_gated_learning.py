@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Granular Curriculum)
-# 内容: 統計的重心平均化とバイポーラ相殺による、ノイズ耐性の物理的限界への到達。カリキュラムを細分化。
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Stable Curriculum)
+# 内容: 統計的重心平均化とバイポーラ相殺による、ノイズ耐性の物理的限界への到達。カリキュラムを最適化。
 
 import sys
 import os
@@ -62,20 +62,20 @@ def run_simulation():
     BATCH_SIZE = 4096 
     TOTAL_SAMPLES = 60000
     
-    # [修正] 他AI提案: カリキュラムを細分化し、急激な難易度上昇を防ぐ
-    # Epoch数を合計で調整 (10+10+15+15+10 = 60 Epochs)
+    # [修正] カリキュラムの最適化: 0.50(完全ノイズ)を含めず、ターゲットである0.45周辺を固める
     curriculum_stages = [
         {'range': (0.0, 0.30), 'epochs': 10, 'lr': 0.1},
         {'range': (0.2, 0.40), 'epochs': 10, 'lr': 0.05},
-        {'range': (0.35, 0.45), 'epochs': 15, 'lr': 0.02},  # 新規追加: 中間層
-        {'range': (0.42, 0.48), 'epochs': 15, 'lr': 0.01},  # 新規追加: 高ノイズ導入層
-        {'range': (0.45, 0.50), 'epochs': 10, 'lr': 0.005}, # 仕上げ層
+        {'range': (0.35, 0.45), 'epochs': 15, 'lr': 0.02}, 
+        {'range': (0.42, 0.48), 'epochs': 15, 'lr': 0.01}, 
+        # 最終ステージを調整: 破壊的な0.50を回避し、0.43-0.47で安定化させる
+        {'range': (0.43, 0.47), 'epochs': 10, 'lr': 0.005}, 
     ]
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
     print(f"\nModel initialized: LogicGatedSNN (Statistical Averaging Mode)")
-    print(f"Training Logic: Granular Curriculum Learning.")
+    print(f"Training Logic: Granular Curriculum Learning (Stable Edition).")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
