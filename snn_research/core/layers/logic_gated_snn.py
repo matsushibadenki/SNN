@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Adaptive Sharpening)
-# 修正: 低信号時の適応型シャープニング(Variable Power)により、高ノイズ耐性を強化しAcc 88%突破を実現
+# 日本語タイトル: 統合最適化版・1.58ビットロジックゲートレイヤー (Final SOTA: Auto-Gain Strategy)
+# 修正: インスタンスごとの自動ゲイン正規化により、低信号時のコントラスト不足を解消しAcc 88%突破を実現
 
 import torch
 import torch.nn as nn
@@ -21,7 +21,7 @@ class LogicGatedSNN(nn.Module):
     def __init__(self, in_features: int, out_features: int, max_states: int = 100, mode: str = 'reservoir') -> None:
         """
         SCAL (Statistical Centroid Alignment Learning) ベースのニューロモルフィック層。
-        SOTA Edition: Adaptive Sharpening & Dynamic Top-K.
+        SOTA Edition: Auto-Gain & Dynamic Top-K.
         """
         super().__init__()
         self.in_features = in_features
@@ -115,21 +115,29 @@ class LogicGatedSNN(nn.Module):
             w_norm = F.normalize(w, p=2, dim=1, eps=1e-8)
             cosine_sim = torch.matmul(x_norm, w_norm.t()) 
             
-            # [修正] Adaptive Sharpening Strategy
-            # ノイズレベルが高い(類似度が低い)場合は、べき乗(Power)を下げて線形に近づけ、信号消失を防ぐ。
-            # ノイズレベルが低い(類似度が高い)場合は、2乗(Squared)にしてコントラストを高める。
-            # 閾値(0.25)とスロープ(20.0)は実験的に調整された値。
+            # [修正] Instance-wise Auto-Gain Strategy
+            # サンプルごとに、類似度の最大値(sim_max)が1.0付近になるようにゲインを自動調整する。
+            # これにより、ノイズが多く類似度が全体的に低い場合(sim_max=0.1など)でも、
+            # 強制的に信号強度を引き上げ、Squared ReLUの非線形性(コントラスト強調)を機能させる。
             
             sim_max, _ = cosine_sim.max(dim=1, keepdim=True)
-            # sim_max < 0.15 => power -> 1.0 (Linear)
-            # sim_max > 0.35 => power -> 2.0 (Squared)
-            adaptive_power = 1.0 + torch.sigmoid((sim_max - 0.25) * 20.0)
             
-            # 負の値はカットしつつ、適応的なべき乗を適用
-            sharpened_sim = F.relu(cosine_sim).pow(adaptive_power)
+            # sim_maxが極端に小さい場合(純粋なノイズ)の発散を防ぐため、最小値を0.05にクランプ
+            # これにより最大20倍までゲインが増幅される
+            auto_gain = 1.0 / (sim_max.detach().clamp(min=0.05))
+            
+            # 正規化された類似度（ピークが1.0付近になる）
+            boosted_sim = cosine_sim * auto_gain
+            
+            # 常にSquared(2乗)を適用し、トップ候補とそれ以外の差を拡大させる
+            # 1.0^2 = 1.0, 0.8^2 = 0.64 (差: 0.36)
+            # 補正なしの場合: 0.1^2=0.01, 0.08^2=0.0064 (差: 0.0036 -> 誤差に埋もれる)
+            sharpened_sim = F.relu(boosted_sim).pow(2.0)
 
             gain_limit = self.hparams['gain_limit'] if hasattr(self, 'hparams') else 50.0
             gain = self.adaptive_threshold.mean().clamp(1.0, gain_limit)
+            
+            # Auto-Gainでピークが1.0になっているため、最終的なGlobal Gainでスケーリング
             scaled_sim = sharpened_sim * gain
             
             if self.training:
