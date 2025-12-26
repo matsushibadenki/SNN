@@ -59,34 +59,35 @@ def run_simulation():
 
     IN_FEATURES = 784
     OUT_FEATURES = 10
-    # Batch Size 2048: 勾配の安定性と更新頻度のバランスが良い
-    BATCH_SIZE = 2048
+    # [修正] バッチサイズを4096に戻す。
+    # v4(成功例)と同じ設定にし、ノイズの統計的平均を安定化させる。
+    BATCH_SIZE = 4096
     TOTAL_SAMPLES = 60000
     
-    # [修正] カリキュラム: Hyper-Contrast Boosting v10 (Target-Cap Strategy)
-    # 過去の実験から、0.46以上のデータを含めると0.45の精度が逆に下がることが判明。
-    # 戦略:
-    # 1. 上限をターゲットである「0.45」に完全固定(Cap)する。これ以上のノイズは学習させない。
-    # 2. 下限を段階的に引き上げ、0.45への対応力を「下から押し上げる」。
-    # 3. 学習率を極端に下げず(0.001維持)、ニューロンの活性(V_Mean)を保つ。
+    # [修正] カリキュラム: Hyper-Contrast Boosting v11 (Wide-Anchor Stabilization)
+    # v10の失敗原因: 下限を上げすぎて「解ける問題」がなくなり、ニューロンが沈黙(V_Mean低下)した。
+    # v11の戦略: 
+    # 1. 最終段階でも下限を「0.38」と低めに設定し、これを「アンカー(活力源)」とする。
+    # 2. 上限は「0.46」とし、0.45を相対的に楽な位置づけにする(マージン効果)。
+    # 3. エポック数を十分に確保し、低LRでじっくりと確率分布に適合させる。
     curriculum_stages = [
         {'range': (0.0, 0.30), 'epochs': 10, 'lr': 0.1},
         {'range': (0.2, 0.40), 'epochs': 10, 'lr': 0.05},
-        # 中盤: ここで初めて0.45に触れるが、上限は0.45で止める
-        {'range': (0.35, 0.45), 'epochs': 20, 'lr': 0.02}, 
-        # 終盤1: 下限を引き上げ、0.45の密度を高める
-        {'range': (0.40, 0.45), 'epochs': 30, 'lr': 0.005}, 
-        # 終盤2: さらに下限を引き上げ、(0.43-0.45)という「ギリギリ解けるゾーン」に集中。
-        # 0.46の毒を排除しているため、ここで精度が向上するはず。
-        {'range': (0.43, 0.45), 'epochs': 40, 'lr': 0.001}, 
-        # 仕上げ: 範囲を絞り切る。
-        {'range': (0.44, 0.45), 'epochs': 40, 'lr': 0.001}, 
+        {'range': (0.30, 0.45), 'epochs': 20, 'lr': 0.02}, 
+        # メインフェーズ: アンカー(0.35)を広く取り、高ノイズ(0.46)に挑む
+        {'range': (0.35, 0.46), 'epochs': 30, 'lr': 0.005}, 
+        # 仕上げフェーズ1: 範囲を少し狭めるが、下限0.38は死守する。
+        {'range': (0.38, 0.46), 'epochs': 40, 'lr': 0.001}, 
+        # 仕上げフェーズ2 (Stabilization): 
+        # 範囲を変えず、LRを下げて定着させる。
+        # 0.38付近のデータがV_Meanを高く保ち、そのエネルギーで0.45の壁を越える。
+        {'range': (0.38, 0.46), 'epochs': 40, 'lr': 0.0005}, 
     ]
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
     print(f"\nModel initialized: LogicGatedSNN (Statistical Averaging Mode)")
-    print(f"Training Logic: Granular Curriculum Learning (Target-Cap v10).")
+    print(f"Training Logic: Granular Curriculum Learning (Wide-Anchor v11).")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
