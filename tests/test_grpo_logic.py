@@ -71,7 +71,7 @@ class TestGRPO(unittest.TestCase):
         self.target_seq = [0, 1]
         
     def test_grpo_improvement(self):
-        print("\n[Test] GRPO Logic Improvement (Non-linear Gating)")
+        print("\n[Test] GRPO Logic Improvement (Top-K Gating)")
         env = SimpleLogicEnv(self.target_seq)
         
         iterations = 100 
