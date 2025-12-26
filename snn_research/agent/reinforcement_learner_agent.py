@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
-# Title: RL Agent (Temperature 5.0)
-# Description: 超高ゲインコアに対応するため、探索時の温度パラメータを5.0へ引き上げ。
+# Title: RL Agent (Temperature 4.0 - Optimized Exploitation)
+# Description: ノイズ除去による信号品質向上に伴い、探索パラメータを最適化。
 
 import torch
 import numpy as np
@@ -47,12 +47,11 @@ class ReinforcementLearnerAgent:
             out = self.model.output_gate(r)
             
             if self.model.training:
-                # [修正] コアのゲインが高い(x8.0 & x200.0)ため、温度を 5.0 にして探索を確保
-                probs = torch.softmax(out / 5.0, dim=1)
+                # [修正] 信号品質向上により、温度を 4.0 に調整して収束を早める
+                probs = torch.softmax(out / 4.0, dim=1)
             else:
                 probs = torch.softmax(out, dim=1)
             
-            # NaN対策
             if torch.isnan(probs).any():
                 probs = torch.ones_like(probs) / self.output_size
             
