@@ -1,6 +1,6 @@
 # ファイルパス: scripts/run_logic_gated_learning.py
-# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Adaptive Sharpening Strategy)
-# 内容: Adaptive Sharpeningによる高コントラスト学習を利用し、Acc 88%の壁を超える。
+# 日本語タイトル: 統合最適化・自律学習シミュレーション (Final: Auto-Gain Strategy)
+# 内容: Auto-Gainによるインスタンス適応型学習を利用し、Acc 88%の壁を超える。
 
 import sys
 import os
@@ -62,21 +62,21 @@ def run_simulation():
     BATCH_SIZE = 4096 
     TOTAL_SAMPLES = 60000
     
-    # [修正] カリキュラム: Adaptive Sharpeningに合わせて調整
-    # 高ノイズ帯(0.44+)での適応を促進するため、最終フェーズを少し手厚くする。
+    # [修正] カリキュラム: Auto-Gain向け調整
+    # Auto-Gainにより勾配が鋭くなるため、最終フェーズではLearning Rateを下げて(0.001)慎重に収束させる。
     curriculum_stages = [
         {'range': (0.0, 0.30), 'epochs': 10, 'lr': 0.1},
         {'range': (0.2, 0.40), 'epochs': 10, 'lr': 0.05},
         {'range': (0.35, 0.45), 'epochs': 15, 'lr': 0.02}, 
-        {'range': (0.40, 0.46), 'epochs': 20, 'lr': 0.005}, # Epochs 15->20
-        # 最終仕上げ: Adaptive PowerがLinear(1.0)に近い状態で安定化させる
-        {'range': (0.44, 0.47), 'epochs': 40, 'lr': 0.002}, # Epochs 30->40
+        {'range': (0.40, 0.46), 'epochs': 20, 'lr': 0.005}, 
+        # 最終仕上げ: LRを0.001に下げ、高ノイズ下での細かいアライメント調整を行う
+        {'range': (0.44, 0.47), 'epochs': 40, 'lr': 0.001}, 
     ]
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
     print(f"\nModel initialized: LogicGatedSNN (Statistical Averaging Mode)")
-    print(f"Training Logic: Granular Curriculum Learning (Adaptive Sharpening Strategy).")
+    print(f"Training Logic: Granular Curriculum Learning (Auto-Gain Strategy).")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
@@ -196,8 +196,10 @@ def run_simulation():
         if noise >= 0.5:
             if final_acc < 15.0: status = "Theoretical Limit (OK)"
             else: status = "Suspiciously High"
-        # ターゲット更新
-        if noise == 0.45 and final_acc > 88.0: status = "State-of-the-Art (Target Met)"
+        # 目標判定ロジック
+        if noise == 0.45:
+             if final_acc > 88.0: status = "TARGET ACHIEVED (SOTA)"
+             else: status = "Weak (Target Missed)"
         
         print(f"{noise:<6.2f} | {final_acc:6.1f}% | {avg_loss:6.4f} | {avg_v:6.3f} | {status}")
     
