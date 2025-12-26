@@ -170,4 +170,90 @@ class LogicGatedSNN(nn.Module):
             gate_exploit = torch.sigmoid((input_energy - (energy_threshold * 1.5)) * 10.0)
             v_exploit = torch.matmul(x * gate_exploit, w.t())
             
-            # [修正] Dynamic Top-K:
+            # [修正] Dynamic Top-K: 低エネルギー時はTop-Kを20%に拡大して情報を拾う
+            base_k = 0.15
+            adaptive_k = base_k + (0.05 if energy_ratio < 0.2 else 0.0)
+            k = int(self.out_features * adaptive_k)
+            if k < 1: k = 1
+            
+            topk_vals, _ = torch.topk(v_exploit, k, dim=1)
+            kth_val = topk_vals[:, -1].unsqueeze(1)
+            
+            dynamic_thresh = torch.maximum(torch.tensor(0.58, device=x.device), kth_val)
+            spikes_exploit = (v_exploit >= dynamic_thresh).float()
+            
+            mixer = self.path_mixer.clamp(0.0, 1.0)
+            v_mem = v_explore * (1.0 - mixer) + v_exploit * mixer
+            
+            mixed_threshold = adaptive_thresh_explore * (1.0 - mixer) + 0.58 * mixer
+            spikes = (v_mem >= mixed_threshold).float()
+            
+            if self.training:
+                self.path_mixer.add_(0.0001).clamp_(0.0, 1.0)
+        
+        if v_mem is None:
+             v_mem = torch.zeros((x.shape[0], self.out_features), device=x.device)
+             spikes = torch.zeros_like(v_mem)
+
+        with torch.no_grad():
+            v_mean = torch.mean(v_mem, dim=0).detach()
+            self.membrane_potential.copy_(v_mean)
+
+        return spikes
+
+    def update_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, reward: Union[float, torch.Tensor], learning_rate: float = 0.02) -> None:
+        if not self.trainable:
+            return
+
+        with torch.no_grad():
+            batch_size = pre_spikes.size(0)
+            pre_spikes_bipolar = (pre_spikes - 0.5) * 2.0
+            
+            if isinstance(reward, torch.Tensor) and reward.shape == post_spikes.shape:
+                target_onehot = reward
+                
+                class_sums = torch.matmul(target_onehot.t(), pre_spikes_bipolar)
+                class_counts = target_onehot.sum(dim=0).unsqueeze(1) + 1e-8
+                
+                batch_centroids = class_sums / class_counts
+                batch_centroids = F.normalize(batch_centroids, p=2, dim=1)
+                
+                delta = batch_centroids - F.normalize(self.states, p=2, dim=1)
+                delta.clamp_(-0.05, 0.05)
+                
+                update_mask = (target_onehot.sum(dim=0).unsqueeze(1) > 0).float()
+                delta = delta * update_mask
+                
+            else:
+                if isinstance(reward, float):
+                    reward_tensor = torch.full((batch_size, self.out_features), reward, device=pre_spikes.device)
+                else:
+                    reward_tensor = reward
+                delta = torch.matmul(reward_tensor.t() * post_spikes.t(), pre_spikes_bipolar) / batch_size
+                delta.clamp_(-0.05, 0.05)
+
+            momentum_val = self.hparams['momentum'] if hasattr(self, 'hparams') else 0.95
+            
+            self.momentum_buffer.mul_(momentum_val).add_(delta)
+            self.states.add_(self.momentum_buffer * learning_rate)
+            
+            mean_weight = self.states.mean(dim=1, keepdim=True)
+            self.states.sub_(mean_weight)
+            
+            norm = self.states.norm(p=2, dim=1, keepdim=True)
+            target_norm = math.sqrt(self.in_features)
+            scale_factor = target_norm / (norm + 1e-8)
+            self.states.mul_(scale_factor)
+            
+            self.states.clamp_(-20.0, 20.0)
+            
+            if self.mode == 'readout':
+                entropy = -(post_spikes * (post_spikes + 1e-8).log()).sum(dim=1).mean()
+                
+                target_ent = self.hparams['target_entropy'] if hasattr(self, 'hparams') else 0.4
+                update_rate = self.hparams['gain_update_rate'] if hasattr(self, 'hparams') else 0.05
+                limit = self.hparams['gain_limit'] if hasattr(self, 'hparams') else 50.0
+
+                gain_delta = update_rate * (entropy - target_ent)
+                self.adaptive_threshold.add_(gain_delta)
+                self.adaptive_threshold.clamp_(5.0, limit)
