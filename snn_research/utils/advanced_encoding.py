@@ -1,88 +1,139 @@
 # ファイルパス: snn_research/utils/advanced_encoding.py
-# タイトル: SDRエンコーダ (Sparse Distributed Representation)
-# 内容: k-WTAを用いたスパース表現生成により、強力なノイズ除去を実現
+# タイトル: 空間認識ハイブリッドエンコーダ (Spatial-Aware Hybrid Encoder)
+# 内容: 空間フィルタリングでノイズを除去してから、コントラスト強調とスパース射影を行う3段構成
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+class SpatialDenoising(nn.Module):
+    """
+    空間的なつながりを利用してノイズを除去するモジュール。
+    ランダムなノイズは孤立していることが多いが、数字は線でつながっていることを利用する。
+    """
+    def __init__(self, input_dim: int):
+        super().__init__()
+        self.input_dim = input_dim
+        self.side_len = int(math.sqrt(input_dim))
+        
+        # 1D入力を2D画像とみなして処理するための準備
+        if self.side_len * self.side_len != input_dim:
+            # 正方形でない場合は処理をスキップするためのフラグ
+            self.skip = True
+        else:
+            self.skip = False
+            
+            # 3x3の平滑化フィルタ（ガウシアンライク）
+            kernel = torch.tensor([
+                [0.5, 1.0, 0.5],
+                [1.0, 2.0, 1.0],
+                [0.5, 1.0, 0.5]
+            ]).unsqueeze(0).unsqueeze(0)
+            kernel = kernel / kernel.sum() # 正規化
+            self.register_buffer('kernel', kernel)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.skip:
+            return x
+            
+        batch_size = x.size(0)
+        
+        # [Batch, 784] -> [Batch, 1, 28, 28]
+        x_img = x.view(batch_size, 1, self.side_len, self.side_len)
+        
+        # 畳み込みによる平滑化（ノイズ低減）
+        x_smooth = F.conv2d(x_img, self.kernel, padding=1)
+        
+        # 元の入力との積を取ることで、「周囲も活性化しているピクセル」だけを残す
+        # これにより孤立したノイズ（周囲が0）は抑制される
+        x_filtered = x_img * x_smooth
+        
+        # [Batch, 784] に戻す
+        return x_filtered.view(batch_size, -1)
+
 class SparsePatternSeparator(nn.Module):
-    """
-    SDR生成モジュール
-    高次元空間へ射影後、k-Winner-Take-All (k-WTA) を適用して
-    ノイズに強いスパース分散表現を作成する。
-    """
-    
     def __init__(
         self,
         input_dim: int,
-        expansion_ratio: int = 4,  # 3 -> 4 (表現力確保のため少し戻す)
-        sparsity: float = 0.15,    # 重み行列の疎性
-        activity_sparsity: float = 0.1 # k-WTAの活性化率 (上位10%のみ残す)
+        expansion_ratio: int = 3, # 速度重視で3倍
+        sparsity: float = 0.2,
+        activity_sparsity: float = 0.15 
     ):
         super().__init__()
-        
         self.input_dim = input_dim
         self.output_dim = input_dim * expansion_ratio
         self.activity_sparsity = activity_sparsity
         
-        # 固定ランダム重み
         weights = torch.randn(self.output_dim, input_dim)
         mask = (torch.rand_like(weights) < sparsity).float()
-        
-        # スケーリング
         weights = weights * mask * (1.5 / math.sqrt(input_dim * sparsity))
-        
         self.register_buffer('projection_weights', weights)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # バイポーラ入力
-        if x.min() >= 0:
-            x_bipolar = (x - 0.5) * 2.0
-        else:
-            x_bipolar = x
-            
-        # 線形射影
-        projected = torch.matmul(x_bipolar, self.projection_weights.t())
+        # バイポーラ変換なし（フィルタリング済みの強度をそのまま使う）
+        projected = torch.matmul(x, self.projection_weights.t())
         
-        # === k-WTA (k-Winner-Take-All) ===
-        # 上位k個の強い反応だけを残し、それ以外（ノイズ成分）をゼロにする
+        # k-WTA
         k = int(self.output_dim * self.activity_sparsity)
         if k < 1: k = 1
         
-        # top-kの値を取得
         top_values, _ = torch.topk(projected, k, dim=1)
-        # k番目の値を閾値とする
         threshold = top_values[:, -1].unsqueeze(1)
         
-        # 閾値以下の活動をゼロにするマスク
-        # ReLUも含めて、正の強い相関のみを通す
         mask = (projected >= threshold).float()
         encoded = F.relu(projected) * mask
-        
-        # 正規化
         encoded = F.normalize(encoded, p=2, dim=1)
-        
         return encoded
 
+class AdaptiveContrastEncoder(nn.Module):
+    def __init__(self, input_dim, power=2.0):
+        super().__init__()
+        self.power = power
+        
+    def forward(self, x):
+        # 信号を強調
+        return x.pow(self.power)
+
 class HybridEncoder(nn.Module):
+    """
+    3段階の処理を行う高性能エンコーダ
+    1. 空間デノイズ: 孤立ノイズを除去
+    2. コントラスト強調: 信号成分を増幅
+    3. スパース射影: パターン分離
+    """
     def __init__(
         self,
         input_dim: int,
         use_multiscale: bool = True,
         use_error_correction: bool = False,
-        use_adaptive_contrast: bool = False
+        use_adaptive_contrast: bool = True
     ):
         super().__init__()
-        # SDRエンコーダを使用
+        
+        # 1. 空間フィルタリング
+        self.denoiser = SpatialDenoising(input_dim)
+        
+        # 2. コントラスト強調
+        self.contrast = AdaptiveContrastEncoder(input_dim, power=2.0)
+        
+        # 3. スパース射影 (次元拡張)
         self.separator = SparsePatternSeparator(
             input_dim, 
-            expansion_ratio=4, 
-            sparsity=0.15,
-            activity_sparsity=0.1 # 上位10%のみ活性化
+            expansion_ratio=4, # ここで次元を増やす
+            sparsity=0.2
         )
+        
         self.output_dim = self.separator.output_dim
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.separator(x)
+        # Step 1: Denoise
+        x = self.denoiser(x)
+        
+        # Step 2: Contrast
+        x = self.contrast(x)
+        
+        # Step 3: Separate
+        x = self.separator(x)
+        
+        return x
