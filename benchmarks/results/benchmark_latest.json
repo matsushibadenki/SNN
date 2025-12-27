@@ -1,16 +1,34 @@
 {
-  "timestamp": "2025-12-19 17:41:18.511028",
+  "timestamp": "2025-12-26 11:30:22.058667",
   "hardware": "mps",
   "tests": {
-    "smoke_HealthCheck_Model": {
-      "status": "PASSED",
-      "duration_sec": 0.0635991096496582,
-      "details": "Model built and inference successful."
+    "smoke_SFormer_T1": {
+      "status": "PASSED"
     },
-    "efficiency_HealthCheck_Model": {
+    "efficiency_SFormer_T1": {
       "status": "PASSED",
-      "latency_ms": 26.066455841064453,
-      "energy_joules": 3.35533625e-08
+      "latency_ms": 3.606882095336914,
+      "avg_spikes": 3299.3125
+    },
+    "train_SFormer_T1": {
+      "status": "PASSED",
+      "steps_per_sec": 64.46921579820908,
+      "initial_loss": 2.4030585289001465,
+      "final_loss": 0.000504484458360821
+    },
+    "smoke_SNN_DSA": {
+      "status": "PASSED"
+    },
+    "efficiency_SNN_DSA": {
+      "status": "PASSED",
+      "latency_ms": 12.735300064086914,
+      "avg_spikes": 834.0
+    },
+    "train_SNN_DSA": {
+      "status": "PASSED",
+      "steps_per_sec": 44.711399983668834,
+      "initial_loss": 3.580577850341797,
+      "final_loss": 0.00033447236637584865
     }
   }
 }
