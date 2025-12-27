@@ -1,6 +1,7 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn_v2_1.py
 # タイトル: SCAL v2.1 - 改善版（閾値制御・マルチスケール）
 # 改善点: 閾値適応の安定化、マルチスケール特徴、温度制御
+# 修正履歴: v_th_init の保存漏れを修正
 
 import torch
 import torch.nn as nn
@@ -87,8 +88,9 @@ class ImprovedPhaseCriticalSCAL(nn.Module):
         self.out_features = out_features
         self.mode = mode
         
-        # パラメータ
+        # パラメータ保存 (ここを修正: self.v_th_init を追加)
         self.gamma = gamma
+        self.v_th_init = v_th_init  # 追加
         self.v_th_min = v_th_min
         self.v_th_max = v_th_max
         self.temperature_base = temperature_base
@@ -167,6 +169,7 @@ class ImprovedPhaseCriticalSCAL(nn.Module):
         # 分散だけでなく、現在の閾値も考慮
         base_temp = self.temperature_base
         variance_factor = (1.0 + 0.5 * self.class_variance_memory.unsqueeze(0))
+        # ここで self.v_th_init が必要
         threshold_factor = (self.adaptive_threshold.unsqueeze(0) / self.v_th_init)
         
         temperature = base_temp * variance_factor * threshold_factor
