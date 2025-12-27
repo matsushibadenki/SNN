@@ -1,71 +1,80 @@
 # ファイルパス: snn_research/core/synapse_dynamics.py
-# (修正: apply_probabilistic_transmission に training 引数を追加)
-#
-# Title: シナプスダイナミクス (可塑性)
+# Title: シナプスダイナミクス (可塑性 & ホメオスタシス)
 # Description:
-# - SNNの学習において重要な、シナプスの動的な性質をモデル化する。
-# - STDP, STP, および確率的伝達の実装。
-#
-# mypy --strict 準拠。
+# - STDP, STP に加え、Homeostatic Plasticity (Synaptic Scaling) を実装。
+# - 生体の恒常性維持機構を模倣し、学習の安定性を劇的に向上させる。
 
 import torch
 import torch.nn as nn
 from typing import Tuple, Optional, Dict, Any
 
 def apply_probabilistic_transmission(x: torch.Tensor, reliability: float = 1.0, training: bool = True) -> torch.Tensor:
-    """
-    確率的なシナプス伝達をシミュレートする。
-    入力信号 x に対して、確率 reliability で信号を通過させるドロップアウトマスクを適用する。
-    
-    Args:
-        x (torch.Tensor): 入力スパイクまたは電流。
-        reliability (float): 伝達成功確率 (0.0 ~ 1.0)。
-                             1.0 なら全ての信号が通過 (変化なし)。
-                             0.0 なら全ての信号が遮断 (ゼロ)。
-        training (bool): 学習モードかどうか。
-                         生物学的シミュレーションとしては常に適用する場合もあるが、
-                         互換性のため引数として受け取る (デフォルトは True)。
-    
-    Returns:
-        torch.Tensor: 確率的にマスクされた出力。
-    """
+    """確率的なシナプス伝達をシミュレートする"""
     if reliability >= 1.0:
         return x
     if reliability <= 0.0:
         return torch.zeros_like(x)
     
-    # trainingフラグを考慮するかどうかは設計次第だが、
-    # ここでは生物学的妥当性を重視し、training=Falseでも確率的挙動を維持する実装とする。
-    # (もし推論時に決定論的にしたい場合は `if not training: return x * reliability` とする)
-    
     if x.is_floating_point():
         mask = (torch.rand_like(x) < reliability).float()
     else:
-        # 整数型やブール型の場合
         mask = (torch.rand_like(x.float()) < reliability).to(x.dtype)
         
     return x * mask
 
 
 class SynapseDynamics(nn.Module):
-    """
-    シナプスダイナミクスの基底クラス。
-    """
     def __init__(self) -> None:
         super().__init__()
 
     def forward(self, weight: torch.Tensor, pre_spikes: torch.Tensor, post_spikes: torch.Tensor) -> torch.Tensor:
-        """
-        重みの更新、または動的な重みの適用を行う。
-        """
         raise NotImplementedError
+
+class HomeostaticPlasticity(SynapseDynamics):
+    """
+    Synaptic Scaling (Homeostatic Plasticity).
+    ニューロンの長期的な発火率を監視し、目標発火率に近づけるように
+    シナプス重み全体を乗法的にスケーリングする。
+    
+    Delta W = alpha * (Target_Rate - Avg_Rate) * W
+    """
+    avg_firing_rate: torch.Tensor
+
+    def __init__(self, features: int, target_rate: float = 0.05, alpha: float = 0.01, decay: float = 0.99):
+        super().__init__()
+        self.features = features
+        self.target_rate = target_rate
+        self.alpha = alpha
+        self.decay = decay
+        
+        # 移動平均発火率の保存
+        self.register_buffer('avg_firing_rate', torch.zeros(features))
+
+    def update(self, weight: torch.nn.Parameter, post_spikes: torch.Tensor) -> None:
+        """
+        Args:
+            weight: (Out, In)
+            post_spikes: (Batch, Out)
+        """
+        # 現在のバッチでの発火率 (Batch方向の平均)
+        current_rate = post_spikes.float().mean(dim=0)
+        
+        # 移動平均の更新
+        self.avg_firing_rate = self.avg_firing_rate * self.decay + current_rate * (1.0 - self.decay)
+        
+        # スケーリング係数の計算
+        # 発火率が低すぎる -> factor > 0 -> 重み増加
+        # 発火率が高すぎる -> factor < 0 -> 重み減少
+        scaling_factor = (self.target_rate - self.avg_firing_rate) * self.alpha
+        
+        # 重みの更新 (Weight * (1 + scaling))
+        # unsqueeze(1) で入力次元に対してブロードキャスト
+        with torch.no_grad():
+            weight.add_(weight * scaling_factor.unsqueeze(1))
 
 
 class STDP(SynapseDynamics):
-    """
-    Spike-Timing Dependent Plasticity (STDP) 実装。
-    トレースベースの簡易実装。
-    """
+    """Spike-Timing Dependent Plasticity (STDP)"""
     pre_trace: torch.Tensor
     post_trace: torch.Tensor
 
@@ -97,12 +106,6 @@ class STDP(SynapseDynamics):
         pre_spikes: torch.Tensor, 
         post_spikes: torch.Tensor
     ) -> None:
-        """
-        STDP則に基づいて重みを更新する。
-        pre_spikes: (Batch, In_Features)
-        post_spikes: (Batch, Out_Features)
-        weight: (Out_Features, In_Features)
-        """
         batch_size = pre_spikes.shape[0]
         
         if self.pre_trace.shape[0] != batch_size or self.pre_trace.shape[1] != pre_spikes.shape[1]:
@@ -124,10 +127,7 @@ class STDP(SynapseDynamics):
 
 
 class STP(SynapseDynamics):
-    """
-    Short-Term Plasticity (STP) 実装。
-    Markram et al. (1998) モデルに基づく。
-    """
+    """Short-Term Plasticity (STP)"""
     u: torch.Tensor
     x: torch.Tensor
 
