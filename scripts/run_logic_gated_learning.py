@@ -82,47 +82,53 @@ def run_simulation():
 
     IN_FEATURES = 784
     OUT_FEATURES = 10
-    # [修正] バッチサイズ4096固定。
-    # 巨大バッチによる勾配安定化と、計算効率のバランスが最も良い。
-    BATCH_SIZE = 4096
     TOTAL_SAMPLES = 60000
     
-    # [修正] カリキュラム: Hyper-Contrast Boosting v20 (High-Plasticity Stability)
-    # v19の反省: 最終段階でのバッチ縮小とLR低下が、活性低下(死の谷)を招いた。
-    # v20の戦略: 
-    # 1. 最後までバッチサイズ4096とLR 0.001を維持し、ニューロンを元気に保つ。
-    # 2. ターゲット範囲を(0.42, 0.46)と広めにとり、特定のノイズパターンへの過学習を防ぐ。
-    # 3. サポートデータ(0.25)を15%混ぜ、安定したベースライン活性を供給する。
+    # [修正] カリキュラム: Hyper-Contrast Boosting v24 (Chaotic Resonance)
+    # v23の反省: 巨大バッチ固定では局所解にハマる。
+    # v24の戦略: 
+    # 1. バッチサイズを交互に切り替える(Oscillation)。
+    #    8192(安定) <-> 1024(不安定) を繰り返すことで、解空間を揺さぶり、より良い極小値へ誘導する。
+    # 2. ターゲット範囲を広め(0.40-0.46)から狭め(0.44-0.455)へ徐々にシフト。
+    # 3. サポート(0.35)は維持し、V_Meanを守る。
     curriculum_stages = [
         # 初期: 基礎
-        {'mixture': [((0.0, 0.30), 1.0)], 'epochs': 10, 'lr': 0.1},
-        {'mixture': [((0.2, 0.40), 1.0)], 'epochs': 10, 'lr': 0.05},
+        {'mixture': [((0.0, 0.30), 1.0)], 'epochs': 10, 'lr': 0.1, 'batch': 2048},
+        {'mixture': [((0.2, 0.40), 1.0)], 'epochs': 10, 'lr': 0.05, 'batch': 2048},
         
         # 中盤: 混合開始
-        {'mixture': [((0.35, 0.45), 0.8), (0.20, 0.2)], 'epochs': 20, 'lr': 0.02},
+        {'mixture': [((0.35, 0.45), 0.8), (0.30, 0.2)], 'epochs': 20, 'lr': 0.02, 'batch': 4096},
         
-        # 終盤1: 負荷を高める
-        {'mixture': [((0.40, 0.46), 0.8), (0.25, 0.2)], 'epochs': 30, 'lr': 0.005},
+        # === Chaotic Resonance Phase ===
+        # バッチサイズを振動させ、局所解からの脱出を図る。
         
-        # 終盤2: ターゲットゾーンへ移行。サポート比率を15%に調整。
-        {'mixture': [((0.42, 0.46), 0.85), (0.25, 0.15)], 'epochs': 40, 'lr': 0.002},
+        # Cycle 1: 広域探索
+        {'mixture': [((0.40, 0.46), 0.85), (0.35, 0.15)], 'epochs': 20, 'lr': 0.005, 'batch': 8192},
+        {'mixture': [((0.40, 0.46), 0.85), (0.35, 0.15)], 'epochs': 20, 'lr': 0.005, 'batch': 1024}, # 揺さぶり
         
-        # 仕上げ: 高可塑性維持(LR 0.001)。範囲は広めのまま。
-        # これにより、0.45を含む高ノイズ領域全体でのロバスト性を獲得する。
-        {'mixture': [((0.42, 0.46), 0.85), (0.25, 0.15)], 'epochs': 60, 'lr': 0.001}, 
+        # Cycle 2: ターゲット絞り込み
+        {'mixture': [((0.43, 0.455), 0.9), (0.35, 0.1)], 'epochs': 20, 'lr': 0.002, 'batch': 8192},
+        {'mixture': [((0.43, 0.455), 0.9), (0.35, 0.1)], 'epochs': 20, 'lr': 0.002, 'batch': 1024}, # 揺さぶり
+        
+        # Cycle 3: 最終収束 (ターゲット0.45)
+        # ここでは巨大バッチで安定化させつつ、0.455の上限で少し負荷をかける
+        {'mixture': [((0.44, 0.455), 0.9), (0.35, 0.1)], 'epochs': 50, 'lr': 0.001, 'batch': 8192},
+        
+        # Final Polish: 最小LRで仕上げ
+        {'mixture': [((0.445, 0.455), 0.9), (0.35, 0.1)], 'epochs': 50, 'lr': 0.0005, 'batch': 4096}, 
     ]
     
     layer = LogicGatedSNN(IN_FEATURES, OUT_FEATURES, mode='readout').to(device)
     
     print(f"\nModel initialized: LogicGatedSNN (Statistical Averaging Mode)")
-    print(f"Training Logic: Granular Curriculum Learning (High-Plasticity v20).")
+    print(f"Training Logic: Granular Curriculum Learning (Chaotic Resonance v24).")
     
     _, _, shared_prototypes = generate_synthetic_data(num_samples=1, in_features=IN_FEATURES, out_features=OUT_FEATURES)
     shared_prototypes = shared_prototypes.to(device)
 
     print("\nStarting Curriculum Training Phase...")
-    print(f"{'Epoch':<6} | {'Target Range (Ratio)':<25} | {'Supp':<8} | {'Acc':<6} | {'Loss':<6} | {'LR':<8} | {'V_Mean':<6} | {'Time'}")
-    print("-" * 105)
+    print(f"{'Epoch':<6} | {'Target Range (Ratio)':<25} | {'Supp':<8} | {'Acc':<6} | {'Loss':<6} | {'LR':<8} | {'Batch':<6} | {'V_Mean':<6} | {'Time'}")
+    print("-" * 115)
     
     start_time = time.time()
     
@@ -133,12 +139,13 @@ def run_simulation():
         mixture = stage['mixture']
         stage_epochs = stage['epochs']
         lr = stage['lr']
+        batch_size = stage['batch']
         
         # 表示用文字列
         main_conf = mixture[0]
         supp_conf = mixture[1] if len(mixture) > 1 else (0.0, 0.0)
         main_str = f"{str(main_conf[0])} ({main_conf[1]*100:.0f}%)"
-        supp_str = f"{str(supp_conf[0])}" if supp_conf[1] > 0 else "-"
+        supp_str = f"{str(supp_conf[0])} ({supp_conf[1]*100:.0f}%)" if supp_conf[1] > 0 else "None"
         
         for _ in range(stage_epochs):
             current_epoch += 1
@@ -153,7 +160,7 @@ def run_simulation():
             x_train, y_train = x_train.to(device), y_train.to(device)
             
             dataset = TensorDataset(x_train, y_train)
-            loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=(device.type=='cuda'))
+            loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, pin_memory=(device.type=='cuda'))
 
             epoch_correct = 0
             total_seen = 0
@@ -188,6 +195,7 @@ def run_simulation():
                   f"{epoch_acc:5.1f}% | "
                   f"{avg_loss:6.4f} | "
                   f"{lr:.6f} | "
+                  f"{batch_size:<6} | "
                   f"{v_mean_val:6.3f} | "
                   f"{elapsed:.0f}s")
         
