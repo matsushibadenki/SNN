@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/logic_gated_snn_v2_1.py
-# タイトル: SCAL v2.1 - バランス調整版
-# 内容: 過度な抑制を排除し、信号透過率を向上
+# タイトル: SCAL v2.1 - Spatial Optimized
+# 内容: エンコーダ変更への対応と、適応的学習率の導入
 
 import torch
 import torch.nn as nn
@@ -29,7 +29,7 @@ class ImprovedPhaseCriticalSCAL(nn.Module):
         in_features: int,
         out_features: int,
         mode: str = 'readout',
-        gamma: float = 0.005,              # 0.008 -> 0.005 (閾値上昇をマイルドに)
+        gamma: float = 0.005,
         v_th_init: float = 1.0,
         v_th_min: float = 0.1,
         v_th_max: float = 15.0,
@@ -37,7 +37,7 @@ class ImprovedPhaseCriticalSCAL(nn.Module):
         target_spike_rate: float = 0.15,
         use_multiscale: bool = True,
         variance_ema_factor: float = 0.95,
-        spike_rate_control_strength: float = 0.1  # 0.05 -> 0.1 (目標スパイク率への追従を強化)
+        spike_rate_control_strength: float = 0.1
     ):
         super().__init__()
         
@@ -96,23 +96,20 @@ class ImprovedPhaseCriticalSCAL(nn.Module):
         w_norm = F.normalize(self.synapse_weights, p=2, dim=1, eps=1e-8)
         cosine_sim = torch.matmul(x_norm, w_norm.t())
         
-        # 適応的ゲイン (信号強度に応じて調整)
+        # ゲイン設定: Pattern Separatorの出力は既に整形されているので
+        # 過度なゲインは不要だが、決定境界を鋭くするために適度にかける
         signal_strength = cosine_sim.abs().max(dim=1, keepdim=True)[0]
-        # 信号が弱い(ノイズが多い)ときはゲインを上げて補償する
-        adaptive_gain = 10.0 + 20.0 * (1.0 - signal_strength.clamp(0.0, 1.0))
+        adaptive_gain = 15.0 + 15.0 * (1.0 - signal_strength.clamp(0.0, 1.0))
         
         v_current = cosine_sim * adaptive_gain
         
         base_temp = self.temperature_base
-        variance_factor = (1.0 + 0.2 * self.class_variance_memory.unsqueeze(0)) # 0.5 -> 0.2 (温度上昇を抑える)
+        variance_factor = (1.0 + 0.2 * self.class_variance_memory.unsqueeze(0))
         threshold_factor = (self.adaptive_threshold.unsqueeze(0) / self.v_th_init)
         temperature = base_temp * variance_factor * threshold_factor
         
         spike_logits = (v_current - self.adaptive_threshold.unsqueeze(0)) / (temperature + 1e-8)
         spike_prob = torch.sigmoid(spike_logits)
-        
-        # k-WTA (側抑制) は廃止し、純粋なSoftmax/Sigmoid確率分布を使用する
-        # これによりアンサンブル時の「迷い」を有効活用できる
         
         if self.training:
             gumbel_noise = -torch.log(-torch.log(torch.rand_like(spike_prob) + 1e-8) + 1e-8)
@@ -150,14 +147,25 @@ class ImprovedPhaseCriticalSCAL(nn.Module):
             else:
                 pre_features = (pre_activity - 0.5) * 2.0
             
-            # Weight Update
-            class_sums = torch.matmul(target_onehot.t(), pre_features)
-            class_counts = target_onehot.sum(dim=0, keepdim=True).t() + 1e-8
+            # === 適応的学習率 ===
+            # ノイズが多く、確信度が低い場合は学習率を下げる
+            # output shape: [batch, classes]
+            output = post_output['output']
+            confidence, _ = output.max(dim=1)
+            # 確信度が低いサンプルに対する学習率を減衰させる (間違った教師信号への過学習防止)
+            # confidence: 0.1~1.0 -> adaptive_lr_factor: 0.1~1.0
+            adaptive_lr_factor = confidence.unsqueeze(1)
+            
+            class_sums = torch.matmul(target_onehot.t(), pre_features * adaptive_lr_factor)
+            # 重み付きカウント
+            class_counts = torch.matmul(target_onehot.t(), adaptive_lr_factor).squeeze() + 1e-8
+            class_counts = class_counts.unsqueeze(1)
+            
             batch_centroids = F.normalize(class_sums / class_counts, p=2, dim=1)
             
             current_weights_norm = F.normalize(self.synapse_weights, p=2, dim=1)
             delta = batch_centroids - current_weights_norm
-            update_mask = (class_counts.squeeze() > 0).float().unsqueeze(1)
+            update_mask = (class_counts.squeeze() > 0.01).float().unsqueeze(1)
             
             self.momentum_buffer.mul_(0.95).add_(delta * update_mask)
             self.synapse_weights.add_(self.momentum_buffer * learning_rate)
@@ -176,14 +184,10 @@ class ImprovedPhaseCriticalSCAL(nn.Module):
                 class_variance * (1.0 - self.variance_ema_factor)
             )
             
-            # ロジック改善: 分散による閾値上昇を抑制
             variance_effect = torch.sigmoid((self.class_variance_memory - 1.0))
-            # gamma係数を小さくしたため、上昇幅が減る
             threshold_factor_variance = 1.0 + self.gamma * variance_effect
             
-            # スパイク率によるフィードバックを強化
             spike_rate_error = self.spike_rate_ema.item() - self.target_spike_rate
-            # 制御強度を上げたため、スパイク率低下時(error < 0)に強力に閾値を下げる
             threshold_factor_spike = 1.0 + self.spike_rate_control_strength * spike_rate_error
             
             combined_factor = (threshold_factor_variance * threshold_factor_spike).clamp(0.98, 1.02)
