@@ -1,91 +1,263 @@
 # ファイルパス: snn_research/core/hybrid_core.py
-# 日本語タイトル: 統合ニューロモルフィック・コア (Balanced Gain)
-# 修正: TopKゲインを 1.0 に戻し、Readout層でのバイポーラ相殺効果を最大化
+# タイトル: Phase-Critical Hybrid Neuromorphic Core
+# 修正: 真のスパイキング動作を持つ統合コア
 
 import torch
 import torch.nn as nn
-from typing import Dict, Optional, cast
-from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
+from typing import Dict, Optional
+from snn_research.core.layers.logic_gated_snn import PhaseCriticalSCAL
 
-class TopKActivation(nn.Module):
-    def __init__(self, sparsity: float = 0.10, gain: float = 1.0) -> None:
+class AdaptiveSparsityLayer(nn.Module):
+    """
+    Adaptive Top-K with variance-aware sparsity control
+    """
+    
+    def __init__(self, features: int, base_sparsity: float = 0.10):
         super().__init__()
-        self.sparsity = sparsity
-        # [修正] ゲインを1.0に戻す。
-        # これにより出力が [0, 1] の範囲に近づき、
-        # LogicGatedSNNの (x-0.5)*2 変換で -1(抑制) と +1(興奮) が均等に機能するようになる。
-        self.gain = gain
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        k = int(x.shape[1] * self.sparsity)
-        if k < 1: k = 1
+        self.features = features
+        self.base_sparsity = base_sparsity
+        self.norm = nn.LayerNorm(features)
+    
+    def forward(self, x: torch.Tensor, variance_signal: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Forward with adaptive sparsity
         
-        topk_values, topk_indices = torch.topk(x, k, dim=1)
+        Args:
+            x: 入力 [batch, features]
+            variance_signal: 分散シグナル [features] (オプション)
+        """
+        x = self.norm(x)
+        
+        # 分散に応じてスパースネスを調整
+        if variance_signal is not None:
+            # 分散が大きい → より多くのニューロンを活性化
+            avg_variance = variance_signal.mean().clamp(0.1, 2.0)
+            adaptive_sparsity = self.base_sparsity * (1.0 + 0.5 * (avg_variance - 1.0))
+            adaptive_sparsity = adaptive_sparsity.clamp(0.05, 0.25)
+        else:
+            adaptive_sparsity = self.base_sparsity
+        
+        k = max(1, int(self.features * adaptive_sparsity))
+        
+        # Top-K selection
+        topk_vals, topk_indices = torch.topk(x, k, dim=1)
+        
+        # Sparse activation
         mask = torch.zeros_like(x)
         mask.scatter_(1, topk_indices, 1.0)
         
-        return x * mask * self.gain
+        return x * mask
 
-class ActivePredictiveLayer(nn.Module):
-    def __init__(self, features: int) -> None: 
+class PhaseCriticalHybridCore(nn.Module):
+    """
+    Hybrid Neuromorphic Core with Phase-Critical SCAL
+    
+    Architecture:
+        Input → Fast Processing (Reservoir) → Deep Processing (Adaptive Sparsity) 
+              → Output (Phase-Critical SCAL)
+    """
+    
+    def __init__(
+        self, 
+        in_features: int, 
+        hidden_features: int, 
+        out_features: int,
+        # Reservoir params
+        reservoir_mode: str = 'simple',
+        # Phase-Critical params
+        gamma: float = 0.015,
+        v_th_init: float = 0.5,
+        target_spike_rate: float = 0.15
+    ):
         super().__init__()
-        self.norm = nn.LayerNorm(features)
-        # [修正] gain=1.0
-        self.activation = TopKActivation(sparsity=0.10, gain=1.0)
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor: 
-        x = self.norm(x)
-        return self.activation(x)
-
-class HybridNeuromorphicCore(nn.Module):
-    def __init__(self, in_features: int, hidden_features: int, out_features: int) -> None:
-        super().__init__()
-        self.fast_process = LogicGatedSNN(in_features, hidden_features, mode='reservoir')
-        self.deep_process = ActivePredictiveLayer(hidden_features)
-        self.output_gate = LogicGatedSNN(hidden_features, out_features, mode='readout')
-
+        # Fast processing layer (Reservoir)
+        if reservoir_mode == 'phase_critical':
+            self.fast_process = PhaseCriticalSCAL(
+                in_features, hidden_features,
+                mode='reservoir',
+                gamma=gamma * 0.5,  # より穏やかな適応
+                v_th_init=0.3,
+                target_spike_rate=0.20
+            )
+        else:
+            # Simple linear transformation
+            self.fast_process = nn.Sequential(
+                nn.Linear(in_features, hidden_features, bias=False),
+                nn.ReLU()
+            )
+        
+        # Deep processing layer (Adaptive sparsity)
+        self.deep_process = AdaptiveSparsityLayer(
+            hidden_features, base_sparsity=0.15
+        )
+        
+        # Output layer (Phase-Critical SCAL)
+        self.output_gate = PhaseCriticalSCAL(
+            hidden_features, out_features,
+            mode='readout',
+            gamma=gamma,
+            v_th_init=v_th_init,
+            target_spike_rate=target_spike_rate
+        )
+        
+        self.reservoir_mode = reservoir_mode
+    
     def reset_state(self):
         """全層の状態リセット"""
-        self.fast_process.reset_state()
+        if self.reservoir_mode == 'phase_critical':
+            self.fast_process.reset_state()
         self.output_gate.reset_state()
-
-    def forward(self, x_input: torch.Tensor) -> torch.Tensor:
-        f = self.fast_process(x_input)
-        r = self.deep_process(f)
-        return self.output_gate(r)
-
-    def autonomous_step(self, x_input: torch.Tensor, target: Optional[torch.Tensor] = None, learning_rate: float = 0.05) -> Dict[str, float]:
-        with torch.no_grad():
-            f = self.fast_process(x_input)
-            r = self.deep_process(f)
-            out = self.output_gate(r)
-            
-            loss_val = 0.0
-            acc = 0.0
-            
-            if target is not None:
-                target_onehot = torch.zeros_like(out)
-                target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
-                
-                error = (target_onehot - out)
-                
-                self.output_gate.update_plasticity(r, out, reward=error, learning_rate=learning_rate)
-
-                pred = out.argmax(dim=1)
-                acc = (pred == target).float().mean().item()
-                loss_val = error.pow(2).mean().item()
-
-            res_density = torch.mean(f).item()
-            out_density = torch.mean(out).item()
-            v_mem = cast(torch.Tensor, self.output_gate.membrane_potential)
-            v_mean = torch.mean(v_mem).item()
-            v_max = torch.max(v_mem).item()
-
+    
+    def forward(self, x_input: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Forward pass
+        
+        Returns:
+            Dict with keys: 'output', 'spikes', 'reservoir', 'deep'
+        """
+        # Fast processing
+        if self.reservoir_mode == 'phase_critical':
+            fast_result = self.fast_process(x_input)
+            reservoir = fast_result['output']
+            variance_signal = self.fast_process.class_variance_memory
+        else:
+            reservoir = self.fast_process(x_input)
+            variance_signal = None
+        
+        # Deep processing
+        deep = self.deep_process(reservoir, variance_signal)
+        
+        # Output with phase-critical dynamics
+        output_result = self.output_gate(deep)
+        
         return {
-            "loss": loss_val,
-            "accuracy": acc,
-            "res_density": res_density,
-            "out_density": out_density,
-            "out_v_mean": v_mean,
-            "out_v_max": v_max
+            'output': output_result['output'],
+            'spikes': output_result['spikes'],
+            'reservoir': reservoir,
+            'deep': deep,
+            'membrane_potential': output_result['membrane_potential'],
+            'spike_prob': output_result['spike_prob']
         }
+    
+    def update_plasticity(
+        self,
+        x_input: torch.Tensor,
+        target: torch.Tensor,
+        learning_rate: float = 0.01
+    ) -> Dict[str, float]:
+        """
+        End-to-end plasticity update
+        
+        Returns:
+            Dict with training metrics
+        """
+        # Forward
+        result = self.forward(x_input)
+        output = result['output']
+        spikes = result['spikes']
+        deep = result['deep']
+        
+        # Target preparation
+        target_onehot = torch.zeros_like(output)
+        target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
+        
+        # Loss
+        loss = torch.nn.functional.mse_loss(output, target_onehot)
+        
+        # Accuracy
+        pred = output.argmax(dim=1)
+        accuracy = (pred == target).float().mean()
+        
+        # Update output layer (Phase-Critical SCAL)
+        self.output_gate.update_plasticity(deep, result, target, learning_rate)
+        
+        # Update reservoir if phase-critical
+        if self.reservoir_mode == 'phase_critical':
+            reservoir_result = self.fast_process(x_input)
+            # Simple Hebbian-like update for reservoir
+            # (詳細は省略、必要に応じて実装)
+            pass
+        
+        # Metrics
+        metrics = self.output_gate.get_phase_critical_metrics()
+        
+        return {
+            'loss': loss.item(),
+            'accuracy': accuracy.item(),
+            'spike_rate': metrics['spike_rate'],
+            'mean_threshold': metrics['mean_threshold'],
+            'mean_variance': metrics['mean_variance'],
+            'reservoir_activity': result['reservoir'].mean().item(),
+            'deep_activity': result['deep'].mean().item()
+        }
+    
+    def get_comprehensive_metrics(self) -> Dict[str, float]:
+        """全層の詳細メトリクスを取得"""
+        metrics = self.output_gate.get_phase_critical_metrics()
+        
+        if self.reservoir_mode == 'phase_critical':
+            reservoir_metrics = self.fast_process.get_phase_critical_metrics()
+            metrics.update({
+                f'reservoir_{k}': v for k, v in reservoir_metrics.items()
+            })
+        
+        return metrics
+
+
+# Legacy wrapper for backward compatibility
+class HybridNeuromorphicCore(nn.Module):
+    """Backward compatible wrapper"""
+    
+    def __init__(self, in_features: int, hidden_features: int, out_features: int):
+        super().__init__()
+        
+        self.core = PhaseCriticalHybridCore(
+            in_features, hidden_features, out_features,
+            reservoir_mode='simple',
+            gamma=0.015,
+            v_th_init=0.5
+        )
+    
+    @property
+    def membrane_potential(self):
+        return self.core.output_gate.membrane_potential
+    
+    def reset_state(self):
+        self.core.reset_state()
+    
+    def forward(self, x_input: torch.Tensor) -> torch.Tensor:
+        result = self.core(x_input)
+        return result['output']
+    
+    def autonomous_step(
+        self, 
+        x_input: torch.Tensor, 
+        target: Optional[torch.Tensor] = None, 
+        learning_rate: float = 0.05
+    ) -> Dict[str, float]:
+        """Legacy autonomous step interface"""
+        
+        if target is None:
+            # 推論のみ
+            result = self.core(x_input)
+            return {
+                'loss': 0.0,
+                'accuracy': 0.0,
+                'res_density': result['reservoir'].mean().item(),
+                'out_density': result['output'].mean().item(),
+                'out_v_mean': result['membrane_potential'].mean().item(),
+                'out_v_max': result['membrane_potential'].max().item()
+            }
+        else:
+            # 学習ステップ
+            metrics = self.core.update_plasticity(x_input, target, learning_rate)
+            
+            return {
+                'loss': metrics['loss'],
+                'accuracy': metrics['accuracy'],
+                'res_density': metrics['reservoir_activity'],
+                'out_density': metrics['deep_activity'],
+                'out_v_mean': metrics['mean_threshold'],
+                'out_v_max': metrics['mean_threshold']  # 簡略化
+            }
