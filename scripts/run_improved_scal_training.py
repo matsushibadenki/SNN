@@ -52,13 +52,15 @@ def run_experiment(use_ensemble: bool = False, use_multiscale: bool = True):
         {'noise': 0.10, 'epochs': 5, 'lr': 0.04, 'batch': 2048},
         {'noise': 0.30, 'epochs': 5, 'lr': 0.03, 'batch': 4096},
         {'noise': 0.40, 'epochs': 10, 'lr': 0.02, 'batch': 8192},
-        # ここをさらに長く、LRを調整
-        {'noise': 0.45, 'epochs': 80, 'lr': 0.01, 'batch': 8192}, 
-        {'noise': 0.48, 'epochs': 30, 'lr': 0.005, 'batch': 8192},
-    ]    
+        # Noise 0.45 での微調整期間を設ける
+        {'noise': 0.45, 'epochs': 60, 'lr': 0.015, 'batch': 8192}, 
+        {'noise': 0.48, 'epochs': 30, 'lr': 0.008, 'batch': 8192},
+    ]
+    
     if use_ensemble:
+        # AdaptiveEnsembleSCAL を使用
         from snn_research.core.ensemble_scal import AdaptiveEnsembleSCAL
-        print("=== Adaptive Ensemble SCAL (Pattern Separation) ===")
+        print("=== Adaptive Ensemble SCAL (Spatial Denoising) ===")
         model = AdaptiveEnsembleSCAL(
             IN_FEATURES, OUT_FEATURES,
             n_models=5,
