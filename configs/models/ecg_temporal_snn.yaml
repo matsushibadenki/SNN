@@ -1,0 +1,15 @@
+# ファイルパス: configs/models/ecg_temporal_snn.yaml
+# Title: Temporal SNN (RSNN) ECG用設定
+# Description: ECG異常検出タスク用のTemporal SNN (RSNN) モデル設定。
+model:
+  path: "temporal_snn_ecg_model.pth" # 訓練済みモデルがあれば指定
+  architecture_type: "temporal_snn"
+  input_dim: 1      # ECGは1次元信号
+  hidden_dim: 64
+  output_dim: 2     # 正常/異常の2クラス
+  time_steps: 500   # スクリプトのデフォルトに合わせる
+  neuron:
+    type: "lif"
+    tau_mem: 15.0
+    base_threshold: 0.8
+  output_spikes: false # 最終出力はロジット

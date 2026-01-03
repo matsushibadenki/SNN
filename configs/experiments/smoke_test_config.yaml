@@ -1,0 +1,131 @@
+# ファイルパス: configs/experiments/smoke_test_config.yaml
+# Title: スモークテスト用基本設定 (最適化版)
+# Description: 目標発火率への誘導を強化。
+
+# 共通設定
+seed: 42
+device: "auto"
+
+# データ設定（極小）
+data:
+  path: "data/smoke_test_data.jsonl"
+  format: "simple_text"
+  split_ratio: 0.5
+  tokenizer_name: "gpt2"
+
+# 学習パラメータ設定（極小）
+training:
+  paradigm: "gradient_based"
+  epochs: 1
+  batch_size: 2
+  eval_interval: 1
+  log_interval: 1
+  log_dir: "workspace/runs/smoke_tests"
+
+  quantization:
+    enabled: false
+    backend: 'fbgemm'
+    spquant:
+      enabled: false
+
+  pruning:
+    enabled: false
+    sbc:
+      enabled: false
+      amount: 0.2
+    spatio_temporal:
+      enabled: false
+      spatial_amount: 0.2
+      kl_threshold: 0.01
+
+  meta_cognition:
+    enabled: true
+    error_threshold: 0.8
+    modulation_strength: 0.05
+
+  planner:
+    learning_rate: 0.001
+    model_path: "workspace/runs/planner/best_model.pth"
+
+  gradient_based:
+    type: "standard"
+    learning_rate: 0.001
+    use_scheduler: false
+    grad_clip_norm: 1.0
+    warmup_epochs: 1
+    use_amp: false
+    loss:
+      ce_weight: 1.0
+      # 修正: 0.028 -> 0.1 (発火率をコントロールする力を強める)
+      spike_reg_weight: 0.1
+      mem_reg_weight: 0.0
+      # 修正: 0.012 -> 0.005 (過度な抑制を防ぐ)
+      sparsity_reg_weight: 0.005
+      temporal_compression_weight: 0.0
+      sparsity_threshold_reg_weight: 0.0
+      ewc_weight: 0.0
+    distillation:
+      teacher_model: "gpt2"
+      loss:
+        ce_weight: 0.3
+        distill_weight: 0.7
+        spike_reg_weight: 0.01
+        temperature: 2.0
+        mem_reg_weight: 0.0
+        sparsity_reg_weight: 0.0
+        temporal_compression_weight: 0.0
+        sparsity_threshold_reg_weight: 0.0
+
+  biologically_plausible:
+    learning_rule: "CAUSAL_TRACE"
+    adaptive_causal_sparsification:
+      enabled: false
+      contribution_threshold: 0.01
+    particle_filter:
+      enabled: false
+      num_particles: 5
+      noise_std: 0.05
+    neuron:
+      tau_mem: 10.0
+      v_threshold: 1.0
+      v_reset: 0.0
+      v_rest: 0.0
+    stdp:
+      learning_rate: 0.005
+      a_plus: 1.0
+      a_minus: 1.0
+      tau_trace: 20.0
+    reward_modulated_stdp:
+      tau_eligibility: 100.0
+    causal_trace:
+      tau_eligibility: 150.0
+
+  self_supervised:
+    learning_rate: 0.0008
+    loss:
+      prediction_weight: 1.0
+      spike_reg_weight: 0.01
+      sparsity_reg_weight: 0.0
+      mem_reg_weight: 0.0
+      tcl_weight: 1.0
+      tcl_temperature: 0.1
+
+  physics_informed:
+    learning_rate: 0.0005
+    use_scheduler: true
+    grad_clip_norm: 1.0
+    warmup_epochs: 1
+    use_amp: true
+    loss:
+      ce_weight: 1.0
+      spike_reg_weight: 0.01
+      mem_smoothness_weight: 0.001
+
+  probabilistic_ensemble:
+    learning_rate: 0.0007
+    loss:
+      ce_weight: 1.0
+      variance_reg_weight: 0.1
+
+app:
+  max_len: 8

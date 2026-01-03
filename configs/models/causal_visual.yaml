@@ -1,0 +1,26 @@
+# ファイルパス: configs/models/causal_visual.yaml
+# Title: Causal Visual Cortex Configuration
+# Description:
+#   Phase 3「視覚-言語アライメントの深化」のためのモデル設定。
+#   DVS入力から因果的状態(Causal State)を抽出するVisual Cortexを定義。
+#   FEEL (Frequency Encoding) と Predictive Coding を使用。
+
+model:
+  name: "causal_visual_cortex"
+  path: "causal_visual_model.pth"
+  architecture_type: "visual_cortex" # SNNCoreでのマッピングが必要な場合は適宜調整
+  
+  # 入力設定 (DVS Gestureなどを想定)
+  in_channels: 2
+  height: 32
+  width: 32
+  
+  # モデル規模
+  d_model: 128
+  d_state: 64
+  time_steps: 16
+  
+  neuron:
+    type: "evolutionary_leak_lif" # 堅牢性のためにEL-LIFを使用
+    initial_tau: 2.0
+    v_threshold: 1.0

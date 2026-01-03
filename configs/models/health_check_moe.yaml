@@ -1,0 +1,28 @@
+model:
+  architecture_type: franken_moe
+  d_model: 128
+  d_state: 64
+  expert_checkpoints:
+  - runs/snn_experiment/best_model.pth
+  - runs/snn_experiment/best_model.pth
+  expert_configs:
+  - architecture_type: predictive_coding
+    d_model: 128
+    d_state: 64
+    n_head: 2
+    neuron: &id001
+      type: lif
+    num_layers: 4
+    time_steps: 16
+  - architecture_type: predictive_coding
+    d_model: 128
+    d_state: 64
+    n_head: 2
+    neuron:
+      type: lif
+    num_layers: 4
+    time_steps: 16
+  n_head: 2
+  neuron: *id001
+  num_layers: 4
+  time_steps: 16

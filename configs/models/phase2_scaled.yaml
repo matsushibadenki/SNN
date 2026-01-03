@@ -1,0 +1,32 @@
+# ファイルパス: configs/models/phase2_scaled.yaml
+# Title: Phase 2 Scaled Model Configuration
+# 目的: 大手ANNに匹敵する表現力を目指し、パラメータ規模を拡大したSNN構成。
+
+model:
+  architecture: "dsa_transformer" # 高速なDSAアテンションを使用
+  
+  # スケーリング設定 (Scale Up)
+  d_model: 512          # 64 -> 512 (表現力 8倍)
+  num_heads: 8          # 4 -> 8 (並列処理強化)
+  num_layers: 6         # 深層化による抽象化能力向上
+  dim_feedforward: 2048 # FFNの幅を拡大
+  
+  # SNN特有設定
+  time_window: 16       # 時間方向のコンテキスト
+  dropout: 0.1
+  
+  # ニューロン設定 (Inlined LIF対応)
+  neuron:
+    type: "adaptive_lif"
+    decay: 0.95         # 記憶保持時間を少し長く
+    threshold: 1.0
+    learnable_decay: true
+    
+  # 高速化・軽量化設定
+  use_bitnet: true      # 1.58bit量子化でメモリ帯域を節約
+  
+training:
+  batch_size: 32        # モデル大型化に伴い調整
+  learning_rate: 0.005  # 安定重視
+  optimizer: "adamw"
+  weight_decay: 0.01

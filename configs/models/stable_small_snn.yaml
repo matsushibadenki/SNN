@@ -1,0 +1,39 @@
+# ファイルパス: configs/models/stable_small_snn.yaml
+# 目的: smoke_test_dataを使用した安定的な学習設定。
+# 特徴: 低い学習率と高い閾値により、低スパイク率での収束を強制する。
+
+# --- ベース設定を継承 ---
+defaults:
+  - base_config.yaml
+  - _self_
+
+# --- モデル設定 ---
+model:
+  _target_: snn_research.models.transformer.spiking_transformer.SpikingTransformerV2
+  # small.yamlを継承し、閾値のみ変更
+  num_layers: 2
+  d_model: 32
+  num_heads: 4
+  d_ff: 128
+  activation: 'LIF'
+  neuron:
+    base_threshold: 1.5 # << 最適化された閾値
+    v_decay: 0.9
+    tau: 2.0
+
+# --- トレーニング設定 ---
+training:
+  epochs: 300 # 安定した学習を示すための十分なエポック数
+  batch_size: 4
+  optimizer:
+    lr: 0.0003 # 安定性と加速の中間点
+  gradient_based:
+    type: standard
+    loss:
+      # スパイク抑制を強化し、過活動を防止
+      spike_reg_weight: 0.5 
+      sparsity_reg_weight: 0.00005 # スパース性の正則化は維持
+  scheduler:
+    type: cosine_annealing
+    warmup_epochs: 5
+    max_lr: 0.0003

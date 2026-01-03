@@ -1,0 +1,17 @@
+# ファイルパス: configs/models/micro.yaml
+# 機能: Micro Predictive Coding SNNモデルのアーキテクチャ定義。
+
+model:
+  name: "micro"
+  path: "breakthrough_snn_model_micro.pth"
+  architecture_type: "predictive_coding" # モデルタイプを追加
+  d_model: 8
+  d_state: 4 # Predictive Codingに必要なd_stateを追加
+  num_layers: 1
+  time_steps: 4
+  n_head: 1
+  synaptic_reliability: 1.0
+  neuron:
+    type: "lif"
+    base_threshold: 1.0
+    tau_mem: 5.0

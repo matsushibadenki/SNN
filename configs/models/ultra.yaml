@@ -1,0 +1,21 @@
+# ファイルパス: configs/models/ultra.yaml
+# Title: Ultraモデル設定 - Spiking Transformer
+# Description:
+# プロジェクトにおける最上位の性能を目指すための、最大規模のパラメータを持つ
+# Spiking Transformerモデルのアーキテクチャ設定ファイル。
+# 論文「Dynamic ThresholdとMulti-level Attention」で示されたマルチレベル
+# アテンション機構のポテンシャルを最大限に引き出すことを目的とする。
+
+model:
+  path: "spiking_transformer_ultra.pth"
+  architecture_type: "spiking_transformer"
+  d_model: 1024           # モデルの次元数を大幅に増加 (large: 512)
+  num_layers: 24          # 層の数を倍増 (large: 12)
+  time_steps: 64            # 処理する時間ステップ数
+  n_head: 16                # アテンションヘッドの数を増加 (large: 8)
+  neuron:
+    type: "lif"
+    # 動的閾値パラメータ (snn_research/core/neurons.pyで実装)
+    threshold_decay: 0.99
+    threshold_step: 0.05
+    v_threshold: 1.2
