@@ -1,0 +1,20 @@
+# ファイルパス: configs/models/large.yaml
+# Title: Large Spiking Transformerモデル設定
+# Description:
+# プロジェクトにおける最上位の性能を目指すための、最大規模のパラメータを持つ
+# Spiking Transformerモデルのアーキテクチャ設定ファイル。
+# 論文「Dynamic Threshold and Multi-level Attention」で示されたマルチレベル
+# アテンション機構のポテンシャルを最大限に引き出すことを目的とする。
+
+model:
+  path: "spiking_transformer_large.pth"
+  architecture_type: "spiking_transformer" # "predictive_coding" または "spiking_transformer"
+  d_model: 512
+  d_state: 256  # SpikingTransformerでは直接使用されないが互換性のために残す
+  num_layers: 12
+  time_steps: 32
+  n_head: 8
+  # ニューロン設定 (SpikingTransformer内のLIFニューロンに適用される)
+  neuron:
+    type: "lif"
+    v_threshold: 1.2

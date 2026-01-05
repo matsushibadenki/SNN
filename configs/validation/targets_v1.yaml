@@ -1,0 +1,22 @@
+# ファイルパス: configs/validation/targets_v1.yaml
+# Title: SNN検証目標設定 (v1.0)
+# Description: doc/Objective.md に基づく達成目標値
+
+targets:
+  # 1. 認識精度 (ANN比)
+  accuracy:
+    threshold_ratio: 0.95  # ANNの精度の95%以上であること
+    min_absolute: 0.85     # 絶対値として最低85%以上
+
+  # 2. エネルギー効率 (ANN比)
+  energy:
+    max_ratio: 0.02        # ANNの消費電力の 1/50 (2%) 以下であること
+    target_spike_rate: 0.05 # 平均発火率 5% 以下
+
+  # 3. 推論速度 (レイテンシ)
+  latency:
+    max_ms: 50.0           # 50ms以内
+
+  # 4. 学習安定性
+  stability:
+    min_convergence: 0.9   # 収束成功率 90%以上

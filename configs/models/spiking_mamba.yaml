@@ -1,0 +1,16 @@
+# matsushibadenki/snn4/configs/models/spiking_mamba.yaml
+# (新規作成)
+# Title: Spiking-MAMBAモデル設定
+# Description: 長文脈処理に優れたMAMBAアーキテクチャをベースにしたSNNモデルの設定ファイル。
+
+model:
+  path: "spiking_mamba_model.pth"
+  architecture_type: "spiking_mamba" # 新しいアーキテクチャタイプ
+  d_model: 256
+  d_state: 16   # SSMの状態空間の次元数
+  d_conv: 4     # 1D畳み込みのカーネルサイズ
+  expand: 2     # ブロック内部の拡張係数
+  num_layers: 8
+  time_steps: 32 # SNNのシミュレーションステップ数
+  neuron:
+    type: "lif"

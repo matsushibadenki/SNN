@@ -1,0 +1,31 @@
+# ファイルパス: configs/models/dsa_transformer.yaml
+# Description: Spiking DSA Transformer Configuration for Practical Application
+# Target: Low Latency (<10ms), High Efficiency, Causal Language Modeling
+
+architecture_type: dsa_transformer
+
+# Model Hyperparameters
+d_model: 128
+num_layers: 4
+num_heads: 4
+dim_feedforward: 512
+vocab_size: 1000  # For demo/small tasks. Scale up for real NLP.
+input_dim: 1000   # Should match vocab_size for NLP tasks
+time_steps: 16    # T window for BPTT
+
+# Optimization Flags
+use_bitnet: true  # 1.58bit quantization for weights
+is_causal: true   # Enable causal masking for autoregressive tasks
+
+# Neuron Config
+neuron:
+  tau_mem: 20.0
+  base_threshold: 1.0
+  v_reset: 0.0
+  surrogate_function: 'atan'
+
+# Training Config
+batch_size: 32
+learning_rate: 0.001
+optimizer: adamw
+epochs: 10

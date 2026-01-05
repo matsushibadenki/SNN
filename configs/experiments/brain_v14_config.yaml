@@ -1,0 +1,86 @@
+# SNN Project v14.0 Configuration
+# ファイルパス：configs/experiments/brain_v14_config.yaml
+# Title: Artificial Brain v14 (Neuro-Symbolic Evolution Ready)
+# Description:
+#   ロードマップ v14.0 に基づく統合設定。
+#   - バックボーン: SFormer (Scale-and-Fire Transformer, T=1)
+#   - 記憶: Bio-PCNet (Predictive Coding) + GraphRAG
+#   - 学習: Causal Trace Learning V2 + Sleep Consolidation
+#   - 量子化: 1.58bit (BitNet) 互換設定
+
+seed: 42
+device: "auto"
+
+data:
+  path: "data/sample_data.jsonl"
+  format: "simple_text"
+  tokenizer_name: "gpt2"
+
+model:
+  # メインの思考エンジン (SFormer)
+  architecture_type: "sformer"
+  d_model: 256
+  num_layers: 6
+  n_head: 8
+  dim_feedforward: 1024
+  dropout: 0.1
+  time_steps: 1 # T=1 高速推論
+  
+  neuron:
+    type: "scale_and_fire" # SFN
+    num_levels: 8
+    base_threshold: 4.0
+
+training:
+  paradigm: "bio-causal-sparse"
+  epochs: 10
+  batch_size: 4
+  log_dir: "workspace/runs/brain_v14"
+  
+  # 睡眠学習・可塑性設定
+  biologically_plausible:
+    learning_rule: "CAUSAL_TRACE_V2"
+    
+    # 因果追跡学習則 (V2)
+    causal_trace:
+      learning_rate: 0.005
+      tau_trace: 20.0
+      tau_eligibility: 150.0
+      a_plus: 1.0
+      a_minus: 0.8
+      credit_time_decay: 0.95
+      dynamic_lr_factor: 2.0
+      context_modulation_strength: 0.8 # 文脈による変調を強くする
+      competition_k_ratio: 0.1         # スパース性を保つため上位10%のみ更新
+    
+    neuron:
+      tau_mem: 20.0
+      v_threshold: 1.0
+      v_reset: 0.0
+      
+    # 恒常性維持 (BCM則)
+    bcm:
+      learning_rate: 0.001
+      target_rate: 0.05 # 目標発火率 5%
+      tau_avg: 200.0
+
+# 認知アーキテクチャ設定
+cognitive:
+  workspace:
+    capacity: 7 # マジックナンバー7
+    decay_rate: 0.1
+  
+  hippocampus:
+    capacity: 100
+    consolidation_threshold: 5 # エピソードが5つ溜まったら睡眠圧を高める
+  
+  sleep:
+    cycle_interval: 50 # 50サイクルごとに睡眠判定
+    min_sleep_duration: 5 # 最小睡眠時間(秒)
+    replay_batch_size: 8
+    consolidation_epochs: 3
+
+deployment:
+  cutoff:
+    enabled: true
+    threshold: 0.9

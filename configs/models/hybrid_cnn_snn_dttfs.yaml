@@ -1,0 +1,43 @@
+# ファイルパス: configs/models/hybrid_cnn_snn_dttfs.yaml
+# (新規作成)
+#
+# Title: 学習可能なTTFSエンコーダ (DTTFS) を使用する
+#        ハイブリッド CNN-SNN モデル設定
+#
+# Description:
+# doc/SNN開発：基本設計思想.md (セクション4.1, 引用[70]) に基づき、
+# ANN-SNN間のアダプタ (AnalogToSpikes) に、標準のLIFニューロンではなく、
+# 学習可能な「DifferentiableTTFSEncoder」を使用するよう設定します。
+#
+# ssn_research/core/snn_core.py の AnalogToSpikes クラスは、
+# neuron.type が 'dttfs' に指定された場合、
+# DifferentiableTTFSEncoder をインスタンス化するように実装されています。
+
+model:
+  architecture_type: hybrid_cnn_snn
+  time_steps: 16 # DTTFSエンコーダの 'duration' (時間長) として使用される
+  
+  ann_frontend:
+    name: mobilenet_v2
+    pretrained: true
+    output_features: 1280 # MobileNetV2の最終出力チャネル数
+
+  snn_backend:
+    d_model: 1280 # ANNの出力 (1280) と一致させる
+    n_head: 8
+    num_layers: 4
+
+  # --- ▼ 変更点 ▼ ---
+  # AnalogToSpikes アダプタが使用するニューロン（エンコーダ）の設定
+  neuron:
+    # 'lif' の代わりに 'dttfs' を指定
+    type: 'dttfs' 
+    
+    # DifferentiableTTFSEncoder の初期パラメータ
+    initial_sensitivity: 10.0 
+    
+    # (注記)
+    # 'num_neurons' (1280) は snn_backend.d_model から
+    # 'duration' (16) は time_steps から
+    # AnalogToSpikes クラスによって自動的に渡されます。
+  # --- ▲ 変更点 ▲ ---

@@ -1,0 +1,29 @@
+# matsushibadenki/snn4/SNN4-5d9343ca008e7e5290e9447f78bae48a4b6e9029/configs/models/tiny_recursive_model.yaml
+# (修正: Tiny Recursive Model (TRM) に基づく設定)
+#
+# Title: Tiny Recursive Model (TRM) 設定
+#
+# Description:
+# - HRMの階層構造を廃止し、単一ブロックの再帰的推論モデルTRMに置き換え。
+# - time_stepsが再帰の深さ（思考ステップ）に相当する。
+
+model:
+  path: "tiny_recursive_model.pth"
+  architecture_type: "tiny_recursive_model" # モデル名もTRMに統一  
+  # TRMの構造パラメータ (超小型化)
+  d_model: 64            # 質問埋め込み後の次元 (x)
+  d_state: 32            # 潜在状態 z と回答 y の次元 (TRMの核)
+  
+  # HRM由来のパラメータは削除または固定値に
+  num_layers: 1          # (TRMは単一ブロック)
+  layer_dims: [32]       # (TRMでは不使用)
+  layer_clocks: [1]      # (TRMでは不使用)
+  
+  time_steps: 16         # 再帰の深さ N_sup (思考ステップ数)
+
+  neuron:
+    type: "lif"
+    # --- ▼ 動的閾値パラメータの追加 (TRMの適応能力を向上) ▼ ---
+    threshold_decay: 0.99 
+    threshold_step: 0.05
+    # --- ▲ 動的閾値パラメータの追加 ▲ ---

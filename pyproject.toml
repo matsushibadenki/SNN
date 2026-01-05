@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "snn-research"
+version = "17.1.0"
+description = "SNN Research Project CLI and Library"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "click",
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "gradio==4.20.0",
+    "flask",
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "matplotlib",
+    "seaborn",
+    "pillow",
+    "snntorch",
+    "spikingjelly",
+    "langchain",
+    "langchain-community",
+    "openai",
+    "transformers",
+    "sentence-transformers",
+    "datasets",
+    "omegaconf",
+    "hydra-core",
+    "dependency-injector",
+    "tqdm",
+    "jupyter",
+    "ipywidgets",
+    "requests",
+    "beautifulsoup4",
+    "typer==0.16.0",
+    "PyYAML",
+    "h5py",
+    "GPyOpt",
+    "GPy",
+    "cupy==13.6.0",
+    "networkx",
+    "pandas-stubs",
+]
+
+[project.scripts]
+snn-cli = "snn_research.cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["snn_research*", "app*"]
+
+[tool.mypy]
+show_error_context = true
+show_column_numbers = true
+pretty = true

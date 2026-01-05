@@ -1,0 +1,186 @@
+# ファイルパス: configs/templates/base_config.yaml
+# Title: プロジェクト基本設定 (Quality Updated)
+# Description: 学習、データ、モデルレジストリなどの基本設定を管理。
+# 改善点:
+# - Objective.md に基づき、目標発火率 (target_spike_rate) を 0.02 (2%) に設定。
+# - 勾配学習時の学習率を調整し、安定性を向上。
+# - 生成ファイルを workspace ディレクトリに集約。
+
+# 共通設定
+seed: 42
+device: "auto"
+
+# データ設定
+data:
+  path: "workspace/data/sample_data.jsonl"
+  format: "simple_text"
+  split_ratio: 0.1
+  max_vocab_size: 50000
+  tokenizer_name: "gpt2"
+
+# 学習パラメータ設定
+training:
+  paradigm: "gradient_based" # デフォルト
+  epochs: 15
+  batch_size: 16
+
+  quantization:
+    enabled: false
+    backend: 'fbgemm'
+    spquant:
+      enabled: false 
+
+  pruning:
+    enabled: false 
+    sbc: 
+      enabled: false
+      amount: 0.2
+    spatio_temporal: 
+      enabled: false
+      spatial_amount: 0.2 
+      kl_threshold: 0.01  
+
+  meta_cognition:
+    enabled: true
+    error_threshold: 0.8
+    modulation_strength: 0.05
+
+  planner:
+    learning_rate: 0.001
+    model_path: "workspace/runs/planner/best_model.pth"
+
+  gradient_based:
+    type: "distillation" 
+    learning_rate: 0.001 # 安定重視で微調整
+    use_scheduler: true # スケジューラ有効化
+    grad_clip_norm: 1.0
+    use_amp: true
+    warmup_epochs: 2 
+    loss:
+      ce_weight: 1.0
+      spike_reg_weight: 0.1 # スパイク抑制を強化
+      target_spike_rate: 0.02 # Objective.md準拠: 平均発火率 ~2% (0.1Hz - 2Hz for 10-100ms step)
+      sparsity_reg_weight: 0.001
+      mem_reg_weight: 0.0
+      temporal_compression_weight: 0.001
+      sparsity_threshold_reg_weight: 0.0001
+      ewc_weight: 400.0
+    distillation:
+      teacher_model: "gpt2" 
+      loss:
+        ce_weight: 0.2 
+        distill_weight: 0.8 
+        spike_reg_weight: 0.01 
+        sparsity_reg_weight: 0.000005 
+        mem_reg_weight: 0.0
+        temporal_compression_weight: 0.0
+        sparsity_threshold_reg_weight: 0.0
+        temperature: 2.5 
+        target_spike_rate: 0.02
+
+  biologically_plausible:
+    learning_rule: "CAUSAL_TRACE"
+    adaptive_causal_sparsification:
+      enabled: false
+      contribution_threshold: 0.01
+    particle_filter:
+      enabled: false
+      num_particles: 20
+      noise_std: 0.05
+    neuron:
+      tau_mem: 20.0
+      v_threshold: 1.0
+      v_reset: 0.0
+      v_rest: 0.0
+      threshold_decay: 0.99
+      threshold_step: 0.05
+      target_spike_rate: 0.02 # Bio学習でも低発火率を目指す
+      homeostasis_rate: 0.001
+    stdp:
+      tau_trace: 20.0
+      learning_rate: 0.005
+      a_plus: 1.0
+      a_minus: 1.0
+    triplet_stdp:
+      tau_trace_triplet: 50.0 
+      a_plus_triplet: 0.01    
+      a_minus_triplet: 0.001  
+    bcm:
+      learning_rate: 0.001
+      tau_avg: 200.0  
+      target_rate: 0.05 # BCMは少し高めに設定（活動維持のため）
+    reward_modulated_stdp:
+      tau_eligibility: 100.0
+      learning_rate: 0.01
+    causal_trace:
+      tau_eligibility: 150.0
+      learning_rate: 0.01
+    probabilistic_neuron: 
+      tau_mem: 20.0       
+      threshold: 1.0      
+      temperature: 0.5    
+      noise_intensity: 0.0 
+    probabilistic_hebbian: 
+      learning_rate: 0.002
+      weight_decay: 0.00005 
+
+  self_supervised:
+    learning_rate: 0.0008
+    use_scheduler: true
+    grad_clip_norm: 1.0
+    warmup_epochs: 1
+    use_amp: true
+    loss:
+      prediction_weight: 0.0     
+      spike_reg_weight: 0.01
+      target_spike_rate: 0.02
+      sparsity_reg_weight: 0.0
+      mem_reg_weight: 0.0000001
+      tcl_weight: 1.0            
+      tcl_temperature: 0.1       
+
+  physics_informed:
+    learning_rate: 0.0005
+    use_scheduler: true
+    grad_clip_norm: 1.0
+    warmup_epochs: 1
+    use_amp: true
+    loss:
+      ce_weight: 1.0
+      spike_reg_weight: 0.01
+      target_spike_rate: 0.02
+      mem_smoothness_weight: 0.001
+
+  probabilistic_ensemble:
+    learning_rate: 0.0007
+    use_scheduler: true
+    grad_clip_norm: 1.0
+    warmup_epochs: 1
+    use_amp: true
+    loss:
+      ce_weight: 1.0
+      variance_reg_weight: 0.1
+
+
+  log_dir: "workspace/runs/snn_experiment"
+  eval_interval: 1
+  log_interval: 1
+
+model_registry:
+  provider: "file"
+  file:
+    path: "workspace/runs/model_registry.json"
+  redis:
+    host: localhost
+    port: 6379
+    db: 0
+
+app:
+  server_name: "127.0.0.1"
+  server_port: 7860
+  max_len: 100
+  
+deployment:
+  cutoff:
+    enabled: true
+    threshold: 0.8

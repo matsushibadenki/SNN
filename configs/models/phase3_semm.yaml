@@ -1,0 +1,21 @@
+# ファイルパス: configs/models/phase3_semm.yaml
+# Title: Phase 3 SEMM Configuration
+# Description:
+#   Spiking Experts Mixture Mechanism (SEMM) の設定。
+#   スパイクベースのルーティングにより、高効率なMoEを実現する。
+
+model:
+  name: "semm_phase3"
+  path: "semm_phase3.pth"
+  architecture_type: "semm"
+  
+  d_model: 256
+  num_layers: 4
+  num_experts: 4
+  top_k: 2
+  time_steps: 1 # SFormerベースのため T=1
+  
+  neuron:
+    type: "lif" # Routerのニューロン設定
+    tau_mem: 2.0
+    base_threshold: 0.1

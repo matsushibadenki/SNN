@@ -1,0 +1,7 @@
+# configs/config.yaml
+defaults:
+  - templates/base_config@_global_
+  - models/small@_global_
+  - _self_
+# Note: Using @_global_ ensures that the content of the files (which already have 'data', 'training', 'model' keys)
+# matches the root Config schema directly, instead of being nested under directory names.

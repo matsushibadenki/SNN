@@ -1,0 +1,15 @@
+# configs/models/spiking_transformer.yaml
+# スパイキングトランスフォーマーモデルの設定
+
+model:
+  path: "spiking_transformer_model.pth"
+  architecture_type: "spiking_transformer"
+  d_model: 256
+  num_layers: 6
+  n_head: 8
+  time_steps: 32
+  neuron:
+    type: "lif"
+    # 動的閾値パラメータ
+    threshold_decay: 0.99
+    threshold_step: 0.05

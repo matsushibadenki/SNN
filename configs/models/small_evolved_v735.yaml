@@ -1,0 +1,12 @@
+model:
+  path: breakthrough_snn_model_small.pth
+  architecture_type: predictive_coding
+  d_model: 155
+  d_state: 96
+  num_layers: 6
+  time_steps: 20
+  n_head: 2
+  neuron:
+    type: lif
+    num_branches: 4
+    branch_features: 38

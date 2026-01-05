@@ -1,0 +1,22 @@
+# ファイルパス: configs/models/feel_snn.yaml
+# Title: FEEL-SNN (Robust SNN Model) Configuration
+# Description:
+#   ROADMAP Phase 3「堅牢性向上」のための設定。
+#   周波数エンコーディングと進化的リークLIFニューロンを使用する。
+
+model:
+  name: "feel_snn_robust"
+  path: "feel_snn_model.pth"
+  architecture_type: "feel_snn"
+  
+  num_classes: 10 # CIFAR-10想定
+  in_channels: 3
+  time_steps: 16
+  
+  neuron:
+    type: "evolutionary_leak_lif"
+    initial_tau: 2.0
+    v_threshold: 1.0
+    v_reset: 0.0
+    detach_reset: false
+    learn_threshold: true # 閾値も学習可能にする

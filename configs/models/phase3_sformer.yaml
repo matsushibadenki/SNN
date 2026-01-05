@@ -1,0 +1,26 @@
+# ファイルパス: configs/models/phase3_sformer.yaml
+# Title: Phase 3 SFormer (T=1) Configuration
+# Description:
+#   Scale-and-Fire Neuron (SFN) と QK-Norm を採用した
+#   究極の低遅延バックボーンモデルの設定。
+#   time_steps: 1 で動作し、ANNと同等の推論速度を実現する。
+#   修正 (v2): base_threshold を 8.0 -> 12.0 に変更し、スパイク率をさらに抑制 (<20%目標)。
+
+model:
+  name: "sformer_phase3"
+  path: "sformer_phase3.pth"
+  architecture_type: "sformer"
+  
+  d_model: 256
+  num_layers: 6
+  n_head: 8
+  dim_feedforward: 1024
+  dropout: 0.1
+  time_steps: 1 # T=1 (Key Feature)
+  
+  neuron:
+    type: "scale_and_fire" # SFN
+    num_levels: 8          # SFNの量子化レベル数
+    # 修正: 閾値をさらに上げて発火率を強力に抑制 (8.0 -> 12.0)
+    # これにより、無駄な発火を減らし、エネルギー効率をSOTAレベルに近づける
+    base_threshold: 12.0

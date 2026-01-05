@@ -1,0 +1,28 @@
+# ファイルパス: configs/models/hybrid_cnn_snn.yaml
+# (新規作成)
+# Title: Hybrid CNN-SNNモデル設定
+# Description:
+# snn_4_ann_parity_plan.mdの Step 2.5 に基づく、ハイブリッドANN-SNNモデルの
+# アーキテクチャ設定ファイル。
+# ANN(MobileNetV2)を特徴抽出器として、SNN(Spiking Transformer)を時空間処理バックエンドとして使用する。
+
+model:
+  path: "hybrid_cnn_snn_model.pth"
+  architecture_type: "hybrid_cnn_snn" # 新しいアーキテクチャタイプ
+  time_steps: 16
+
+  # ANNフロントエンド設定
+  ann_frontend:
+    name: "mobilenet_v2"
+    pretrained: true
+    output_features: 1280 # MobileNetV2の最終層の特徴量数
+
+  # SNNバックエンド設定 (Spiking Transformer)
+  snn_backend:
+    d_model: 1280 # ANNの出力次元と一致させる
+    n_head: 8
+    num_layers: 4
+
+  # ニューロン設定
+  neuron:
+    type: "lif"
