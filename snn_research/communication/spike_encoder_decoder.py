@@ -11,14 +11,15 @@
 
 import torch
 import json
-import random
 from typing import Any
+
 
 class SpikeEncoderDecoder:
     """
     テキストや辞書などの抽象データをスパイクパターンに変換し、
     またその逆の変換も行うクラス。
     """
+
     def __init__(self, num_neurons: int = 256, time_steps: int = 16):
         """
         Args:
@@ -28,40 +29,84 @@ class SpikeEncoderDecoder:
         self.num_neurons = num_neurons
         self.time_steps = time_steps
 
-    def encode_data(self, data: Any) -> torch.Tensor:
+    def latency_encode(self, data: Any) -> torch.Tensor:
         """
-        任意のデータ（辞書、テキストなど）をJSON文字列に変換し、スパイクパターンにエンコードする。
+        データを決定論的なレイテンシコーディングでスパイクに変換する。
+        ASCIIコードの値が小さいほど早いタイミング、大きいほど遅いタイミングでスパイクする。
+        （より汎用的な実装では、値の重要度をタイミングにマップする）
         """
         try:
             json_str = json.dumps(data, sort_keys=True)
         except TypeError:
             json_str = json.dumps(str(data))
-            
+
         spike_pattern = torch.zeros((self.num_neurons, self.time_steps))
-        for char in json_str:
-            neuron_id = ord(char) % self.num_neurons
-            num_spikes = random.randint(1, 3)
-            for _ in range(num_spikes):
-                t = random.randint(0, self.time_steps - 1)
-                spike_pattern[neuron_id, t] = 1
+
+        for i, char in enumerate(json_str):
+            if i >= self.num_neurons:  # ニューロン数を超える文字数は切り捨て（またはチャンク分割が必要）
+                break
+
+            char_code = ord(char)
+            # ASCIIコードを送信タイミングにマッピング (0-255 -> 0-time_steps)
+            # 時間分解能に合わせてスケーリング
+            timing = int(round((char_code / 255.0) * (self.time_steps - 1)))
+            timing = max(0, min(self.time_steps - 1, timing))
+
+            # ニューロンIDは文字の位置(i)に対応させる（空間配置）
+            neuron_id = i % self.num_neurons
+            spike_pattern[neuron_id, timing] = 1.0
+
         return spike_pattern
 
-    def decode_data(self, spikes: torch.Tensor) -> Any:
+    def latency_decode(self, spikes: torch.Tensor) -> Any:
         """
-        スパイクパターンをデコードして元のデータ（辞書、テキストなど）を復元する。
+        レイテンシコーディングされたスパイクパターンをデコードする。
+        各ニューロンの最初のスパイク時刻から文字を復元する。
         """
         if spikes is None or not isinstance(spikes, torch.Tensor):
             return {"error": "Invalid spike pattern provided."}
 
-        spike_counts = spikes.sum(dim=1)
-        char_indices = torch.where(spike_counts > 0)[0]
-        
-        sorted_indices = sorted(char_indices, key=lambda idx: spike_counts[idx].item(), reverse=True)
+        # 各ニューロンの発火タイミングを取得 (argmaxは最初の最大値=1のインデックスを返す)
+        # 発火していない場合は0になるため、発火有無のマスクが必要
+        has_spiked = (spikes.sum(dim=1) > 0)
+        timings = spikes.argmax(dim=1)
 
-        json_str = "".join([chr(int(idx)) for idx in sorted_indices if int(idx) < 256])
-        
+        decoded_chars = []
+        for i in range(self.num_neurons):
+            if not has_spiked[i]:
+                continue
+
+            t = timings[i].item()
+            # タイミングからASCIIコードを逆算
+            # char_code = (t / (time_steps - 1)) * 255
+            # 近似値になるため、完全に元の文字に戻らない可能性があるが、
+            # ここでは簡易的に「タイミングビン」に割り当てられた代表文字とみなすか、
+            # または単純に char_code = t * (255 / time_steps) とする
+
+            # 修正: 文字自体がニューロンIDでなくタイミングで表現されると
+            # 複数の文字が同じニューロン・違うタイミングで来る場合に混信する。
+            # 今回のencode実装では「ニューロンID=文字位置」「タイミング=ASCII値」としているため、
+            # 順序はニューロンID順で復元できる。
+
+            estimated_char_code = int(
+                round((t / (self.time_steps - 1)) * 255.0))
+            # ASCII範囲内にクリップ
+            estimated_char_code = max(
+                32, min(126, estimated_char_code))  # 可読文字範囲
+            decoded_chars.append(chr(estimated_char_code))
+
+        # JSONとしての復元を試みる
+        raw_str = "".join(decoded_chars)
         try:
-            return json.loads(json_str)
+            return json.loads(raw_str)
         except json.JSONDecodeError:
-            return json_str
+            return raw_str
 
+    # Legacy interfaces kept for compatibility but redirected
+    def encode_data(self, data: Any) -> torch.Tensor:
+        return self.latency_encode(data)
+
+    def decode_data(self, spikes: torch.Tensor) -> Any:
+        # デコードは完全性が必要なため、従来のメソッドは使用不可（または近似復元）
+        # レイテンシデコードの結果を返す
+        return self.latency_decode(spikes)

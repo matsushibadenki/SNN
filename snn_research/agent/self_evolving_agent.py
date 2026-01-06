@@ -316,16 +316,76 @@ class SelfEvolvingAgentMaster(AutonomousAgent):
 
     def _evolve_learning_parameters(self, performance_eval: Dict[str, Any], internal_state: Dict[str, Any],
                                     scope: str = "global", **kwargs: Any) -> str:
-        return "Evolved parameters (implied)"
+        if not self.training_config_path or not os.path.exists(self.training_config_path):
+            return "Parameter evolution failed: training_config_path invalid."
+
+        try:
+            logging.info(f"🧬 Evolving learning parameters (Scope: {scope})...")
+            cfg = OmegaConf.load(self.training_config_path)
+
+            # 変異幅の設定
+            mutation_strength = 0.2 if scope == "global" else 0.5
+
+            # Learning Rate Mutation
+            current_lr = cfg.training.gradient_based.get("learning_rate", 1e-3)
+            new_lr = current_lr * \
+                random.uniform(1.0 - mutation_strength,
+                               1.0 + mutation_strength)
+            cfg.training.gradient_based.learning_rate = new_lr
+
+            # Weight Decay Mutation
+            current_wd = cfg.training.gradient_based.loss.get(
+                "weight_decay", 1e-4)
+            new_wd = current_wd * \
+                random.uniform(1.0 - mutation_strength,
+                               1.0 + mutation_strength)
+            cfg.training.gradient_based.loss.weight_decay = new_wd
+
+            new_config_path = self._save_evolved_config(
+                cfg, self.training_config_path, suffix="params")
+            return f"Successfully evolved parameters (lr={new_lr:.2e}, wd={new_wd:.2e}). New config: '{new_config_path}'."
+
+        except Exception as e:
+            return f"Parameter evolution failed: {e}"
 
     def _evolve_learning_paradigm(self, performance_eval: Dict[str, Any], internal_state: Dict[str, Any], **kwargs: Any) -> str:
-        return "Evolved paradigm (implied)"
+        # Placeholder for future paradigm shift logic (e.g. switching from Backprop to STDP)
+        return "Paradigm shift not yet implemented."
 
     def _evolve_neuron_type(self, performance_eval: Dict[str, Any], internal_state: Dict[str, Any], **kwargs: Any) -> str:
-        return "Evolved neuron type (implied)"
+        if not self.model_config_path or not os.path.exists(self.model_config_path):
+            return "Neuron type evolution failed: model_config_path invalid."
+
+        try:
+            logging.info("🧬 Evolving neuron type...")
+            cfg = OmegaConf.load(self.model_config_path)
+
+            candidate_types = ["LIF", "PLIF", "Izhikevich"]
+            current_type = cfg.model.neuron.get("type", "LIF")
+
+            # 現在と異なるタイプを抽選
+            candidates = [t for t in candidate_types if t != current_type]
+            if not candidates:
+                return "No alternative neuron types available."
+
+            new_type = random.choice(candidates)
+            cfg.model.neuron.type = new_type
+
+            # タイプ変更に伴うパラメータ調整（必要であれば）
+            if new_type == "Izhikevich":
+                cfg.model.neuron.a = 0.02
+                cfg.model.neuron.b = 0.2
+
+            new_config_path = self._save_evolved_config(
+                cfg, self.model_config_path, suffix="neuron")
+            return f"Successfully evolved neuron type to '{new_type}'. New config: '{new_config_path}'."
+
+        except Exception as e:
+            return f"Neuron evolution failed: {e}"
 
     def _evolve_learning_rule_params(self, performance_eval: Dict[str, Any], internal_state: Dict[str, Any], **kwargs: Any) -> str:
-        return "Evolved LR params (implied)"
+        # Placeholder for STDP rule parameter evolution
+        return "Learning rule param evolution not yet implemented."
 
     async def _apply_social_evolution_recipe(self, performance_eval: Dict[str, Any], internal_state: Dict[str, Any], **kwargs: Any) -> str:
         return "Applied social recipe (implied)"

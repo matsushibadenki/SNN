@@ -12,11 +12,13 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+
 class IntrinsicMotivationSystem(nn.Module):
     """
     AIの内発的動機（感情・欲求）を生成するエンジン。
     AsyncBrainKernel (v2.x) と ArtificialBrain (v16.x) の両方に対応。
     """
+
     def __init__(
         self,
         curiosity_weight: float = 1.0,
@@ -28,11 +30,11 @@ class IntrinsicMotivationSystem(nn.Module):
         self.curiosity_weight = curiosity_weight
         self.boredom_decay = boredom_decay
         self.boredom_threshold = boredom_threshold
-        
+
         # 状態履歴（退屈判定用）
         self.last_input_hash: Optional[int] = None
         self.repetition_count = 0
-        
+
         # 現在の動機状態 (0.0 - 1.0)
         self.drives: Dict[str, float] = {
             "curiosity": 0.5,    # 知的好奇心
@@ -41,59 +43,81 @@ class IntrinsicMotivationSystem(nn.Module):
             "comfort": 0.0,      # 快適さ
             "competence": 0.3    # 有能感
         }
-        
-        logger.info("🔥 Intrinsic Motivation System v2.2 (Hybrid Compatible) initialized.")
 
-    def process(self, input_payload: Any) -> Optional[Dict[str, float]]:
+        logger.info(
+            "🔥 Intrinsic Motivation System v2.2 (Hybrid Compatible) initialized.")
+
+    def process(self, input_payload: Any, prediction_error: Optional[float] = None) -> Optional[Dict[str, float]]:
         """
         AsyncBrainKernel用のインターフェース。
         入力に基づいて驚き(Surprise)を計算し、動機を更新する。
         """
-        # テキスト入力の場合の簡易的なSurprise計算
-        if isinstance(input_payload, str):
+        surprise = 0.0
+
+        # 1. 予測誤差が提供されている場合はそれをSurpriseの直接的な指標とする
+        if prediction_error is not None:
+            surprise = min(1.0, prediction_error)
+            # 予測誤差が大きい -> 新しい発見 -> 退屈しない
+            # 予測誤差が小さい -> 予測通り -> 退屈する
+            if surprise < 0.1:
+                # 予測精度が高すぎる＝退屈
+                self.repetition_count += 1
+                boredom_delta = 0.05 * self.repetition_count
+            else:
+                # 驚きがある＝退屈解消
+                self.repetition_count = 0
+                boredom_delta = -0.2
+
+        # 2. テキストなどのハッシュベースの簡易判定 (予測誤差がない場合のフォールバック)
+        elif isinstance(input_payload, str) or isinstance(input_payload, int):
             input_hash = hash(input_payload)
-            
-            # 1. Surprise / Repetition Check
+
             if input_hash == self.last_input_hash:
                 # 同じ入力が続いた -> 予測通り -> Surprise低下、Boredom上昇
                 self.repetition_count += 1
                 surprise = 0.0
-                boredom_delta = 0.2 * self.repetition_count
+                boredom_delta = 0.1 * self.repetition_count
             else:
                 # 新しい入力 -> Surprise上昇、Boredomリセット
                 self.repetition_count = 0
-                surprise = 1.0
+                surprise = 1.0  # 新規性は最大の驚き
                 boredom_delta = -0.5
-            
+
             self.last_input_hash = input_hash
-            
-            # 値の更新
-            self.drives["curiosity"] = self.drives["curiosity"] * 0.9 + surprise * 0.1
-            self.drives["boredom"] = float(np.clip(self.drives["boredom"] + boredom_delta, 0.0, 1.0))
-            
-            # ログ出力
-            if self.drives["boredom"] > 0.8:
-                logger.warning(f"🥱 Boredom Level Critical: {self.drives['boredom']:.2f} (Seeking Novelty)")
-            elif surprise > 0.8:
-                logger.info("✨ High Surprise Detected! Curiosity Triggered.")
-                
-            return {
-                "surprise": surprise,
-                "boredom": self.drives["boredom"],
-                "curiosity_drive": self.drives["curiosity"]
-            }
-            
-        return None
+        else:
+            # 判定不能時は現状維持
+            boredom_delta = 0.01
+
+        # 値の更新
+        self.drives["curiosity"] = self.drives["curiosity"] * \
+            0.9 + surprise * 0.1
+        self.drives["boredom"] = float(
+            np.clip(self.drives["boredom"] + boredom_delta, 0.0, 1.0))
+
+        # ログ出力
+        if self.drives["boredom"] > 0.8:
+            logger.warning(
+                f"🥱 Boredom Level Critical: {self.drives['boredom']:.2f} (Seeking Novelty)")
+        elif surprise > 0.8:
+            logger.info(
+                f"✨ High Surprise Detected ({surprise:.2f})! Curiosity Triggered.")
+
+        return {
+            "surprise": surprise,
+            "boredom": self.drives["boredom"],
+            "curiosity_drive": self.drives["curiosity"]
+        }
 
     # --- Methods for ArtificialBrain (Legacy/Full Support) ---
 
     def update_drives(self, surprise: float, energy_level: float, fatigue_level: float, task_success: bool = False) -> Dict[str, float]:
         """環境状態に基づいて動機を更新 (ArtificialBrain互換)"""
         if surprise > 0.1:
-            self.drives["curiosity"] = min(1.0, self.drives["curiosity"] + 0.05)
+            self.drives["curiosity"] = min(
+                1.0, self.drives["curiosity"] + 0.05)
         else:
             self.drives["curiosity"] = max(0.0, self.drives["curiosity"] - 0.2)
-            
+
         self.drives["survival"] = max(0.0, 1.0 - (energy_level / 1000.0))
         return self.drives
 

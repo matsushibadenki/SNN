@@ -83,6 +83,7 @@ logs/
 checkpoints/
 precomputed_data/
 wandb/
+doc-old/
 
 # Downloaded or generated datasets
 # Ignore everything in data/ except specific files if needed

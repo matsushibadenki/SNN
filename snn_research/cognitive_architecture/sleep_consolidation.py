@@ -11,10 +11,12 @@ from typing import Dict, Any, Optional, List
 # ロガー設定を安全に行う
 logger = logging.getLogger(__name__)
 
+
 class SleepConsolidator(nn.Module):
     """
     睡眠時の記憶固定化モジュール (VLM対応版)。
     """
+
     def __init__(self, memory_system: Any, target_brain_model: Optional[nn.Module] = None, **kwargs: Any):
         super().__init__()
         self.memory = memory_system
@@ -28,14 +30,14 @@ class SleepConsolidator(nn.Module):
         # 強制的にprint出力（ログが出ない場合用）
         print(f"🌙 Sleep cycle started for {duration_cycles} cycles.")
         logger.info(f"🌙 Sleep cycle started for {duration_cycles} cycles.")
-        
+
         loss_history = []
         dreams_replayed = 0
-        
+
         # 1. バッファの内容を統合
         if self.experience_buffer:
             self._consolidate_buffer()
-        
+
         # 2. 生成的リプレイ (夢を見る)
         if self.brain_model is not None:
             self.brain_model.eval()
@@ -46,7 +48,7 @@ class SleepConsolidator(nn.Module):
                 if i % 10 == 0:
                     logger.info(f"  ... Dream cycle {i}: Clarity={energy:.4f}")
         else:
-             loss_history.extend([0.0 for _ in range(duration_cycles)])
+            loss_history.extend([0.0 for _ in range(duration_cycles)])
 
         return {
             "consolidated": 0,
@@ -67,16 +69,17 @@ class SleepConsolidator(nn.Module):
         """
         if self.brain_model is None:
             return 0.0
-            
+
         try:
             device = next(self.brain_model.parameters()).device
-            
+
             # 1. 視覚ノイズ (Random Visual Stimulation)
-            noise_image = torch.randn(1, 3, 224, 224, device=device) * 0.5 + 0.5
-            
+            noise_image = torch.randn(
+                1, 3, 224, 224, device=device) * 0.5 + 0.5
+
             # 2. 言語プロンプト (Start Token)
             input_ids = torch.tensor([[101]], device=device, dtype=torch.long)
-            
+
             # 3. 夢を見る
             with torch.no_grad():
                 outputs = self.brain_model(input_ids, input_images=noise_image)
@@ -89,16 +92,35 @@ class SleepConsolidator(nn.Module):
             probs = F.softmax(logits, dim=-1)
             max_prob, _ = probs.max(dim=-1)
             clarity = max_prob.mean().item()
-            
+
             # 5. 可塑性更新 (シミュレーション)
             if clarity > 0.3:
-                 self._apply_hebbian_reinforcement(clarity)
-            
+                self._apply_hebbian_reinforcement(clarity)
+
             return clarity
-            
+
         except Exception as e:
             logger.warning(f"Dreaming failed: {e}")
             return 0.0
 
     def _apply_hebbian_reinforcement(self, strength: float):
-        pass
+        """
+        単純化されたヘッブ則的強化:
+        夢（Generative Replay）が鮮明(strength高)であればあるほど、
+        現在のネットワークの結合荷重をわずかに強化（絶対値を増加）する。
+        これは「鮮明に思い出せる（生成できる）パターンは重要な知識である」という仮定に基づく。
+        """
+        if self.brain_model is None:
+            return
+
+        reinforcement_factor = 0.0001 * strength  # 非常に小さな学習率
+
+        with torch.no_grad():
+            for name, param in self.brain_model.named_parameters():
+                if param.requires_grad and "weight" in name:
+                    # 既存の結合を強化（符号を維持したまま絶対値を大きくする）
+                    # w_new = w_old + factor * w_old
+                    param.data += reinforcement_factor * param.data
+
+        logger.debug(
+            f"  🧠 Hebbian reinforcement applied (Factor: {reinforcement_factor:.6f})")

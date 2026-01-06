@@ -1,0 +1,19 @@
+# ファイルパス: configs/models/large_scale.yaml
+# Title: Large Scale Spiking SNN (Predictive Coding)
+# Description: Objective v2.0 Phase 2 "Scale Up" 用の構成
+# d_model=512, d_state=256
+
+model:
+  path: "breakthrough_snn_model_large_scale.pth"
+  architecture_type: "predictive_coding"
+  d_model: 512
+  d_state: 256
+  num_layers: 8
+  time_steps: 16
+  n_head: 8
+  # ニューロン設定
+  neuron:
+    type: "lif"
+    v_threshold: 1.0
+    alpha: 2.0
+    surrogate_grad: "atan"

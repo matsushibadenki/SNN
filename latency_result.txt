@@ -1,0 +1,1 @@
+Average Inference Latency: 1.48 ms
