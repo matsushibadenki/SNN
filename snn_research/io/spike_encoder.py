@@ -3,6 +3,7 @@
 # Description:
 # - ROADMAP Phase 3 Step 2: HybridTemporal8BitEncoder を追加実装。
 # - 数値データ、テキスト、画像ピクセルをSNN用のスパイク列に変換する各種エンコーダ。
+# - [Fix] ArtificialBrainからの呼び出しに対応するため encode_text を追加。
 
 import torch
 import torch.nn as nn
@@ -68,6 +69,13 @@ class SpikeEncoder(nn.Module):
 
         return torch.from_numpy(vector).float()
 
+    def encode_text(self, text: str, duration: int = 10) -> torch.Tensor:
+        """
+        テキスト文字列をスパイク列にエンコードする。
+        ArtificialBrainからの直接呼び出し用インターフェース。
+        """
+        return self.encode({"content": text}, duration)
+
     def encode(self, sensory_info: Dict[str, Any], duration: int) -> torch.Tensor:
         """
         感覚情報（辞書）を受け取り、スパイクパターン（Tensor）に変換する。
@@ -102,6 +110,7 @@ class SpikeEncoder(nn.Module):
             embedding = embedding.cpu()
             current_dim = embedding.shape[0]
             if current_dim != N:
+                # 次元合わせ
                 embedding = torch.nn.functional.interpolate(
                     embedding.view(1, 1, -1), size=N, mode='linear', align_corners=False
                 ).view(-1)

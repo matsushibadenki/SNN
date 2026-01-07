@@ -1,5 +1,4 @@
 import torch
-import pytest
 import torch.nn as nn
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 

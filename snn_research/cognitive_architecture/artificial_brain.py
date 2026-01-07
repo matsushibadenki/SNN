@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: 人工脳コア・アーキテクチャ (Fix: PFC Alias Added)
-# 目的: テストコードとの互換性のため、prefrontal_cortex のエイリアス pfc を追加。
+# 日本語タイトル: 人工脳コア・アーキテクチャ (Integrated & Fixed)
+# 目的: mypyエラーを解消し、コンポーネント間の連携を安全に行う。
 
 import torch
 import torch.nn as nn
@@ -28,13 +28,14 @@ from snn_research.io.actuator import Actuator
 
 logger = logging.getLogger(__name__)
 
+
 class ArtificialBrain(nn.Module):
     """
     複数の脳領域モジュールを統合する人工脳メインクラス。
-    外部からコンポーネントを注入することを基本とする。
     """
+
     def __init__(
-        self, 
+        self,
         config: Optional[Dict[str, Any]] = None,
         # 依存性の注入 (Optional)
         global_workspace: Optional[GlobalWorkspace] = None,
@@ -65,14 +66,15 @@ class ArtificialBrain(nn.Module):
     ):
         super().__init__()
         self.config = config or {}
-        self.device = device
-        
-        # 1. 基礎システムの初期化 (注入がなければデフォルト生成)
+        self.device = device if isinstance(
+            device, torch.device) else torch.device(device)
+
+        # 1. 基礎システムの初期化
         self.workspace = global_workspace if global_workspace else GlobalWorkspace()
         self.motivation_system = motivation_system if motivation_system else IntrinsicMotivationSystem()
-        self.astrocyte = astrocyte_network # Optional
-        self.guardrail = ethical_guardrail # Optional
-        
+        self.astrocyte = astrocyte_network
+        self.guardrail = ethical_guardrail
+
         # 2. IO
         self.receptor = sensory_receptor
         self.encoder = spike_encoder
@@ -80,169 +82,215 @@ class ArtificialBrain(nn.Module):
 
         # 3. 各脳領域
         self.thinking_engine = thinking_engine
-        
+
         # Perception
         if perception_cortex:
             self.perception = perception_cortex
         else:
-            # Fallback
-            self.perception = PerceptionCortex(num_neurons=784, feature_dim=256)
-            
+            logger.info("PerceptionCortex not provided. Initializing default.")
+            self.perception = PerceptionCortex(
+                num_neurons=784, feature_dim=256)
+
         self.visual_cortex = visual_cortex
         self.amygdala = amygdala if amygdala else Amygdala()
         self.hippocampus = hippocampus if hippocampus else Hippocampus()
         self.cortex = cortex if cortex else Cortex()
-        
+
         # 4. 意思決定系
-        self.basal_ganglia = basal_ganglia if basal_ganglia else BasalGanglia(workspace=self.workspace)
+        self.basal_ganglia = basal_ganglia if basal_ganglia else BasalGanglia(
+            workspace=self.workspace)
         self.prefrontal_cortex = prefrontal_cortex if prefrontal_cortex else PrefrontalCortex(
-            workspace=self.workspace, 
+            workspace=self.workspace,
             motivation_system=self.motivation_system
         )
-        self.pfc = self.prefrontal_cortex # Alias for tests
-        
+        self.pfc = self.prefrontal_cortex
+
         self.motor = motor_cortex if motor_cortex else MotorCortex()
         self.cerebellum = cerebellum
-        
+
         # 5. 高次認知
         self.reasoning = reasoning_engine
         self.meta_cognitive = meta_cognitive_snn
         self.world_model = world_model
         self.reflex_module = reflex_module
-        
+
         self.cycle_count = 0
-        
-        # kwargsに含まれる未知のコンポーネントも保持しておく（柔軟性のため）
+
+        # kwargs保持
         for k, v in kwargs.items():
             if not hasattr(self, k):
                 setattr(self, k, v)
+
+        self.to(self.device)
+        logger.info(f"ArtificialBrain initialized on {self.device}")
 
     def run_cognitive_cycle(self, sensory_input: Union[torch.Tensor, str]) -> Dict[str, Any]:
         """
         1ステップの認知サイクルを実行する。
         """
         self.cycle_count += 1
-        # self.deviceがstrの場合もあるため、torch.device化して統一
-        device = torch.device(self.device) if isinstance(self.device, str) else self.device
-        
-        # --- 入力の処理 ---
+
+        # --- 1. 入力処理 (Sensation) ---
+        sensory_tensor: Optional[torch.Tensor] = None
+
         if isinstance(sensory_input, str):
             # 文字列入力の場合
-            # 本来はEncoderを通すべきだが、ここでは簡易的に処理
-            # Reasoning Engineがある場合はそちらに任せるなど分岐可能
-            if self.reasoning:
-                pass
-            sensory_tensor = torch.randn(1, 784, device=device) # ダミー
+            if self.encoder:
+                try:
+                    # [Fix] SpikeEncoderにencode_textを追加したので直接呼び出す
+                    # 型チェックはencode_textメソッド側で担保
+                    sensory_tensor = self.encoder.encode_text(sensory_input)
+                except Exception as e:
+                    logger.error(
+                        f"Encoding failed for input '{sensory_input}': {e}")
+                    sensory_tensor = torch.zeros(
+                        1, 784, device=self.device)  # Fallback
+            else:
+                logger.warning(
+                    "String input received but no SpikeEncoder is configured.")
+                sensory_tensor = torch.zeros(1, 784, device=self.device)
         else:
-            sensory_tensor = sensory_input.to(device)
+            sensory_tensor = sensory_input.to(self.device)
 
-        if sensory_tensor.ndim == 1:
+        if sensory_tensor is not None and sensory_tensor.ndim == 1:
             sensory_tensor = sensory_tensor.unsqueeze(0)
 
-        # 次元の強制整合 (PerceptionCortexの入力数に合わせる)
-        if hasattr(self.perception, 'num_neurons'):
+        # 次元の強制整合
+        if sensory_tensor is not None and hasattr(self.perception, 'num_neurons'):
             target_n = self.perception.num_neurons
             current_n = sensory_tensor.shape[-1]
-            
+
             if current_n != target_n:
                 if current_n < target_n:
                     diff = target_n - current_n
-                    padding = torch.zeros(*sensory_tensor.shape[:-1], diff, device=device)
-                    sensory_tensor = torch.cat([sensory_tensor, padding], dim=-1)
+                    padding = torch.zeros(
+                        *sensory_tensor.shape[:-1], diff, device=self.device)
+                    sensory_tensor = torch.cat(
+                        [sensory_tensor, padding], dim=-1)
                 else:
                     sensory_tensor = sensory_tensor[..., :target_n]
 
-        # 1. 知覚処理 (Batch, Features)
+        # --- 2. 知覚処理 (Perception) ---
         perception_result = self.perception.perceive(sensory_tensor)
         perceptual_features = perception_result.get("features")
-        
-        if perceptual_features is not None:
-            perceptual_info = perceptual_features.mean(dim=0) if perceptual_features.ndim > 1 else perceptual_features
-        else:
-            perceptual_info = torch.zeros(256, device=device)
 
-        # 2. 感情・記憶の評価
+        if perceptual_features is not None:
+            perceptual_info = perceptual_features.mean(
+                dim=0) if perceptual_features.ndim > 1 else perceptual_features
+        else:
+            perceptual_info = torch.zeros(256, device=self.device)
+
+        # 高次推論 (Reasoning)
+        reasoning_output = None
+        if self.reasoning and isinstance(sensory_input, str):
+            # [Fix] ReasoningEngineにreasonメソッドを追加済み。Workspaceにget_contextを追加済み。
+            context_data = self.workspace.get_context()
+            reasoning_output = self.reasoning.reason(
+                sensory_input, context=context_data)
+
+            if reasoning_output:
+                self._update_workspace("reasoning", reasoning_output)
+
+        # --- 3. 感情・記憶の評価 ---
         emotional_val = self.amygdala.process(perceptual_info)
         knowledge = self.cortex.retrieve(perceptual_info)
-        
-        # 3. ワークスペース集約
+
+        # --- 4. ワークスペース集約 ---
         self._update_workspace("sensory", perceptual_info)
         self._update_workspace("emotion", emotional_val)
-        self._update_workspace("knowledge", knowledge)
-        
-        # サマリーの取得
+        if knowledge is not None:
+            self._update_workspace("knowledge", knowledge)
+
         summary = self._get_workspace_summary()
-        
-        # 4. 行動選択と実行
-        # Basal GangliaがWorkspaceのサマリーから行動を選択
+
+        # --- 5. 行動選択 ---
         selected_action = self.basal_ganglia.select_action(summary)
-        
-        # Reflex (反射) の確認
+
+        # Reflex (反射)
         reflex_triggered = False
-        if self.reflex_module:
+        if self.reflex_module and sensory_tensor is not None:
             reflex_act, conf = self.reflex_module(sensory_tensor)
             if reflex_act is not None:
                 selected_action = reflex_act
                 reflex_triggered = True
+                logger.info(f"Reflex triggered: Action {reflex_act}")
 
+        # --- 6. 行動実行 ---
         motor_output = None
+        execution_result = None
+
         if self.motor:
             motor_output = self.motor.generate_signal(selected_action)
 
+            if self.actuator and motor_output is not None:
+                # [Fix] Actuator.executeがkwargsを受け取るように修正済み
+                execution_result = self.actuator.execute(
+                    motor_output, action_id=selected_action)
+
         if hasattr(self.workspace, 'broadcast'):
             self.workspace.broadcast()
-            
-        # アストロサイトによる代謝制御
+
         if self.astrocyte:
             self.astrocyte.step()
-        
-        response = f"Action {selected_action}"
+
+        response_text = f"Action {selected_action}"
         if reflex_triggered:
-            response += " (Reflex Triggered)"
+            response_text += " (Reflex Triggered)"
+        if execution_result:
+            response_text += f", Result: {execution_result}"
+        if reasoning_output:
+            response_text += f", Thought: {str(reasoning_output)[:50]}..."
 
         return {
             "cycle": self.cycle_count,
-            "action": {'type': 'reflex' if reflex_triggered else 'voluntary', 'id': selected_action},
+            "action": {
+                'type': 'reflex' if reflex_triggered else 'voluntary',
+                'id': selected_action,
+                'executed': execution_result is not None
+            },
             "motor_output": motor_output,
             "knowledge_retrieved": knowledge is not None,
             "broadcasted": True,
-            "response": response,
+            "response": response_text,
             "status": "success"
         }
 
     def _update_workspace(self, key: str, value: Any) -> None:
-        """ワークスペースへの安全な書き込み"""
         if hasattr(self.workspace, 'add_content'):
             self.workspace.add_content(key, value)
         elif hasattr(self.workspace, 'update'):
             self.workspace.update(key, value)
 
     def _get_workspace_summary(self) -> List[Dict[str, Any]]:
-        """ワークスペースからのサマリー取得"""
         if hasattr(self.workspace, 'get_summary'):
             res = self.workspace.get_summary()
+            if res is None:
+                return []
             return cast(List[Dict[str, Any]], res if isinstance(res, list) else [res])
         return []
 
     def get_brain_status(self) -> Dict[str, Any]:
-        """ヘルスチェック用ステータス取得"""
         astro_status = {"status": "unknown", "metrics": {}}
         if self.astrocyte:
             astro_status = {
-                "status": "active", 
+                "status": "active",
                 "metrics": {
                     "energy_percent": (self.astrocyte.energy / self.astrocyte.max_energy) * 100,
                     "fatigue_index": self.astrocyte.fatigue_toxin
                 }
             }
-            
+
         return {
             "cycle": self.cycle_count,
             "status": "active",
-            "astrocyte": astro_status
+            "device": str(self.device),
+            "astrocyte": astro_status,
+            "components": {
+                "perception": self.perception is not None,
+                "reasoning": self.reasoning is not None,
+                "actuator": self.actuator is not None
+            }
         }
 
     def get_device(self) -> torch.device:
-        if isinstance(self.device, str):
-            return torch.device(self.device)
         return self.device

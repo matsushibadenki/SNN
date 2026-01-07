@@ -1,5 +1,4 @@
 import torch
-import pytest
 from snn_research.cognitive_architecture.motor_cortex import MotorCortex
 
 

@@ -1,7 +1,5 @@
 import torch
-import pytest
 import numpy as np
-import gymnasium as gym
 from snn_research.training.rl.spike_ppo import SpikePPO
 from snn_research.training.rl.spike_sac import SpikeSAC, ReplayBuffer
 

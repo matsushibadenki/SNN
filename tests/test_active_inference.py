@@ -1,5 +1,4 @@
 import torch
-import pytest
 from snn_research.adaptive.active_inference_agent import ActiveInferenceAgent
 
 

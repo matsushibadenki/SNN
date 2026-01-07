@@ -1,48 +1,32 @@
 # ファイルパス: snn_research/io/actuator.py
-# タイトル: アクチュエータ制御モジュール (ROS2/Simulation Hybrid)
-#
-# 目的:
-# - 人工脳 (MotorCortex) からの抽象的な行動コマンドを物理的な動作に変換する。
-# - Phase 10 (Embodiment) に向けたROS2連携の実装。
-# - ROS2環境がない場合は自動的にシミュレーションモードで動作し、コンソールに出力する。
+# タイトル: アクチュエータ制御モジュール (Fix: execute accepts kwargs)
+# 修正: executeメソッドが action_id などの追加引数を許容するように変更。
 
-# mypy fix: Added Union to imports
 from typing import List, Dict, Any, Union
 import json
 import time
 
-# ROS2ライブラリのインポート試行 (環境にない場合はMockとして振る舞う)
+# ROS2ライブラリのインポート試行
 try:
     import rclpy  # type: ignore
     from rclpy.node import Node  # type: ignore
-    from geometry_msgs.msg import Twist  # type: ignore # 一般的な移動ロボット用
+    from geometry_msgs.msg import Twist  # type: ignore
     from std_msgs.msg import String  # type: ignore
     ROS2_AVAILABLE = True
 except ImportError:
     ROS2_AVAILABLE = False
-    # 型ヒント用のダミークラス
 
     class DummyNode:
         pass  # type: ignore
-
     Node = DummyNode
 
 
 class Actuator(Node if ROS2_AVAILABLE else object):  # type: ignore
     """
     MotorCortexからのコマンドを受け取り、シミュレーションまたは実機(ROS2)で実行するモジュール。
-
-    Features:
-    - ROS2が利用可能な場合、自動的にNodeとして初期化され、トピックをpublishする。
-    - 利用不可の場合、標準出力を用いたシミュレーションモードで動作する。
     """
 
     def __init__(self, actuator_name: str, mode: str = "auto"):
-        """
-        Args:
-            actuator_name (str): アクチュエータの識別名 (例: 'turtlebot', 'robot_arm').
-            mode (str): 'auto', 'ros2', 'simulation'. 'auto'は環境に応じて切り替え。
-        """
         self.actuator_name = actuator_name
         self.mode = mode
 
@@ -66,7 +50,7 @@ class Actuator(Node if ROS2_AVAILABLE else object):  # type: ignore
                     rclpy.init()
                 super().__init__(f'snn_actuator_{actuator_name}')
 
-                # パブリッシャーの設定 (汎用的なcmd_velとlog出力)
+                # パブリッシャーの設定
                 self.vel_publisher = self.create_publisher(
                     Twist, f'/{actuator_name}/cmd_vel', 10)
                 self.log_publisher = self.create_publisher(
@@ -82,16 +66,19 @@ class Actuator(Node if ROS2_AVAILABLE else object):  # type: ignore
             print(
                 f"🖥️ [Actuator] Simulation Mode initialized for '{self.actuator_name}'")
 
-    def execute(self, command: Any):
+    def execute(self, command: Any, **kwargs: Any):
         """
         単一のコマンドを実行する。
-        文字列または辞書形式のコマンドを受け付ける。
-
         Args:
-            command (Union[str, Dict]): 実行するコマンド。
-                例: "move_forward"
-                例: {"action": "move", "params": {"x": 1.0, "z": 0.5}}
+            command: 実行するコマンド
+            **kwargs: action_id 等の追加メタデータを受け取る
         """
+        # メタ情報のログ出力などが必要であればkwargsを使用
+        action_id = kwargs.get("action_id")
+        if action_id:
+            # ROSログやデバッグ出力にIDを含める等の処理が可能
+            pass
+
         # コマンドの正規化
         cmd_str = ""
         cmd_dict = {}
@@ -125,15 +112,13 @@ class Actuator(Node if ROS2_AVAILABLE else object):  # type: ignore
         msg_log.data = f"Executing: {cmd_str}"
         self.log_publisher.publish(msg_log)
 
-        # 移動コマンドの処理 (Twistメッセージへの変換)
+        # 移動コマンドの処理
         if action in ["move", "navigate"]:
             twist = Twist()
             params = cmd_dict.get("params", {})
-            # 単純なマッピング例
             twist.linear.x = float(params.get("linear_x", 0.0))
             twist.angular.z = float(params.get("angular_z", 0.0))
 
-            # "move_forward" などの簡易文字列コマンド対応
             content = cmd_dict.get("content", "")
             if content == "move_forward":
                 twist.linear.x = 0.2
@@ -152,16 +137,9 @@ class Actuator(Node if ROS2_AVAILABLE else object):  # type: ignore
     def _execute_sim(self, cmd_dict: Dict, cmd_str: str):
         """シミュレーションモードでのコマンド実行"""
         print(f"⚡️ [SIM] Actuator '{self.actuator_name}' executing: {cmd_str}")
-        # ここに将来的に物理シミュレータ(PyBullet/Mujoco)との連携コードを追加可能
 
-    # mypy fix: Updated type hint to allow Dict (fixes artificial_brain.py error)
     def run_command_sequence(self, command_logs: List[Union[str, Dict[str, Any]]]):
-        """
-        一連のコマンドシーケンスを順番に実行する。
-
-        Args:
-            command_logs (List[Union[str, Dict]]): MotorCortexによって生成された実行ログのリスト。
-        """
+        """一連のコマンドシーケンスを順番に実行する。"""
         print(f"▶️ [{self.actuator_name}] コマンドシーケンスの実行を開始...")
         if not command_logs:
             print("  - 実行すべきコマンドがありません。")
@@ -169,7 +147,6 @@ class Actuator(Node if ROS2_AVAILABLE else object):  # type: ignore
 
         for log in command_logs:
             self.execute(log)
-            # 連続実行時のウェイト（実機の場合は重要）
             if self.use_ros:
                 time.sleep(0.1)
 
@@ -179,5 +156,4 @@ class Actuator(Node if ROS2_AVAILABLE else object):  # type: ignore
         """終了処理"""
         if self.use_ros and rclpy.ok():
             self.destroy_node()
-            # rclpy.shutdown() はグローバルな影響があるため、アプリのメイン側で呼ぶのが安全
             print("💤 [Actuator] ROS2 Node destroyed.")

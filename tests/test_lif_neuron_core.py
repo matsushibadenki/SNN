@@ -1,5 +1,4 @@
 import torch
-import pytest
 from snn_research.core.neurons.lif_neuron import LIFNeuron
 
 
