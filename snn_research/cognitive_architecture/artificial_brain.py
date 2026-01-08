@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: 人工脳コア・アーキテクチャ (Mypy Fixed)
-# 目的: ReasoningEngine.processのシグネチャ不整合を修正し、mypyエラーを解消する。
+# 日本語タイトル: 人工脳コア・アーキテクチャ (State & Sleep Fix)
+# 目的: state属性とsleep_cycleメソッドを追加し、Brain v14デモの実行エラーを解消する。
 
 import torch
 import torch.nn as nn
@@ -19,6 +19,7 @@ from .intrinsic_motivation import IntrinsicMotivationSystem
 from .astrocyte_network import AstrocyteNetwork
 from .reasoning_engine import ReasoningEngine
 from .meta_cognitive_snn import MetaCognitiveSNN
+from .sleep_consolidation import SleepConsolidator
 from snn_research.modules.reflex_module import ReflexModule
 from snn_research.models.experimental.world_model_snn import SpikingWorldModel
 from snn_research.safety.ethical_guardrail import EthicalGuardrail
@@ -61,6 +62,7 @@ class ArtificialBrain(nn.Module):
         world_model: Optional[SpikingWorldModel] = None,
         ethical_guardrail: Optional[EthicalGuardrail] = None,
         reflex_module: Optional[ReflexModule] = None,
+        sleep_consolidator: Optional[SleepConsolidator] = None,
         device: Union[str, torch.device] = 'cpu',
         **kwargs: Any
     ):
@@ -68,6 +70,9 @@ class ArtificialBrain(nn.Module):
         self.config = config or {}
         self.device = device if isinstance(
             device, torch.device) else torch.device(device)
+        
+        # [Fix] 状態管理属性の追加
+        self.state = "AWAKE"
 
         # 1. 基礎システムの初期化
         self.workspace = global_workspace if global_workspace else GlobalWorkspace()
@@ -113,6 +118,9 @@ class ArtificialBrain(nn.Module):
         self.meta_cognitive = meta_cognitive_snn
         self.world_model = world_model
         self.reflex_module = reflex_module
+        
+        # [Fix] 睡眠統合モジュールの保持
+        self.sleep_consolidator = sleep_consolidator
 
         self.cycle_count = 0
 
@@ -129,6 +137,10 @@ class ArtificialBrain(nn.Module):
         1ステップの認知サイクルを実行する。
         """
         self.cycle_count += 1
+        
+        # 睡眠中の場合、サイクル処理をスキップ
+        if self.state == "SLEEPING":
+             return {"cycle": self.cycle_count, "status": "sleeping"}
 
         # --- 1. 入力処理 (Sensation) ---
         sensory_tensor: Optional[torch.Tensor] = None
@@ -137,8 +149,6 @@ class ArtificialBrain(nn.Module):
             # 文字列入力の場合
             if self.encoder:
                 try:
-                    # [Fix] SpikeEncoderにencode_textを追加したので直接呼び出す
-                    # 型チェックはencode_textメソッド側で担保
                     sensory_tensor = self.encoder.encode_text(sensory_input)
                 except Exception as e:
                     logger.error(
@@ -183,9 +193,6 @@ class ArtificialBrain(nn.Module):
         # 高次推論 (Reasoning)
         reasoning_output = None
         if self.reasoning and isinstance(sensory_input, str):
-            # [Fix] processメソッドはcontext引数を受け取らないため削除
-            # 必要なら辞書型に埋め込むなどの設計変更が必要だが、まずは型エラーを解消
-            # context_data = self.workspace.get_context()
             reasoning_output = self.reasoning.process(sensory_input)
 
             if reasoning_output:
@@ -223,7 +230,6 @@ class ArtificialBrain(nn.Module):
             motor_output = self.motor.generate_signal(selected_action)
 
             if self.actuator and motor_output is not None:
-                # [Fix] Actuator.executeがkwargsを受け取るように修正済み
                 execution_result = self.actuator.execute(
                     motor_output, action_id=selected_action)
 
@@ -255,6 +261,33 @@ class ArtificialBrain(nn.Module):
             "status": "success"
         }
 
+    # [Fix] 睡眠サイクルの実装
+    def sleep_cycle(self) -> None:
+        """
+        睡眠モードに入り、記憶の定着処理を実行する。
+        """
+        logger.info("💤 Initiating Sleep Cycle...")
+        self.state = "SLEEPING"
+        
+        if self.sleep_consolidator:
+            try:
+                # 睡眠統合プロセスの実行
+                self.sleep_consolidator.perform_sleep_cycle(duration_cycles=5)
+            except Exception as e:
+                logger.error(f"Error during sleep consolidation: {e}")
+        else:
+            logger.warning("⚠️ SleepConsolidator is not attached. Skipping memory consolidation.")
+            
+        # アストロサイトによるエネルギー回復 (簡易シミュレーション)
+        if self.astrocyte:
+            # 毒素排出とグリコーゲン回復
+            self.astrocyte.fatigue_toxin = max(0.0, self.astrocyte.fatigue_toxin - 50.0)
+            self.astrocyte.current_energy = min(self.astrocyte.max_energy, self.astrocyte.current_energy + 300.0)
+            logger.info(f"  ✨ Astrocyte recovered. Energy: {self.astrocyte.current_energy:.1f}, Fatigue: {self.astrocyte.fatigue_toxin:.1f}")
+
+        self.state = "AWAKE"
+        logger.info("🌞 Brain has awakened.")
+
     def _update_workspace(self, key: str, value: Any) -> None:
         if hasattr(self.workspace, 'add_content'):
             self.workspace.add_content(key, value)
@@ -282,13 +315,14 @@ class ArtificialBrain(nn.Module):
 
         return {
             "cycle": self.cycle_count,
-            "status": "active",
+            "status": self.state,
             "device": str(self.device),
             "astrocyte": astro_status,
             "components": {
                 "perception": self.perception is not None,
                 "reasoning": self.reasoning is not None,
-                "actuator": self.actuator is not None
+                "actuator": self.actuator is not None,
+                "sleep_consolidator": self.sleep_consolidator is not None
             }
         }
 

@@ -1,39 +1,22 @@
-# ファイルパス: scripts/runners/run_brain_v14.py
-# Title: SNN Brain v14.0 Master Simulation
-# Description:
-#   ロードマップ Phase 5 "Neuro-Symbolic Evolution" の完全デモンストレーション。
-#   1. [Awake] SFormerバックボーンによる思考と対話
-#   2. [Learning] ユーザーからの知識獲得とGraphRAGへの構造化
-#   3. [Sleep] 睡眠サイクルによる記憶の固定化 (Replay -> Synaptic Weight)
-#   4. [Evolve] 目標発火率への適応と知識の進化
-#   5. [Fatigue] アストロサイトによるリソース枯渇と強制シャットダウン
+# ファイルパス: snn_research/scenarios/brain_v14.py
+# 日本語タイトル: Brain V14 シナリオ (Mypy Fixed)
+# 概要: Brain v14.0 Master Simulation の実行ロジック。
+#       RAGSystemのAPI変更対応に加え、Optional型の安全なアクセス修正を実施。
 
 from app.containers import BrainContainer
 import sys
 import os
 import time
 import logging
-import argparse
+from typing import Any, Dict
 
-# プロジェクトルートの設定
-project_root = os.path.abspath(os.path.join(
-    os.path.dirname(__file__), "../../.."))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+logger = logging.getLogger("Scenario_BrainV14")
 
-
-# ロギング設定
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(message)s', force=True)
-logger = logging.getLogger("BrainV14")
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Run SNN Brain v14.0 Simulation")
-    parser.add_argument("--config", type=str,
-                        default="configs/experiments/brain_v14_config.yaml")
-    args = parser.parse_args()
+def run_scenario(config_path: str = "configs/experiments/brain_v14_config.yaml"):
+    """
+    SNN Brain v14.0 Master Simulation
+    ロードマップ Phase 5 "Neuro-Symbolic Evolution" の完全デモンストレーション。
+    """
 
     print("\n" + "="*60)
     print("🧠 SNN Artificial Brain v14.0: Neuro-Symbolic Evolution")
@@ -42,10 +25,11 @@ def main():
 
     # 1. コンテナ初期化
     container = BrainContainer()
-    if os.path.exists(args.config):
-        container.config.from_yaml(args.config)
+    
+    if os.path.exists(config_path):
+        container.config.from_yaml(config_path)
     else:
-        logger.warning(f"Config file {args.config} not found. Using defaults.")
+        logger.warning(f"Config file {config_path} not found. Using defaults.")
         # デフォルト設定 (SFormer T=1)
         container.config.from_dict({
             "model": {
@@ -64,18 +48,35 @@ def main():
 
     # 知識ベースの準備
     rag = container.agent_container.rag_system()
-    if not rag.vector_store:
-        logger.info("   - Initializing RAG Vector Store...")
-        rag.setup_vector_store()
+    # 現在のRAGSystemは vector_store 属性を持たないため、存在確認ロジックを変更
+    kb_size = len(rag.knowledge_base)
+    logger.info(f"   - RAG System initialized. Current Knowledge Base Size: {kb_size}")
 
     # 脳の起動
     brain = container.artificial_brain()
 
-    # 思考エンジンの確認
-    engine_name = brain.thinking_engine.config.get(
-        "architecture_type", "unknown")
+    # 思考エンジンの確認 [Fix: Optional/Attribute check]
+    engine_name = "unknown"
+    if brain.thinking_engine:
+        # thinking_engineはnn.Module型のため、config属性が必ずあるとは限らない
+        # コンテナで設定されたSNNCoreなら持っている
+        if hasattr(brain.thinking_engine, 'config'):
+            cfg = getattr(brain.thinking_engine, 'config')
+            if isinstance(cfg, dict):
+                engine_name = cfg.get("architecture_type", "unknown")
+            else:
+                engine_name = "custom_module"
+        else:
+            engine_name = brain.thinking_engine.__class__.__name__
+
     print(f"   - Thinking Engine: {engine_name} (Ready)")
-    print(f"   - Astrocyte: Energy={brain.astrocyte.current_energy:.1f}")
+    
+    # アストロサイトの確認 [Fix: Optional check]
+    astro_energy = 0.0
+    if brain.astrocyte:
+        astro_energy = brain.astrocyte.current_energy
+        
+    print(f"   - Astrocyte: Energy={astro_energy:.1f}")
 
     # --- シナリオ実行 ---
 
@@ -108,9 +109,15 @@ def main():
         # 思考エンジンを酷使するタスク
         brain.run_cognitive_cycle(
             f"Complex reasoning task {i}: Calculate optimal path.")
-        energy = brain.astrocyte.current_energy
-        fatigue = brain.astrocyte.fatigue_toxin
-        print(f"   Task {i+1}: Energy {energy:.1f} | Fatigue {fatigue:.1f}")
+        
+        # [Fix: Optional check]
+        current_energy = 0.0
+        current_fatigue = 0.0
+        if brain.astrocyte:
+            current_energy = brain.astrocyte.current_energy
+            current_fatigue = brain.astrocyte.fatigue_toxin
+            
+        print(f"   Task {i+1}: Energy {current_energy:.1f} | Fatigue {current_fatigue:.1f}")
 
     # Scene 3: Sleep & Evolution (睡眠と進化)
     print("\n💤 [Phase 3: Sleep & Consolidation]")
@@ -124,12 +131,15 @@ def main():
     # 知識の確認
     query = "SNN"
     print(f"   🧠 Checking Long-Term Memory for '{query}':")
+    
+    # RAG検索の実行
+    # Cortexクラスには retrieve_knowledge メソッドを追加済み
     knowledge = brain.cortex.retrieve_knowledge(query)
-    for k in knowledge[:3]:
-        print(f"      - {k}")
+    
+    if not knowledge:
+        print("      (No knowledge retrieved directly from Cortex retrieval)")
+    else:
+        for k in knowledge[:3]:
+            print(f"      - {k}")
 
     print("\n🎉 Simulation Complete. The Artificial Brain has successfully evolved.")
-
-
-if __name__ == "__main__":
-    main()

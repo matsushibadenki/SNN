@@ -63,7 +63,7 @@
     ```
 *   **全テストランナー**:
     ```bash
-    python scripts/tests/run_all_tests.py
+    python snn-cli.py test
     ```
 *   **パフォーマンス検証**:
     ```bash
@@ -119,7 +119,7 @@
     ```
 *   **Brain v14 (Old Master)**:
     ```bash
-    python scripts/experiments/brain/run_brain_v14.py
+    python snn-cli.py demo brain-v14
     ```
 *   **マルチモーダル統合 (Brain v2.0 Integration)**:
     ```bash
@@ -254,11 +254,11 @@
     ```
 *   **MNIST SNN学習**:
     ```bash
-    python scripts/training/train_mnist_snn.py
+    python snn-cli.py run mnist
     ```
 *   **CIFAR10 Bio-PC学習**:
     ```bash
-    python scripts/training/train_bio_pc_cifar10.py
+    python snn-cli.py run cifar10
     ```
 *   **Spiking VLM学習**:
     ```bash

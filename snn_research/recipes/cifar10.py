@@ -1,8 +1,6 @@
-# scripts/train_bio_pc_cifar10.py
-# 日本語タイトル: CIFAR-10 SNN学習スクリプト (Self-Contained & Optimized)
-# 概要: 既存のバグを回避し、CIFAR-10に最適化したSEW-ResNetを内部で定義して学習を行う。
-#       Objective: Accuracy > 58.2% (Targeting 90%+)
-#       Fix: AdaptiveLIFNeuronの引数エラー(detach_reset)を修正
+# ファイルパス: snn_research/recipes/cifar10.py
+# 日本語タイトル: CIFAR-10 SNN学習レシピ
+# 概要: CIFAR-10に最適化したSEW-ResNetを学習させるレシピ。snn-cliから呼び出される。
 
 import os
 import sys
@@ -18,31 +16,17 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-# プロジェクトルートの設定
-from pathlib import Path
-project_root = Path(__file__).resolve().parent.parent
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
+from snn_research.core.neurons import AdaptiveLIFNeuron
+from snn_research.core.base import BaseModel
 
 try:
     from spikingjelly.activation_based import functional as SJ_F
-    from snn_research.core.neurons import AdaptiveLIFNeuron
-    from snn_research.core.base import BaseModel
-except ImportError as e:
-    print(f"❌ Import Error: {e}")
-    print("プロジェクトルートから実行しているか確認してください。")
-    sys.exit(1)
+except ImportError:
+    pass
 
-# ロギング設定
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger("CIFAR10_Trainer")
+logger = logging.getLogger("Recipe_CIFAR10")
 
 # --- 1. ローカル修正版モデル定義 (CIFAR-10 Optimized) ---
-
 
 class SEWResidualBlock(nn.Module):
     """SEW (Spike-Element-Wise) 残差ブロック"""
@@ -82,7 +66,6 @@ class SEWResidualBlock(nn.Module):
         else:
             identity = x_flat
 
-        # Shortcut path neurons
         # Shortcut path neurons
         self.forward_neuron_time_series(self.lif_shortcut, identity, B, T)
 
@@ -234,12 +217,15 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
 
 
-def main():
+def run_cifar10_training(epochs=50, batch_size=64):
+    """
+    CIFAR-10学習を実行する関数。CLIから呼び出される。
+    """
     # --- Config ---
     CONFIG = {
         "seed": 42,
-        "epochs": 50,
-        "batch_size": 64,
+        "epochs": epochs,
+        "batch_size": batch_size,
         "lr": 1e-3,
         "min_lr": 1e-5,
         "weight_decay": 1e-4,
@@ -328,7 +314,7 @@ def main():
         total = 0
 
         pbar = tqdm(
-            train_loader, desc=f"Epoch {epoch+1}/{CONFIG['epochs']}", unit="batch")
+            train_loader, desc=f"Epoch {epoch+1}/{CONFIG['epochs']}", unit="batch", leave=False)
 
         for inputs, targets in pbar:
             inputs, targets = inputs.to(device), targets.to(device)
@@ -384,7 +370,7 @@ def main():
 
         if test_acc > best_acc:
             best_acc = test_acc
-            os.makedirs("results", exist_ok=True)
+            os.makedirs("workspace/results", exist_ok=True)
             torch.save(model.state_dict(),
                        "workspace/results/best_cifar10_snn.pth")
             if best_acc > 58.2:
@@ -393,7 +379,3 @@ def main():
     total_time = (time.time() - start_time) / 60
     logger.info(
         f"✅ Finished. Total Time: {total_time:.1f} min. Best Acc: {best_acc:.2f}%")
-
-
-if __name__ == "__main__":
-    main()

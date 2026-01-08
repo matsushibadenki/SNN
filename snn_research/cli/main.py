@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/cli/main.py
-# 日本語タイトル: SNNプロジェクト統合CLI (Enhanced)
-# 目的: プロジェクトの全機能を統括するコマンドラインインターフェース。ロギング設定とエラーハンドリングを強化。
+# 日本語タイトル: SNNプロジェクト統合CLI (Integrated v17.2)
+# 目的: プロジェクトの全機能を統括するコマンドラインインターフェース。
 
 import click
 import logging
@@ -9,7 +9,11 @@ from .core_commands import register_core_commands
 from .model_commands import register_model_commands
 from .app_commands import register_app_commands
 
-# ロガーの初期設定（ハンドラは後で追加される可能性があるため、ここではgetLoggerのみ）
+# 新規コマンドのインポート
+from .recipe_commands import recipe_cli
+from .demo_commands import demo_cli
+
+# ロガーの初期設定
 logger = logging.getLogger("snn_cli")
 
 
@@ -25,7 +29,7 @@ def setup_logging(debug: bool = False):
         stream=sys.stdout
     )
 
-    # 外部ライブラリのログ抑制（必要に応じて）
+    # 外部ライブラリのログ抑制
     if not debug:
         logging.getLogger("torch").setLevel(logging.WARNING)
         logging.getLogger("matplotlib").setLevel(logging.WARNING)
@@ -34,7 +38,7 @@ def setup_logging(debug: bool = False):
 @click.group()
 @click.option('--debug', is_flag=True, help='デバッグモードを有効にし、詳細なログを出力します。')
 def cli(debug):
-    """SNNプロジェクト 統合CLIツール (Integrated v17.1)"""
+    """SNNプロジェクト 統合CLIツール (Integrated v17.2)"""
     setup_logging(debug)
     if debug:
         logger.debug("Debug mode enabled.")
@@ -46,16 +50,18 @@ def main():
     register_core_commands(cli)
     register_model_commands(cli)
     register_app_commands(cli)
+    
+    # --- 新規追加 ---
+    cli.add_command(recipe_cli)
+    cli.add_command(demo_cli)
+    # ----------------
 
     # CLI実行
     try:
-        # sys.argvをチェックして、テスト実行時などに予期しない引数が入らないようにする
         cli()
     except SystemExit:
-        # Clickの正常終了
         raise
     except Exception as e:
-        # デバッグモード判定（簡易的）
         is_debug = '--debug' in sys.argv
 
         if is_debug:

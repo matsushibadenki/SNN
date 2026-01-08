@@ -1,7 +1,6 @@
-# scripts/train_mnist_snn.py
-# 日本語タイトル: MNIST SNN学習スクリプト (Metrics Export Ready)
-# 概要: MNISTデータセットで学習を行い、目標精度96.89%達成を目指す。
-#       検証ツール(verify_performance.py)用のJSONファイルを自動生成する。
+# ファイルパス: snn_research/recipes/mnist.py
+# 日本語タイトル: MNIST SNN学習レシピ (Mypy Fixed)
+# 概要: MNISTデータセットでSpiking CNNを学習させるレシピ。型ヒントを修正。
 
 import os
 import sys
@@ -16,33 +15,22 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from typing import Dict, Any, Optional
 
-# プロジェクトルートの設定
-from pathlib import Path
-project_root = Path(__file__).resolve().parent.parent
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
+# パッケージ内インポート
+from snn_research.core.neurons import AdaptiveLIFNeuron
+from snn_research.core.base import BaseModel
 
-# 必要なモジュールのインポート
+# 外部ライブラリ
 try:
     from spikingjelly.activation_based import functional as SJ_F
-    from snn_research.core.neurons import AdaptiveLIFNeuron
-    from snn_research.core.base import BaseModel
-except ImportError as e:
-    print(f"❌ Import Error: {e}")
-    print("プロジェクトルートから実行しているか確認してください。")
-    sys.exit(1)
+except ImportError:
+    # フォールバック等は環境依存だが、ここではエラーを出して終了させる想定
+    pass
 
-# ロギング設定
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger("MNIST_Trainer")
+logger = logging.getLogger("Recipe_MNIST")
 
-# --- 1. モデル定義 (MNIST Optimized Spiking CNN) ---
-
+# --- モデル定義 ---
 
 class MNIST_SpikingCNN(BaseModel):
     """
@@ -144,9 +132,13 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
 
 
-def main():
+def run_mnist_training(config_override: Optional[Dict[str, Any]] = None):
+    """
+    MNIST学習を実行する関数。CLIから呼び出される。
+    """
     # --- Config ---
-    CONFIG = {
+    # 型注釈を追加してmypyの推論を助ける
+    CONFIG: Dict[str, Any] = {
         "seed": 42,
         "epochs": 10,
         "batch_size": 128,
@@ -163,6 +155,10 @@ def main():
             "target_spike_rate": 0.1
         }
     }
+
+    # 設定の上書き
+    if config_override:
+        CONFIG.update(config_override)
 
     set_seed(CONFIG["seed"])
 
@@ -181,46 +177,47 @@ def main():
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
     ])
-    os.makedirs(CONFIG["dataset_path"], exist_ok=True)
+    os.makedirs(str(CONFIG["dataset_path"]), exist_ok=True)
+    # ダウンロード時のログ抑制などは省略
     train_dataset = datasets.MNIST(
-        root=CONFIG["dataset_path"], train=True, download=True, transform=transform)
+        root=str(CONFIG["dataset_path"]), train=True, download=True, transform=transform)
     test_dataset = datasets.MNIST(
-        root=CONFIG["dataset_path"], train=False, download=True, transform=transform)
+        root=str(CONFIG["dataset_path"]), train=False, download=True, transform=transform)
 
     pin_memory = True if device.type == 'cuda' else False
     num_workers = 4 if os.name != 'nt' else 0
     train_loader = DataLoader(
-        train_dataset, batch_size=CONFIG["batch_size"], shuffle=True, num_workers=num_workers, pin_memory=pin_memory)
+        train_dataset, batch_size=int(CONFIG["batch_size"]), shuffle=True, num_workers=num_workers, pin_memory=pin_memory)
     test_loader = DataLoader(
-        test_dataset, batch_size=CONFIG["batch_size"], shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+        test_dataset, batch_size=int(CONFIG["batch_size"]), shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
 
     # --- Model ---
     model = MNIST_SpikingCNN(
-        num_classes=CONFIG["num_classes"],
-        time_steps=CONFIG["time_steps"],
+        num_classes=int(CONFIG["num_classes"]),
+        time_steps=int(CONFIG["time_steps"]),
         neuron_config=CONFIG["neuron_config"]
     ).to(device)
 
     optimizer = optim.AdamW(
-        model.parameters(), lr=CONFIG["lr"], weight_decay=1e-4)
+        model.parameters(), lr=float(CONFIG["lr"]), weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=CONFIG["epochs"])
+        optimizer, T_max=int(CONFIG["epochs"]))
     criterion = nn.CrossEntropyLoss()
     scaler = torch.amp.GradScaler('cuda', enabled=(device.type == 'cuda'))
 
     # --- Training Loop ---
     best_acc = 0.0
 
-    os.makedirs("results", exist_ok=True)
+    os.makedirs("workspace/results", exist_ok=True)
 
-    for epoch in range(CONFIG["epochs"]):
+    for epoch in range(int(CONFIG["epochs"])):
         model.train()
         train_loss = 0.0
         correct = 0
         total = 0
 
         pbar = tqdm(
-            train_loader, desc=f"Epoch {epoch+1}/{CONFIG['epochs']}", unit="batch")
+            train_loader, desc=f"Epoch {epoch+1}/{CONFIG['epochs']}", unit="batch", leave=False)
 
         for inputs, targets in pbar:
             inputs, targets = inputs.to(device), targets.to(device)
@@ -305,7 +302,7 @@ def main():
                 "epoch": epoch + 1
             }
 
-            with open(CONFIG["output_json"], "w") as f:
+            with open(str(CONFIG["output_json"]), "w") as f:
                 json.dump(metrics_data, f, indent=4)
 
             logger.info(f"💾 Best Model & Metrics Saved! Acc: {best_acc:.2f}%")
@@ -314,7 +311,3 @@ def main():
                 logger.info("🎉 GOAL REACHED!")
 
     logger.info(f"✅ Finished. Best Acc: {best_acc:.2f}%")
-
-
-if __name__ == "__main__":
-    main()

@@ -1,6 +1,6 @@
-# /snn_research/cognitive_architecture/cortex.py
-# 日本語タイトル: 皮質モジュール (記憶固定化修正版)
-# 目的: ワーキングメモリから長期記憶(RAG)への知識転送を型安全に行う。
+# ファイルパス: snn_research/cognitive_architecture/cortex.py
+# 日本語タイトル: 皮質モジュール (Knowledge Retrieval Fix)
+# 目的: 文字列ベースの知識検索メソッド(retrieve_knowledge)を追加し、Brain v14デモのエラーを解消する。
 
 import torch
 import torch.nn as nn
@@ -20,15 +20,27 @@ class Cortex(nn.Module):
         self.rag_system = rag_system or RAGSystem()
 
     def retrieve(self, query_vector: torch.Tensor) -> List[str]:
-        """ベクトルクエリに基づき関連知識を検索。"""
+        """
+        ベクトルクエリに基づき関連知識を検索。
+        主にArtificialBrainの内部処理(perceptual_info経由)で使用。
+        """
         # ベクトルを文字列クエリに変換（ここでは簡易的に特徴の要約を検索）
+        # 実用上はVector Storeの検索APIにベクトルを直接渡すが、
+        # 現在のRAGSystemは文字列検索ベースのため、疑似的なキーを生成
         query_str = f"feature_vector_{torch.mean(query_vector).item():.2f}"
         return self.rag_system.search(query_str, k=3)
 
+    def retrieve_knowledge(self, query: str, k: int = 3) -> List[str]:
+        """
+        [Fix] 文字列クエリに基づき関連知識を検索。
+        Brain v14シナリオ等の高次認知プロセスから直接呼び出される。
+        """
+        return self.rag_system.search(query, k=k)
+
     def consolidate_memory(self, concept: str, definition: str, importance: float = 1.0):
         """
-        [mypy修正] 知識の固定化。
-        RAGSystem.update_knowledge ではなく、add_triple を使用する。
+        知識の固定化。
+        RAGSystemにトリプル形式で知識を追加する。
         """
         logger.info(f"🧠 Consolidating memory: {concept}")
         
