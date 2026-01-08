@@ -1,8 +1,8 @@
 # ファイルパス: snn_research/io/universal_encoder.py
-# Title: Universal Spike Encoder (Fixed & Compatible)
+# Title: Universal Spike Encoder (Video Support Fixed)
 # 修正内容:
-# 1. 変数名 `F` (Features) と `torch.nn.functional as F` の名前衝突を解消。
-# 2. AutonomousAgentとの互換性のため、UniversalEncoderクラスを復元。
+# 1. _encode_image に 5次元入力(Batch, Time, C, H, W)のサポートを追加。
+#    時間次元を潰さずに処理することで、MultimodalProjectorとの整合性を確保。
 
 import torch
 import torch.nn as nn
@@ -36,10 +36,31 @@ class UniversalSpikeEncoder(nn.Module):
             return self._encode_text_embedding(data, method)
         elif modality == 'dvs':
             return self._encode_dvs(data)
+        elif modality == 'tactile': # 触覚用 (簡易実装)
+            return self._encode_generic_sequence(data)
+        elif modality == 'olfactory': # 嗅覚用 (簡易実装)
+            return self._encode_generic_sequence(data)
         else:
             raise ValueError(f"Unsupported modality: {modality}")
 
     def _encode_image(self, x: torch.Tensor, method: str) -> torch.Tensor:
+        # Case 1: Video Input (Batch, Time, C, H, W)
+        if x.dim() == 5:
+            B, T_in, C, H, W = x.shape
+            # 時間次元(1)を残し、空間次元(2,3,4)をフラット化 -> (B, T, Features)
+            x_flat = x.flatten(2) 
+            
+            # 時間ステップの調整
+            if T_in != self.time_steps:
+                x_flat = x_flat.permute(0, 2, 1) # (B, F, T)
+                x_flat = F.interpolate(x_flat, size=self.time_steps, mode='linear', align_corners=False)
+                x_flat = x_flat.permute(0, 2, 1) # (B, T, F)
+            
+            # Rate Coding (各フレームの画素値を確率としてスパイク生成)
+            spikes = (torch.rand_like(x_flat, device=self.device) < x_flat).float()
+            return spikes
+
+        # Case 2: Static Image (Batch, C, H, W) or (Batch, H, W)
         if x.dim() > 2:
             x = x.flatten(1)  # (B, F)
 
@@ -70,12 +91,11 @@ class UniversalSpikeEncoder(nn.Module):
                 raise ValueError(
                     f"Audio input must be 3D tensor (B, T, F), got {x.shape}")
 
-        B, T_in, num_features = x.shape  # 修正: F -> num_features
+        B, T_in, num_features = x.shape
 
         # 時間方向のリサイズ
         if T_in != self.time_steps:
             x = x.permute(0, 2, 1)  # (B, F, T_in)
-            # ここで F.interpolate を使用 (変数名衝突を回避済み)
             x = F.interpolate(x, size=self.time_steps,
                               mode='linear', align_corners=False)
             x = x.permute(0, 2, 1)  # (B, T_out, F)
@@ -89,6 +109,20 @@ class UniversalSpikeEncoder(nn.Module):
             return spikes
         else:
             return (torch.rand_like(x) < x).float()
+            
+    def _encode_generic_sequence(self, x: torch.Tensor) -> torch.Tensor:
+        """触覚・嗅覚などの一般的な時系列データ (B, T, F) 用"""
+        if x.dim() == 2: # (B, F) -> (B, 1, F)
+             x = x.unsqueeze(1)
+        
+        B, T_in, F_dim = x.shape
+        if T_in != self.time_steps:
+            x = x.permute(0, 2, 1)
+            x = F.interpolate(x, size=self.time_steps, mode='linear', align_corners=False)
+            x = x.permute(0, 2, 1)
+            
+        spikes = (torch.rand_like(x, device=self.device) < x).float()
+        return spikes
 
     def _encode_text_embedding(self, x: torch.Tensor, method: str) -> torch.Tensor:
         probs = torch.sigmoid(x)
