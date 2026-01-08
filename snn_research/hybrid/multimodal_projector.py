@@ -1,18 +1,16 @@
 # ファイルパス: snn_research/hybrid/multimodal_projector.py
-# (修正: 循環インポート回避のための遅延インポート)
+# 日本語タイトル: Multimodal Projector (Upgraded to MLP)
+# 目的: 視覚特徴量を言語空間へより正確に射影するため、単層Linearから2層MLPへ強化。
 
 import torch
 import torch.nn as nn
-
 from snn_research.core.base import BaseModel
-# 削除: from snn_research.training.quantization import BitLinear  <-- ここを削除
 
 class MultimodalProjector(BaseModel):
     """
     視覚モデルの出力を言語モデルの入力コンテキストとして射影するモジュール。
+    [Update] 表現力向上のため MLP (Linear -> GELU -> Linear) を採用。
     """
-    projector: nn.Linear
-
     def __init__(
         self,
         visual_dim: int,
@@ -27,54 +25,46 @@ class MultimodalProjector(BaseModel):
         self.visual_time_steps = visual_time_steps
         self.lang_time_steps = lang_time_steps
 
-        # 1. 次元射影層 (Visual Dim -> Language Dim)
+        # ★強化ポイント: 中間層を設けて非線形変換を行う (MLP)
+        hidden_dim = lang_dim * 4  # 一般的に隠れ層は出力の4倍程度
+        
         if use_bitnet:
-            # --- 追加: ここでインポート ---
             from snn_research.training.quantization import BitLinear
-            # BitLinear は nn.Linear を継承しているため、nn.Linear 型として扱える
-            self.projector = BitLinear(visual_dim, lang_dim, bias=False, weight_bits=1.58)
+            self.projector = nn.Sequential(
+                BitLinear(visual_dim, hidden_dim, bias=False, weight_bits=1.58),
+                nn.GELU(),
+                BitLinear(hidden_dim, lang_dim, bias=False, weight_bits=1.58)
+            )
         else:
-            self.projector = nn.Linear(visual_dim, lang_dim, bias=False)
+            self.projector = nn.Sequential(
+                nn.Linear(visual_dim, hidden_dim, bias=False),
+                nn.GELU(), # 非線形活性化関数
+                nn.Linear(hidden_dim, lang_dim, bias=False)
+            )
             
-        # 2. オプション: 視覚トークンとしての位置エンコーディング
-        # (シーケンスとして扱う場合)
+        # 視覚トークンとしての位置エンコーディング
         self.pos_embed = nn.Parameter(torch.randn(1, 1, lang_dim) * 0.02)
 
         self._init_weights()
 
     def forward(self, visual_features: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            visual_features: (Batch, T_vis, C_vis) または (Batch, C_vis)
-                             SpikingCNNの出力（平均スパイク率または最終膜電位）
-
-        Returns:
-            projected_context: (Batch, Context_Len, Lang_Dim)
-                               言語モデルに注入するためのコンテキスト埋め込み
-        """
         B = visual_features.shape[0]
         
         # 入力形状の正規化 -> (B, T_seq, C_vis)
         if visual_features.dim() == 2: # (B, C)
-            x = visual_features.unsqueeze(1) # (B, 1, C)
+            x = visual_features.unsqueeze(1)
         elif visual_features.dim() == 3: # (B, T, C)
             x = visual_features
-        elif visual_features.dim() == 4: # (B, C, H, W) -> Flatten -> (B, H*W, C) or Pool
-             # 空間情報をシーケンスとして扱う (ViTライク)
+        elif visual_features.dim() == 4: # (B, C, H, W)
              B, C, H, W = visual_features.shape
              x = visual_features.permute(0, 2, 3, 1).reshape(B, H*W, C)
         else:
             raise ValueError(f"Unsupported visual_features shape: {visual_features.shape}")
 
-        # 1. 次元射影
-        # x: (B, Seq, C_vis) -> (B, Seq, Lang_Dim)
+        # 射影実行 (MLP)
         x_proj = self.projector(x)
         
-        # 2. 時間軸/シーケンス長の調整 (必要な場合)
-        # ここでは視覚特徴のシーケンス長をそのままコンテキスト長として扱う
-        # 時間的なリサンプリングが必要な場合はここで interpolate する
-        
-        # 位置エンコーディングの加算 (ブロードキャスト)
+        # 位置エンコーディング加算
         x_proj = x_proj + self.pos_embed
 
         return x_proj

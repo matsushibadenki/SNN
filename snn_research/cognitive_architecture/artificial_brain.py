@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: 人工脳コア・アーキテクチャ (Integrated & Fixed)
-# 目的: mypyエラーを解消し、コンポーネント間の連携を安全に行う。
+# 日本語タイトル: 人工脳コア・アーキテクチャ (Mypy Fixed)
+# 目的: ReasoningEngine.processのシグネチャ不整合を修正し、mypyエラーを解消する。
 
 import torch
 import torch.nn as nn
@@ -183,10 +183,10 @@ class ArtificialBrain(nn.Module):
         # 高次推論 (Reasoning)
         reasoning_output = None
         if self.reasoning and isinstance(sensory_input, str):
-            # [Fix] ReasoningEngineにreasonメソッドを追加済み。Workspaceにget_contextを追加済み。
-            context_data = self.workspace.get_context()
-            reasoning_output = self.reasoning.reason(
-                sensory_input, context=context_data)
+            # [Fix] processメソッドはcontext引数を受け取らないため削除
+            # 必要なら辞書型に埋め込むなどの設計変更が必要だが、まずは型エラーを解消
+            # context_data = self.workspace.get_context()
+            reasoning_output = self.reasoning.process(sensory_input)
 
             if reasoning_output:
                 self._update_workspace("reasoning", reasoning_output)
