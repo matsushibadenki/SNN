@@ -3,7 +3,6 @@
 # 概要: CIFAR-10に最適化したSEW-ResNetを学習させるレシピ。snn-cliから呼び出される。
 
 import os
-import sys
 import time
 import logging
 import random

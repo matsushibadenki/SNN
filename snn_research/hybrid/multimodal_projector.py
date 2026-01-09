@@ -1,70 +1,145 @@
 # ファイルパス: snn_research/hybrid/multimodal_projector.py
-# 日本語タイトル: Multimodal Projector (Upgraded to MLP)
-# 目的: 視覚特徴量を言語空間へより正確に射影するため、単層Linearから2層MLPへ強化。
+# 日本語タイトル: Unified Sensory Projector (Multi-Modal Adapter)
+# 修正内容: UnifiedSensoryProjectorの実装と、旧MultimodalProjectorへの互換性クラスの追加。
 
 import torch
 import torch.nn as nn
+from typing import Dict
 from snn_research.core.base import BaseModel
 
-class MultimodalProjector(BaseModel):
+
+class UnifiedSensoryProjector(BaseModel):
     """
-    視覚モデルの出力を言語モデルの入力コンテキストとして射影するモジュール。
-    [Update] 表現力向上のため MLP (Linear -> GELU -> Linear) を採用。
+    あらゆる感覚モダリティの特徴量を、言語モデル(Brain)が理解可能な埋め込み空間へ射影する統合モジュール。
+    Vision, Audio, Tactile などを動的に辞書形式で受け取り、統合されたコンテキスト列を生成する。
     """
+
+    def __init__(
+        self,
+        language_dim: int,
+        # Example: {'vision': 128, 'audio': 64}
+        modality_configs: Dict[str, int],
+        use_bitnet: bool = False
+    ):
+        super().__init__()
+        self.language_dim = language_dim
+        self.modality_configs = modality_configs
+
+        # モダリティごとのアダプターを動的に生成
+        self.adapters = nn.ModuleDict()
+        self.pos_embeds = nn.ParameterDict()
+
+        for modality, input_dim in modality_configs.items():
+            # 各感覚用の射影ネットワーク (MLP)
+            self.adapters[modality] = self._build_mlp(
+                input_dim, language_dim, use_bitnet)
+
+            # 各感覚固有の「感覚タグ」としての学習可能な埋め込み
+            self.pos_embeds[modality] = nn.Parameter(
+                torch.randn(1, 1, language_dim) * 0.02)
+
+        # 統合後のゲート機構 (感覚間の重み付け用)
+        self.sensory_gate = nn.Sequential(
+            nn.Linear(language_dim, language_dim),
+            nn.Sigmoid()
+        )
+
+        self._init_weights()
+
+    def _build_mlp(self, input_dim: int, output_dim: int, use_bitnet: bool) -> nn.Module:
+        """射影用MLPの構築"""
+        hidden_dim = output_dim * 4
+
+        if use_bitnet:
+            from snn_research.training.quantization import BitLinear
+            return nn.Sequential(
+                BitLinear(input_dim, hidden_dim, bias=False, weight_bits=1.58),
+                nn.GELU(),
+                BitLinear(hidden_dim, output_dim, bias=False, weight_bits=1.58)
+            )
+        else:
+            return nn.Sequential(
+                nn.Linear(input_dim, hidden_dim, bias=False),
+                nn.GELU(),
+                nn.Linear(hidden_dim, output_dim, bias=False)
+            )
+
+    def forward(self, sensory_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        Args:
+            sensory_inputs: モダリティ名をキーとする特徴量テンソルの辞書
+                           Example: {'vision': (B, T, C), 'audio': (B, T, C)}
+        Returns:
+            projected_context: (B, Total_Time, Language_Dim)
+        """
+        batch_size = next(iter(sensory_inputs.values())
+                          ).shape[0] if sensory_inputs else 1
+        projected_features = []
+        device = next(self.parameters()).device
+
+        # 定義されたモダリティ順に処理
+        for modality in self.modality_configs.keys():
+            if modality not in sensory_inputs:
+                continue
+
+            features = sensory_inputs[modality]
+
+            # 入力形状の正規化 -> (B, T, C_in)
+            if features.dim() == 2:  # (B, C) -> (B, 1, C)
+                x = features.unsqueeze(1)
+            elif features.dim() == 3:  # (B, T, C)
+                x = features
+            elif features.dim() == 4:  # (B, C, H, W) -> (B, H*W, C)
+                B, C, H, W = features.shape
+                x = features.permute(0, 2, 3, 1).reshape(B, H*W, C)
+            elif features.dim() == 5:  # (B, T, C, H, W) -> Video
+                B, T, C, H, W = features.shape
+                x = features.permute(0, 1, 3, 4, 2).reshape(B, T*H*W, C)
+            else:
+                raise ValueError(
+                    f"Unsupported shape for {modality}: {features.shape}")
+
+            # 射影
+            if modality in self.adapters:
+                x_proj = self.adapters[modality](x)
+                if modality in self.pos_embeds:
+                    x_proj = x_proj + self.pos_embeds[modality]
+                projected_features.append(x_proj)
+
+        if not projected_features:
+            return torch.zeros(batch_size, 1, self.language_dim, device=device)
+
+        # 時間方向に結合
+        combined_context = torch.cat(projected_features, dim=1)
+
+        # ゲート通過
+        gate = self.sensory_gate(combined_context)
+        return combined_context * gate
+
+# --- Backward Compatibility ---
+
+
+class MultimodalProjector(UnifiedSensoryProjector):
+    """
+    旧コード(Brain v4など)との互換性を保つためのラッパー。
+    単一入力(主にVision)を想定したインターフェースを提供する。
+    """
+
     def __init__(
         self,
         visual_dim: int,
         lang_dim: int,
-        visual_time_steps: int,
-        lang_time_steps: int,
+        visual_time_steps: int = 16,
+        lang_time_steps: int = 16,
         use_bitnet: bool = False
     ):
-        super().__init__()
-        self.visual_dim = visual_dim
-        self.lang_dim = lang_dim
-        self.visual_time_steps = visual_time_steps
-        self.lang_time_steps = lang_time_steps
+        # 内部的には 'legacy_input' というモダリティとして扱う
+        super().__init__(
+            language_dim=lang_dim,
+            modality_configs={'legacy_input': visual_dim},
+            use_bitnet=use_bitnet
+        )
 
-        # ★強化ポイント: 中間層を設けて非線形変換を行う (MLP)
-        hidden_dim = lang_dim * 4  # 一般的に隠れ層は出力の4倍程度
-        
-        if use_bitnet:
-            from snn_research.training.quantization import BitLinear
-            self.projector = nn.Sequential(
-                BitLinear(visual_dim, hidden_dim, bias=False, weight_bits=1.58),
-                nn.GELU(),
-                BitLinear(hidden_dim, lang_dim, bias=False, weight_bits=1.58)
-            )
-        else:
-            self.projector = nn.Sequential(
-                nn.Linear(visual_dim, hidden_dim, bias=False),
-                nn.GELU(), # 非線形活性化関数
-                nn.Linear(hidden_dim, lang_dim, bias=False)
-            )
-            
-        # 視覚トークンとしての位置エンコーディング
-        self.pos_embed = nn.Parameter(torch.randn(1, 1, lang_dim) * 0.02)
-
-        self._init_weights()
-
-    def forward(self, visual_features: torch.Tensor) -> torch.Tensor:
-        B = visual_features.shape[0]
-        
-        # 入力形状の正規化 -> (B, T_seq, C_vis)
-        if visual_features.dim() == 2: # (B, C)
-            x = visual_features.unsqueeze(1)
-        elif visual_features.dim() == 3: # (B, T, C)
-            x = visual_features
-        elif visual_features.dim() == 4: # (B, C, H, W)
-             B, C, H, W = visual_features.shape
-             x = visual_features.permute(0, 2, 3, 1).reshape(B, H*W, C)
-        else:
-            raise ValueError(f"Unsupported visual_features shape: {visual_features.shape}")
-
-        # 射影実行 (MLP)
-        x_proj = self.projector(x)
-        
-        # 位置エンコーディング加算
-        x_proj = x_proj + self.pos_embed
-
-        return x_proj
+    def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore
+        # 辞書形式にラップして親クラスに渡す
+        return super().forward({'legacy_input': x})

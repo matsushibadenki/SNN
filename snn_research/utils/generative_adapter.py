@@ -4,7 +4,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Optional, List, Any
+from typing import Optional
 from spikingjelly.activation_based import functional as SJ_F
 
 

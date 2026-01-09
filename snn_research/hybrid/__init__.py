@@ -6,15 +6,13 @@
 # mypy --strict 準拠。
 
 from .adapter import AnalogToSpikes, SpikesToAnalog
-# --- ▼ 追加 ▼ ---
-from .multimodal_projector import MultimodalProjector
-# --- ▲ 追加 ▲ ---
+# UnifiedSensoryProjector と 互換用 MultimodalProjector をインポート
+from .multimodal_projector import UnifiedSensoryProjector, MultimodalProjector
 from typing import List
 
 __all__: List[str] = [
     "AnalogToSpikes",
     "SpikesToAnalog",
-    # --- ▼ 追加 ▼ ---
+    "UnifiedSensoryProjector",
     "MultimodalProjector"
-    # --- ▲ 追加 ▲ ---
 ]

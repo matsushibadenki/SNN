@@ -1,4 +1,0 @@
-🚀 Starting Naming Game Simulation...
-🏁 Simulation Finished. Success Rate: 50/50 (100.0%)
-Alice Vocab Size: 50
-Bob Vocab Size: 50

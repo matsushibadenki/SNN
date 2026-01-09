@@ -3,7 +3,6 @@
 # 概要: MNISTデータセットでSpiking CNNを学習させるレシピ。型ヒントを修正。
 
 import os
-import sys
 import time
 import logging
 import random

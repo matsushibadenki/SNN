@@ -4,11 +4,9 @@
 #       RAGSystemのAPI変更対応に加え、Optional型の安全なアクセス修正を実施。
 
 from app.containers import BrainContainer
-import sys
 import os
 import time
 import logging
-from typing import Any, Dict
 
 logger = logging.getLogger("Scenario_BrainV14")
 

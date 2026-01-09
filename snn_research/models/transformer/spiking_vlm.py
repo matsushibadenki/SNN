@@ -1,138 +1,172 @@
 # ファイルパス: snn_research/models/transformer/spiking_vlm.py
-# (Phase 3: Visual-Language Alignment - Bugfix)
-# Title: Spiking Vision-Language Model (SpikingVLM)
+# (Phase 3: Unified Multimodal Learning - Enhanced)
+# Title: Spiking Unified Model (Formerly SpikingVLM)
 # Description:
-#   視覚エンコーダ (Vision Core) と言語モデル (Language Core) を
-#   マルチモーダル・プロジェクターで接続した統合モデル。
-#   修正: Vision Encoder の出力次元 (vocab_size) を projector の入力次元に合わせて動的に設定するように変更。
+#   視覚、音声、触覚などの多感覚入力を UnifiedSensoryProjector 経由で統合し、
+#   単一の Spiking Language Brain で処理する「単一学習エンジン」。
 
 import torch
 from typing import Dict, Any, Tuple
 import logging
 
 from snn_research.core.base import BaseModel
-from snn_research.hybrid.multimodal_projector import MultimodalProjector
+from snn_research.hybrid.multimodal_projector import UnifiedSensoryProjector
+# 互換性のため古いクラス名もインポート可能にしておく
 
 logger = logging.getLogger(__name__)
 
-class SpikingVLM(BaseModel):
+
+class SpikingUnifiedModel(BaseModel):
     """
-    SNNベースの視覚-言語統合モデル (VLM)。
-    Structure: [Vision Encoder] -> [Projector] -> [Language Decoder]
+    SNNベースの全感覚統合モデル。
+    Structure: [Multi-Sensory Encoders] -> [Unified Projector] -> [Language/Reasoning Brain]
     """
+
     def __init__(
         self,
         vocab_size: int,
-        vision_config: Dict[str, Any],
         language_config: Dict[str, Any],
+        # {'vision': config, 'audio': config, ...}
+        sensory_configs: Dict[str, Dict[str, Any]],
         projector_config: Dict[str, Any],
         **kwargs: Any
     ) -> None:
         super().__init__()
         self.vocab_size = vocab_size
 
-        # --- 遅延インポートで循環参照を回避 ---
+        # --- Import Core ---
         try:
             from snn_research.core.snn_core import SNNCore
         except ImportError:
-            raise ImportError("Failed to import SNNCore in SpikingVLM.")
-        # ----------------------------------------
-        
-        # 1. Vision Encoder (e.g., SpikingCNN, SpikingViT)
-        logger.info("👁️ SpikingVLM: Building Vision Encoder...")
-        
-        # 【修正】Projectorの入力次元に合わせてVision Encoderの出力次元(vocab_size)を設定
-        # これにより、(B, 1000) ではなく (B, visual_dim) が出力され、型不一致エラーを防ぐ
-        visual_dim = projector_config.get("visual_dim", 128)
-        
-        # Vision Encoderの出力クラス数として visual_dim を使用
-        self.vision_encoder = SNNCore(config=vision_config, vocab_size=visual_dim)
-        
-        # 2. Multimodal Projector
-        logger.info("🔗 SpikingVLM: Building Multimodal Projector...")
-        self.projector = MultimodalProjector(
-            visual_dim=visual_dim,
-            lang_dim=language_config.get("d_model", 256),
-            visual_time_steps=vision_config.get("time_steps", 16),
-            lang_time_steps=language_config.get("time_steps", 16),
+            raise ImportError("Failed to import SNNCore.")
+        # -------------------
+
+        logger.info(
+            "🧠 SpikingUnifiedModel: Initializing Single Learning Engine...")
+
+        # 1. Sensory Encoders (Brain Cortex Areas)
+        # 各モダリティに対応するエンコーダを辞書として保持
+        self.sensory_encoders = torch.nn.ModuleDict()
+        modality_dims = {}
+
+        for mod_name, config in sensory_configs.items():
+            logger.info(f"   - Building Cortex Area: {mod_name}")
+            # 出力次元の設定 (Projectorへの入力次元)
+            output_dim = config.get("output_dim", 128)
+            modality_dims[mod_name] = output_dim
+
+            # SNNCoreを汎用エンコーダとして利用 (Configに応じてCNN/Linear等を切り替え)
+            # vocab_size引数を出力次元として流用
+            self.sensory_encoders[mod_name] = SNNCore(
+                config=config, vocab_size=output_dim)
+
+        # 2. Unified Sensory Projector (Thalamus/Bridge)
+        logger.info("🔗 SpikingUnifiedModel: Building Unified Sensory Bridge...")
+        self.projector = UnifiedSensoryProjector(
+            language_dim=language_config.get("d_model", 256),
+            modality_configs=modality_dims,
             use_bitnet=projector_config.get("use_bitnet", False)
         )
-        
-        # 3. Language Decoder (e.g., SpikingTransformer, RWKV)
-        logger.info("🗣️ SpikingVLM: Building Language Decoder...")
-        self.language_decoder = SNNCore(config=language_config, vocab_size=vocab_size)
-        
+
+        # 3. Language/Reasoning Core (Prefrontal Cortex)
+        logger.info("🗣️ SpikingUnifiedModel: Building Reasoning Core...")
+        self.brain_core = SNNCore(
+            config=language_config, vocab_size=vocab_size)
+
         self._init_weights()
-        logger.info("✅ SpikingVLM initialized successfully.")
+        logger.info("✅ Single Learning Engine initialized.")
 
     def forward(
         self,
-        input_ids: torch.Tensor,          # (B, SeqLen) - テキスト入力
-        input_images: torch.Tensor,       # (B, C, H, W) - 画像入力
+        input_ids: torch.Tensor,                    # (B, SeqLen) - テキスト思考/命令
+        # {'vision': img, 'audio': wav, ...}
+        sensory_inputs: Dict[str, torch.Tensor],
         return_spikes: bool = False,
         **kwargs: Any
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Forward pass for VLM.
+        Unified Forward Pass
         """
-        # 1. Encode Images
-        vision_outputs = self.vision_encoder(input_images)
-        
-        if isinstance(vision_outputs, tuple):
-            visual_features = vision_outputs[0] # (B, VisualDim)
-            vis_spikes = vision_outputs[1]
-        else:
-            visual_features = vision_outputs
-            vis_spikes = torch.tensor(0.0, device=input_images.device)
+        # 1. Encode All Senses (Parallel Processing)
+        encoded_features = {}
+        total_sensory_spikes = []
 
-        # 2. Project to Language Space
-        context_embeds = self.projector(visual_features)
-        
-        # 3. Decode Text with Visual Context
-        lang_outputs = self.language_decoder(
-            input_ids, 
+        for mod_name, encoder in self.sensory_encoders.items():
+            if mod_name in sensory_inputs:
+                raw_input = sensory_inputs[mod_name]
+                outputs = encoder(raw_input)
+
+                if isinstance(outputs, tuple):
+                    feat = outputs[0]
+                    spikes = outputs[1]
+                else:
+                    feat = outputs
+                    spikes = torch.tensor(0.0, device=raw_input.device)
+
+                encoded_features[mod_name] = feat
+                if isinstance(spikes, torch.Tensor):
+                    total_sensory_spikes.append(spikes.mean())
+
+        # 2. Project to Unified Latent Space (Symbol Grounding)
+        # ここで全ての感覚が「言語的な埋め込み」に変換・結合される
+        context_embeds = self.projector(encoded_features)
+
+        # 3. Reasoning / Language Generation with Context
+        brain_outputs = self.brain_core(
+            input_ids,
             context_embeds=context_embeds,
             return_spikes=True,
             **kwargs
         )
-        
-        logits = lang_outputs[0]
-        lang_spikes = lang_outputs[1]
-        mem = lang_outputs[2]
-        
-        # スパイク統計の統合 (Tensorかfloatかをチェックして計算)
-        if isinstance(vis_spikes, torch.Tensor) and isinstance(lang_spikes, torch.Tensor):
-            avg_spikes = (vis_spikes.mean() + lang_spikes.mean()) / 2.0
-        elif isinstance(vis_spikes, torch.Tensor):
-            avg_spikes = vis_spikes.mean()
-        elif isinstance(lang_spikes, torch.Tensor):
-            avg_spikes = lang_spikes.mean()
-        else:
-            avg_spikes = torch.tensor(0.0)
-        
-        return logits, avg_spikes, mem
 
-    def generate(self, input_images: torch.Tensor, prompt_ids: torch.Tensor, max_len: int = 20) -> torch.Tensor:
+        logits = brain_outputs[0]
+        brain_spikes = brain_outputs[1]
+        mem = brain_outputs[2]
+
+        # 全体のスパイク活動量を計算 (エネルギー効率モニタリング用)
+        if total_sensory_spikes:
+            avg_sensory_spike = torch.stack(total_sensory_spikes).mean()
+        else:
+            avg_sensory_spike = torch.tensor(0.0, device=logits.device)
+
+        final_spike_rate = (avg_sensory_spike + brain_spikes.mean()) / 2.0
+
+        return logits, final_spike_rate, mem
+
+    def generate(
+        self,
+        input_ids: torch.Tensor,
+        sensory_inputs: Dict[str, torch.Tensor],
+        max_len: int = 20
+    ) -> torch.Tensor:
         """
-        画像を入力としてテキストを生成する (推論用)。
+        多感覚入力に基づいた思考・応答生成
         """
         self.eval()
         with torch.no_grad():
-            # 1. Vision Encoding
-            vision_outputs = self.vision_encoder(input_images)
-            visual_features = vision_outputs[0] if isinstance(vision_outputs, tuple) else vision_outputs
-            
-            # 2. Projection
-            context_embeds = self.projector(visual_features)
-            
-            # 3. Autoregressive Generation
-            current_ids = prompt_ids
-            
+            # 1. Encode
+            encoded_features = {}
+            for mod_name, encoder in self.sensory_encoders.items():
+                if mod_name in sensory_inputs:
+                    out = encoder(sensory_inputs[mod_name])
+                    encoded_features[mod_name] = out[0] if isinstance(
+                        out, tuple) else out
+
+            # 2. Project
+            context_embeds = self.projector(encoded_features)
+
+            # 3. Generate Thought
+            current_ids = input_ids
             for _ in range(max_len):
-                outputs = self.language_decoder(current_ids, context_embeds=context_embeds)
+                outputs = self.brain_core(
+                    current_ids, context_embeds=context_embeds)
                 logits = outputs[0]
-                next_token_logits = logits[:, -1, :]
-                next_token = torch.argmax(next_token_logits, dim=-1).unsqueeze(1)
+                next_token = torch.argmax(
+                    logits[:, -1, :], dim=-1).unsqueeze(1)
                 current_ids = torch.cat([current_ids, next_token], dim=1)
-                
+
             return current_ids
+
+
+# 互換性のためのエイリアス
+SpikingVLM = SpikingUnifiedModel

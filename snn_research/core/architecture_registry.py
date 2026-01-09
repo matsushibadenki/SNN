@@ -1,14 +1,14 @@
 # ファイルパス: snn_research/core/architecture_registry.py
-# Title: モデルアーキテクチャレジストリ (Argument Fix)
+# Title: モデルアーキテクチャレジストリ (Fixed for UnifiedModel)
 # Description:
-#   VisualCortex の引数不整合を修正。
-#   dsa_transformer のインポートと引数を修正。
+#   spiking_vlm のビルダ関数を SpikingUnifiedModel に対応するように修正。
 
 import torch.nn as nn
 from typing import Dict, Any, Callable, List, Optional, cast
 import logging
 
 logger = logging.getLogger(__name__)
+
 
 class ArchitectureRegistry:
     """
@@ -20,7 +20,8 @@ class ArchitectureRegistry:
     def register(cls, name: str):
         def decorator(builder_func: Callable[[Dict[str, Any], int], nn.Module]):
             if name in cls._registry:
-                logger.warning(f"Architecture '{name}' is already registered. Overwriting.")
+                logger.warning(
+                    f"Architecture '{name}' is already registered. Overwriting.")
             cls._registry[name] = builder_func
             return builder_func
         return decorator
@@ -29,12 +30,14 @@ class ArchitectureRegistry:
     def build(cls, arch_type: str, config: Dict[str, Any], vocab_size: int) -> nn.Module:
         if arch_type not in cls._registry:
             available = list(cls._registry.keys())
-            raise ValueError(f"Unknown architecture type '{arch_type}'. Available architectures: {available}")
-        
+            raise ValueError(
+                f"Unknown architecture type '{arch_type}'. Available architectures: {available}")
+
         logger.info(f"🏗️ Building architecture: {arch_type}")
         return cls._registry[arch_type](config, vocab_size)
 
 # --- 以下、各モデルのビルダー関数定義 ---
+
 
 @ArchitectureRegistry.register("spiking_cnn")
 def build_spiking_cnn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
@@ -44,6 +47,7 @@ def build_spiking_cnn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
         time_steps=config.get('time_steps', 16),
         neuron_config=config.get('neuron', {})
     )
+
 
 @ArchitectureRegistry.register("predictive_coding")
 def build_predictive_coding(config: Dict[str, Any], vocab_size: int) -> nn.Module:
@@ -56,16 +60,20 @@ def build_predictive_coding(config: Dict[str, Any], vocab_size: int) -> nn.Modul
         vocab_size=vocab_size
     )
 
+
 @ArchitectureRegistry.register("hybrid_cnn_snn")
 def build_hybrid_cnn_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.cnn.hybrid_cnn_snn_model import HybridCnnSnnModel
     return HybridCnnSnnModel(
         vocab_size=vocab_size,
         time_steps=config.get('time_steps', 16),
-        ann_frontend=config.get('ann_frontend', {'name': 'mobilenet_v2', 'output_features': 1280}),
-        snn_backend=config.get('snn_backend', {'d_model': 1280, 'n_head': 8, 'num_layers': 4}),
+        ann_frontend=config.get(
+            'ann_frontend', {'name': 'mobilenet_v2', 'output_features': 1280}),
+        snn_backend=config.get(
+            'snn_backend', {'d_model': 1280, 'n_head': 8, 'num_layers': 4}),
         neuron_config=config.get('neuron', {})
     )
+
 
 @ArchitectureRegistry.register("spiking_mamba")
 def build_spiking_mamba(config: Dict[str, Any], vocab_size: int) -> nn.Module:
@@ -81,11 +89,14 @@ def build_spiking_mamba(config: Dict[str, Any], vocab_size: int) -> nn.Module:
         neuron_config=config.get('neuron', {})
     )
 
+
 @ArchitectureRegistry.register("tskips_snn")
 def build_tskips_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.cnn.tskips_snn import TSkipsSNN
-    forward_delays = cast(List[Optional[List[int]]], config.get('forward_delays_per_layer', []))
-    backward_delays = cast(List[Optional[List[int]]], config.get('backward_delays_per_layer', []))
+    forward_delays = cast(List[Optional[List[int]]],
+                          config.get('forward_delays_per_layer', []))
+    backward_delays = cast(List[Optional[List[int]]], config.get(
+        'backward_delays_per_layer', []))
     return TSkipsSNN(
         input_features=config.get('input_features', 700),
         num_classes=vocab_size,
@@ -96,6 +107,7 @@ def build_tskips_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
         forward_delays_per_layer=forward_delays,
         backward_delays_per_layer=backward_delays
     )
+
 
 @ArchitectureRegistry.register("franken_moe")
 def build_franken_moe(config: Dict[str, Any], vocab_size: int) -> nn.Module:
@@ -109,6 +121,7 @@ def build_franken_moe(config: Dict[str, Any], vocab_size: int) -> nn.Module:
         neuron_config=config.get('neuron', {})
     )
 
+
 @ArchitectureRegistry.register("bit_spiking_rwkv")
 def build_bit_spiking_rwkv(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.transformer.spiking_rwkv import BitSpikingRWKV
@@ -120,6 +133,7 @@ def build_bit_spiking_rwkv(config: Dict[str, Any], vocab_size: int) -> nn.Module
         neuron_config=config.get('neuron', {}),
         config=config
     )
+
 
 @ArchitectureRegistry.register("spiking_transformer")
 def build_spiking_transformer(config: Dict[str, Any], vocab_size: int) -> nn.Module:
@@ -135,6 +149,7 @@ def build_spiking_transformer(config: Dict[str, Any], vocab_size: int) -> nn.Mod
         neuron_config=config.get('neuron', {})
     )
 
+
 @ArchitectureRegistry.register("temporal_snn")
 def build_temporal_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.bio.temporal_snn import SimpleRSNN
@@ -147,6 +162,7 @@ def build_temporal_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
         output_spikes=config.get('output_spikes', False)
     )
 
+
 @ArchitectureRegistry.register("sew_resnet")
 def build_sew_resnet(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.cnn.sew_resnet import SEWResNet
@@ -155,6 +171,7 @@ def build_sew_resnet(config: Dict[str, Any], vocab_size: int) -> nn.Module:
         time_steps=config.get('time_steps', 16),
         neuron_config=config.get('neuron', {})
     )
+
 
 @ArchitectureRegistry.register("feel_snn")
 def build_feel_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
@@ -165,6 +182,7 @@ def build_feel_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
         in_channels=config.get('in_channels', 3),
         neuron_config=config.get('neuron', {})
     )
+
 
 @ArchitectureRegistry.register("sformer")
 def build_sformer(config: Dict[str, Any], vocab_size: int) -> nn.Module:
@@ -179,6 +197,7 @@ def build_sformer(config: Dict[str, Any], vocab_size: int) -> nn.Module:
         neuron_config=config.get('neuron_config', config.get('neuron', {}))
     )
 
+
 @ArchitectureRegistry.register("semm")
 def build_semm(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.experimental.semm_model import SEMMModel
@@ -191,28 +210,42 @@ def build_semm(config: Dict[str, Any], vocab_size: int) -> nn.Module:
         neuron_config=config.get('neuron', {})
     )
 
+
 @ArchitectureRegistry.register("visual_cortex")
 def build_visual_cortex(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.bio.visual_cortex import VisualCortex
     in_channels = config.get('in_channels', 3)
     base_channels = config.get('base_channels', 32)
     neuron_params = config.get('neuron', {})
-    
+
     return VisualCortex(
         in_channels=in_channels,
         base_channels=base_channels,
         neuron_params=neuron_params
     )
 
+
 @ArchitectureRegistry.register("spiking_vlm")
 def build_spiking_vlm(config: Dict[str, Any], vocab_size: int) -> nn.Module:
-    from snn_research.models.transformer.spiking_vlm import SpikingVLM
-    return SpikingVLM(
+    # 修正: SpikingVLM は SpikingUnifiedModel になりました。
+    # 古い config 構造を新しい sensory_configs 形式に適応させます。
+    from snn_research.models.transformer.spiking_vlm import SpikingUnifiedModel
+
+    vision_config = config.get('vision_config', {})
+    sensory_configs = {}
+
+    # 既存のvision_configがある場合、'vision'モダリティとして登録
+    if vision_config:
+        # vocab_size などを適宜設定（Projectorの出力次元と合わせるため）
+        sensory_configs['vision'] = vision_config
+
+    return SpikingUnifiedModel(
         vocab_size=vocab_size,
-        vision_config=config.get('vision_config', {}),
         language_config=config.get('language_config', {}),
+        sensory_configs=sensory_configs,
         projector_config=config.get('projector_config', {})
     )
+
 
 @ArchitectureRegistry.register("tiny_recursive_model")
 def build_tiny_recursive_model(config: Dict[str, Any], vocab_size: int) -> nn.Module:
@@ -227,6 +260,7 @@ def build_tiny_recursive_model(config: Dict[str, Any], vocab_size: int) -> nn.Mo
         neuron_config=config.get('neuron', {})
     )
 
+
 @ArchitectureRegistry.register("spiking_ssm")
 def build_spiking_ssm(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.experimental.spiking_ssm import SpikingSSM
@@ -240,23 +274,24 @@ def build_spiking_ssm(config: Dict[str, Any], vocab_size: int) -> nn.Module:
         neuron_config=config.get('neuron', {})
     )
 
+
 @ArchitectureRegistry.register("dsa_transformer")
 def build_dsa_transformer(config: Dict[str, Any], vocab_size: int) -> nn.Module:
-    # 修正: 正しいクラス名と引数を使用
     from snn_research.models.transformer.dsa_transformer import SpikingDSATransformer
     d_model = config.get('d_model', 64)
     return SpikingDSATransformer(
-        input_dim=config.get('input_dim', vocab_size), # Embeddingの場合は無視されるが念のため
-        vocab_size=vocab_size, # NLPタスク用にVocabSizeを渡す
+        input_dim=config.get('input_dim', vocab_size),
+        vocab_size=vocab_size,
         d_model=d_model,
         num_heads=config.get('num_heads', 4),
         num_layers=config.get('num_layers', 2),
         dim_feedforward=config.get('dim_feedforward', d_model * 4),
         time_window=config.get('time_steps', 16),
         use_bitnet=config.get('use_bitnet', True),
-        num_classes=vocab_size # 言語モデルでは出力次元=語彙サイズ
+        num_classes=vocab_size
     )
-    
+
+
 @ArchitectureRegistry.register("spiking_world_model")
 def build_spiking_world_model(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.experimental.world_model_snn import SpikingWorldModel
