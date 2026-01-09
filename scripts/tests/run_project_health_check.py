@@ -1,7 +1,6 @@
 # ファイルパス: scripts/tests/run_project_health_check.py
-# 日本語タイトル: SNNプロジェクト 全機能網羅ヘルスチェック v5.2 (Path Fixed)
-# 概要: エラーが発生していたファイルパス（runners -> demos, scripts直下 -> experiments等）を
-#       実際のディレクトリ構成に合わせて修正しました。
+# 日本語タイトル: SNNプロジェクト 全機能網羅ヘルスチェック v5.3 (Pytest Integrated)
+# 概要: コンポーネントごとの動作確認に加え、単体テストスイート(Pytest)の簡易実行も行います。
 
 import os
 import sys
@@ -48,12 +47,19 @@ def run_command(command: str, description: str) -> Tuple[bool, float]:
 
 
 def main():
-    logger.info("🩺 SNNプロジェクト ヘルスチェック v5.2 (Path Fixed) 開始")
+    logger.info("🩺 SNNプロジェクト ヘルスチェック v5.3 (Pytest Integrated) 開始")
     python_cmd = sys.executable
     if " " in python_cmd:
         python_cmd = f'"{python_cmd}"'
 
     checks = [
+        # --- 0. Unit Tests ---
+        {
+            "name": "Unit Tests: Pytest Suite (Quick)",
+            # 最小限の健全性確認のため、詳細ログなし(-q)で実行し、エラーがあれば即停止
+            "cmd": f"{python_cmd} -m pytest tests/ -q --maxfail=1"
+        },
+        
         # --- 1. Core Architecture ---
         {
             "name": "Core: SNNCore & SFormer Init",
@@ -71,7 +77,7 @@ def main():
         },
         {
             "name": "Cognitive: Sleep & Consolidation Demo",
-            # [修正] scripts/demos/ -> scripts/demos/learning/
+            # scripts/demos/learning/run_sleep_cycle_demo.py
             "cmd": f"{python_cmd} scripts/demos/learning/run_sleep_cycle_demo.py"
         },
 
@@ -108,19 +114,19 @@ def main():
         },
         {
             "name": "App: Industrial Eye (DVS Processing)",
-            # [修正] scripts/demos/ -> scripts/demos/visual/
+            # scripts/demos/visual/run_industrial_eye_demo.py
             "cmd": f"{python_cmd} scripts/demos/visual/run_industrial_eye_demo.py"
         },
         {
             "name": "App: ECG Analysis (Temporal)",
-            # [修正] scripts/ -> scripts/experiments/
+            # scripts/experiments/applications/run_ecg_analysis.py
             "cmd": f"{python_cmd} scripts/experiments/applications/run_ecg_analysis.py"
         },
 
         # --- 7. Training & Hardware ---
         {
             "name": "Train: Overfit Smoke Test",
-            # [修正] scripts/trainers/ -> scripts/training/trainers/
+            # scripts/training/trainers/train_overfit_demo.py
             "cmd": f"{python_cmd} scripts/training/trainers/train_overfit_demo.py --epochs 1 --max_steps 2"
         },
         {

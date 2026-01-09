@@ -1,6 +1,8 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: 人工脳コア・アーキテクチャ (State & Sleep Fix)
-# 目的: state属性とsleep_cycleメソッドを追加し、Brain v14デモの実行エラーを解消する。
+# Title: 人工脳コア・アーキテクチャ (Phase 6 Fix: Dimension Alignment)
+# Description:
+# - Thalamusの出力次元とPerceptionCortexの入力次元を自動的に整合させるロジックを追加。
+# - 視床リレーループにおけるValueErrorを解消。
 
 import torch
 import torch.nn as nn
@@ -20,6 +22,7 @@ from .astrocyte_network import AstrocyteNetwork
 from .reasoning_engine import ReasoningEngine
 from .meta_cognitive_snn import MetaCognitiveSNN
 from .sleep_consolidation import SleepConsolidator
+from .thalamus import Thalamus
 from snn_research.modules.reflex_module import ReflexModule
 from snn_research.models.experimental.world_model_snn import SpikingWorldModel
 from snn_research.safety.ethical_guardrail import EthicalGuardrail
@@ -31,14 +34,9 @@ logger = logging.getLogger(__name__)
 
 
 class ArtificialBrain(nn.Module):
-    """
-    複数の脳領域モジュールを統合する人工脳メインクラス。
-    """
-
     def __init__(
         self,
         config: Optional[Dict[str, Any]] = None,
-        # 依存性の注入 (Optional)
         global_workspace: Optional[GlobalWorkspace] = None,
         astrocyte_network: Optional[AstrocyteNetwork] = None,
         motivation_system: Optional[IntrinsicMotivationSystem] = None,
@@ -55,6 +53,7 @@ class ArtificialBrain(nn.Module):
         basal_ganglia: Optional[BasalGanglia] = None,
         cerebellum: Optional[Any] = None,
         motor_cortex: Optional[MotorCortex] = None,
+        thalamus: Optional[Thalamus] = None,
         causal_inference_engine: Optional[Any] = None,
         symbol_grounding: Optional[Any] = None,
         reasoning_engine: Optional[ReasoningEngine] = None,
@@ -68,13 +67,10 @@ class ArtificialBrain(nn.Module):
     ):
         super().__init__()
         self.config = config or {}
-        self.device = device if isinstance(
-            device, torch.device) else torch.device(device)
-        
-        # [Fix] 状態管理属性の追加
+        self.device = device if isinstance(device, torch.device) else torch.device(device)
         self.state = "AWAKE"
 
-        # 1. 基礎システムの初期化
+        # 1. 基礎システム
         self.workspace = global_workspace if global_workspace else GlobalWorkspace()
         self.motivation_system = motivation_system if motivation_system else IntrinsicMotivationSystem()
         self.astrocyte = astrocyte_network
@@ -84,17 +80,25 @@ class ArtificialBrain(nn.Module):
         self.receptor = sensory_receptor
         self.encoder = spike_encoder
         self.actuator = actuator
-
-        # 3. 各脳領域
+        
+        # 3. 脳領域
         self.thinking_engine = thinking_engine
 
-        # Perception
+        # [Fix] Thalamus初期化
+        # 視床が存在する場合、その出力次元を取得してPerceptionCortexの入力次元とする
+        self.thalamus = thalamus if thalamus else Thalamus(device=str(self.device))
+        
         if perception_cortex:
             self.perception = perception_cortex
         else:
-            logger.info("PerceptionCortex not provided. Initializing default.")
-            self.perception = PerceptionCortex(
-                num_neurons=784, feature_dim=256)
+            # [Fix] 次元自動調整ロジック
+            # デフォルトのThalamus出力は256なので、それに合わせる
+            input_neurons = 784 # default fallback
+            if self.thalamus and hasattr(self.thalamus, 'output_dim'):
+                input_neurons = self.thalamus.output_dim
+                logger.info(f"🧠 Adjusting PerceptionCortex input size to match Thalamus: {input_neurons}")
+            
+            self.perception = PerceptionCortex(num_neurons=input_neurons, feature_dim=256)
 
         self.visual_cortex = visual_cortex
         self.amygdala = amygdala if amygdala else Amygdala()
@@ -102,8 +106,7 @@ class ArtificialBrain(nn.Module):
         self.cortex = cortex if cortex else Cortex()
 
         # 4. 意思決定系
-        self.basal_ganglia = basal_ganglia if basal_ganglia else BasalGanglia(
-            workspace=self.workspace)
+        self.basal_ganglia = basal_ganglia if basal_ganglia else BasalGanglia(workspace=self.workspace)
         self.prefrontal_cortex = prefrontal_cortex if prefrontal_cortex else PrefrontalCortex(
             workspace=self.workspace,
             motivation_system=self.motivation_system
@@ -118,8 +121,6 @@ class ArtificialBrain(nn.Module):
         self.meta_cognitive = meta_cognitive_snn
         self.world_model = world_model
         self.reflex_module = reflex_module
-        
-        # [Fix] 睡眠統合モジュールの保持
         self.sleep_consolidator = sleep_consolidator
 
         self.cycle_count = 0
@@ -135,58 +136,68 @@ class ArtificialBrain(nn.Module):
     def run_cognitive_cycle(self, sensory_input: Union[torch.Tensor, str]) -> Dict[str, Any]:
         """
         1ステップの認知サイクルを実行する。
+        Phase 6: Thalamocortical Loop (感覚 -> 視床 -> 皮質)
         """
         self.cycle_count += 1
         
-        # 睡眠中の場合、サイクル処理をスキップ
         if self.state == "SLEEPING":
              return {"cycle": self.cycle_count, "status": "sleeping"}
 
-        # --- 1. 入力処理 (Sensation) ---
+        # --- 1. 入力エンコーディング (Sensation) ---
         sensory_tensor: Optional[torch.Tensor] = None
 
         if isinstance(sensory_input, str):
-            # 文字列入力の場合
             if self.encoder:
                 try:
                     sensory_tensor = self.encoder.encode_text(sensory_input)
                 except Exception as e:
-                    logger.error(
-                        f"Encoding failed for input '{sensory_input}': {e}")
-                    sensory_tensor = torch.zeros(
-                        1, 784, device=self.device)  # Fallback
+                    logger.error(f"Encoding failed: {e}")
+                    sensory_tensor = torch.zeros(1, 784, device=self.device)
             else:
-                logger.warning(
-                    "String input received but no SpikeEncoder is configured.")
+                logger.warning("No SpikeEncoder configured.")
                 sensory_tensor = torch.zeros(1, 784, device=self.device)
         else:
-            sensory_tensor = sensory_input.to(self.device)
+            sensory_tensor = sensory_input
 
-        if sensory_tensor is not None and sensory_tensor.ndim == 1:
-            sensory_tensor = sensory_tensor.unsqueeze(0)
+        # [Safety] デバイス整合
+        if sensory_tensor is not None:
+            sensory_tensor = sensory_tensor.to(self.device)
+            if sensory_tensor.ndim == 1:
+                sensory_tensor = sensory_tensor.unsqueeze(0)
 
-        # 次元の強制整合
-        if sensory_tensor is not None and hasattr(self.perception, 'num_neurons'):
-            target_n = self.perception.num_neurons
+        # 次元の強制整合 (for Thalamus input)
+        # Thalamus入力次元に合わせてパディングまたはカット
+        if sensory_tensor is not None:
+            target_n = self.thalamus.input_dim
             current_n = sensory_tensor.shape[-1]
-
             if current_n != target_n:
                 if current_n < target_n:
                     diff = target_n - current_n
-                    padding = torch.zeros(
-                        *sensory_tensor.shape[:-1], diff, device=self.device)
-                    sensory_tensor = torch.cat(
-                        [sensory_tensor, padding], dim=-1)
+                    padding = torch.zeros(*sensory_tensor.shape[:-1], diff, device=self.device)
+                    sensory_tensor = torch.cat([sensory_tensor, padding], dim=-1)
                 else:
                     sensory_tensor = sensory_tensor[..., :target_n]
 
-        # --- 2. 知覚処理 (Perception) ---
-        perception_result = self.perception.perceive(sensory_tensor)
+        # --- 2. 視床リレー (Thalamic Relay) ---
+        top_down_signal = None
+        if self.workspace.conscious_broadcast_content is not None:
+            content = self.workspace.conscious_broadcast_content
+            # 注意信号の次元チェック
+            if isinstance(content, torch.Tensor) and content.shape[-1] == self.thalamus.output_dim:
+                top_down_signal = content.to(self.device)
+
+        thalamic_result = self.thalamus(sensory_tensor, top_down_attention=top_down_signal)
+        
+        # Thalamus出力 (通常 256次元)
+        relayed_input = thalamic_result["relayed_output"]
+
+        # --- 3. 皮質知覚処理 (Perception) ---
+        # 修正: self.perceptionは初期化時にThalamus出力次元に合わせてあるはず
+        perception_result = self.perception.perceive(relayed_input)
         perceptual_features = perception_result.get("features")
 
         if perceptual_features is not None:
-            perceptual_info = perceptual_features.mean(
-                dim=0) if perceptual_features.ndim > 1 else perceptual_features
+            perceptual_info = perceptual_features.mean(dim=0) if perceptual_features.ndim > 1 else perceptual_features
         else:
             perceptual_info = torch.zeros(256, device=self.device)
 
@@ -194,15 +205,14 @@ class ArtificialBrain(nn.Module):
         reasoning_output = None
         if self.reasoning and isinstance(sensory_input, str):
             reasoning_output = self.reasoning.process(sensory_input)
-
             if reasoning_output:
                 self._update_workspace("reasoning", reasoning_output)
 
-        # --- 3. 感情・記憶の評価 ---
+        # --- 4. 感情・記憶・評価 ---
         emotional_val = self.amygdala.process(perceptual_info)
         knowledge = self.cortex.retrieve(perceptual_info)
 
-        # --- 4. ワークスペース集約 ---
+        # --- 5. ワークスペース集約 ---
         self._update_workspace("sensory", perceptual_info)
         self._update_workspace("emotion", emotional_val)
         if knowledge is not None:
@@ -210,7 +220,7 @@ class ArtificialBrain(nn.Module):
 
         summary = self._get_workspace_summary()
 
-        # --- 5. 行動選択 ---
+        # --- 6. 行動選択 ---
         selected_action = self.basal_ganglia.select_action(summary)
 
         # Reflex (反射)
@@ -220,9 +230,8 @@ class ArtificialBrain(nn.Module):
             if reflex_act is not None:
                 selected_action = reflex_act
                 reflex_triggered = True
-                logger.info(f"Reflex triggered: Action {reflex_act}")
 
-        # --- 6. 行動実行 ---
+        # --- 7. 行動実行 ---
         motor_output = None
         execution_result = None
 
@@ -244,9 +253,7 @@ class ArtificialBrain(nn.Module):
             response_text += " (Reflex Triggered)"
         if execution_result:
             response_text += f", Result: {execution_result}"
-        if reasoning_output:
-            response_text += f", Thought: {str(reasoning_output)[:50]}..."
-
+        
         return {
             "cycle": self.cycle_count,
             "action": {
@@ -254,38 +261,29 @@ class ArtificialBrain(nn.Module):
                 'id': selected_action,
                 'executed': execution_result is not None
             },
+            "thalamus_gate": thalamic_result["gate_value"].mean().item(),
             "motor_output": motor_output,
-            "knowledge_retrieved": knowledge is not None,
-            "broadcasted": True,
             "response": response_text,
             "status": "success"
         }
 
-    # [Fix] 睡眠サイクルの実装
     def sleep_cycle(self) -> None:
-        """
-        睡眠モードに入り、記憶の定着処理を実行する。
-        """
         logger.info("💤 Initiating Sleep Cycle...")
         self.state = "SLEEPING"
+        self.thalamus.set_state("SLEEP")
         
         if self.sleep_consolidator:
             try:
-                # 睡眠統合プロセスの実行
                 self.sleep_consolidator.perform_sleep_cycle(duration_cycles=5)
             except Exception as e:
                 logger.error(f"Error during sleep consolidation: {e}")
-        else:
-            logger.warning("⚠️ SleepConsolidator is not attached. Skipping memory consolidation.")
-            
-        # アストロサイトによるエネルギー回復 (簡易シミュレーション)
+                
         if self.astrocyte:
-            # 毒素排出とグリコーゲン回復
-            self.astrocyte.fatigue_toxin = max(0.0, self.astrocyte.fatigue_toxin - 50.0)
-            self.astrocyte.current_energy = min(self.astrocyte.max_energy, self.astrocyte.current_energy + 300.0)
-            logger.info(f"  ✨ Astrocyte recovered. Energy: {self.astrocyte.current_energy:.1f}, Fatigue: {self.astrocyte.fatigue_toxin:.1f}")
+            self.astrocyte.clear_fatigue(50.0)
+            self.astrocyte.replenish_energy(300.0)
 
         self.state = "AWAKE"
+        self.thalamus.set_state("AWAKE")
         logger.info("🌞 Brain has awakened.")
 
     def _update_workspace(self, key: str, value: Any) -> None:
@@ -305,11 +303,15 @@ class ArtificialBrain(nn.Module):
     def get_brain_status(self) -> Dict[str, Any]:
         astro_status = {"status": "unknown", "metrics": {}}
         if self.astrocyte:
+            astro = cast(AstrocyteNetwork, self.astrocyte)
+            max_e = astro.max_energy if astro.max_energy > 0 else 1.0
+            energy_percent = (astro.energy / max_e) * 100
+            
             astro_status = {
                 "status": "active",
                 "metrics": {
-                    "energy_percent": (self.astrocyte.energy / self.astrocyte.max_energy) * 100,
-                    "fatigue_index": self.astrocyte.fatigue_toxin
+                    "energy_percent": energy_percent,
+                    "fatigue_index": astro.fatigue_toxin
                 }
             }
 
@@ -319,9 +321,8 @@ class ArtificialBrain(nn.Module):
             "device": str(self.device),
             "astrocyte": astro_status,
             "components": {
+                "thalamus": self.thalamus is not None,
                 "perception": self.perception is not None,
-                "reasoning": self.reasoning is not None,
-                "actuator": self.actuator is not None,
                 "sleep_consolidator": self.sleep_consolidator is not None
             }
         }

@@ -1,9 +1,8 @@
 # ファイルパス: snn_research/io/spike_encoder.py
-# Title: スパイクエンコーダ (Semantic Embedding対応 & Hybrid Temporal-8-Bit)
+# Title: スパイクエンコーダ v2.0 (Device Aware)
 # Description:
-# - ROADMAP Phase 3 Step 2: HybridTemporal8BitEncoder を追加実装。
-# - 数値データ、テキスト、画像ピクセルをSNN用のスパイク列に変換する各種エンコーダ。
-# - [Fix] ArtificialBrainからの呼び出しに対応するため encode_text を追加。
+# - Device引数に対応し、GPU/CPU上でのテンソル生成を制御可能に変更。
+# - サブクラス(RateEncoder等)もdevice引数を継承するように修正。
 
 import torch
 import torch.nn as nn
@@ -25,9 +24,10 @@ class SpikeEncoder(nn.Module):
     """スパイクエンコーダの基底クラス"""
     _embedding_model = None  # モデルをクラスレベルでキャッシュ
 
-    def __init__(self, num_neurons: Optional[int] = None) -> None:
+    def __init__(self, num_neurons: Optional[int] = None, device: str = 'cpu') -> None:
         super().__init__()
         self.num_neurons = num_neurons
+        self.device = device
 
     def forward(self, x: torch.Tensor, duration: int) -> torch.Tensor:
         raise NotImplementedError
@@ -46,7 +46,6 @@ class SpikeEncoder(nn.Module):
     def _char_ngram_projection(self, text: str, dimension: int, n: int = 3) -> torch.Tensor:
         """
         Transformerがない場合のフォールバック。
-        文字N-gramハッシュを用いて、類似した文字列が近いベクトルになるように射影する。
         """
         vector = np.zeros(dimension, dtype=np.float32)
         text_len = len(text)
@@ -54,7 +53,7 @@ class SpikeEncoder(nn.Module):
         if text_len < n:
             h = hash(text)
             np.random.seed(h % (2**32))
-            return torch.from_numpy(np.random.rand(dimension)).float()
+            return torch.from_numpy(np.random.rand(dimension)).float().to(self.device)
 
         for i in range(text_len - n + 1):
             ngram = text[i:i+n]
@@ -67,12 +66,11 @@ class SpikeEncoder(nn.Module):
         if norm > 0:
             vector = vector / norm
 
-        return torch.from_numpy(vector).float()
+        return torch.from_numpy(vector).float().to(self.device)
 
     def encode_text(self, text: str, duration: int = 10) -> torch.Tensor:
         """
         テキスト文字列をスパイク列にエンコードする。
-        ArtificialBrainからの直接呼び出し用インターフェース。
         """
         return self.encode({"content": text}, duration)
 
@@ -84,13 +82,13 @@ class SpikeEncoder(nn.Module):
 
         # 1. 数値の場合
         if isinstance(content, (int, float)):
-            x = torch.tensor([[float(content)]])
+            x = torch.tensor([[float(content)]], device=self.device)
             return self.forward(x, duration)
 
         # 2. リストの場合 (数値リストを想定)
         elif isinstance(content, list):
             try:
-                x = torch.tensor(content).float()
+                x = torch.tensor(content, device=self.device).float()
                 if x.dim() == 1:
                     x = x.unsqueeze(0)
                 return self.forward(x, duration)
@@ -106,8 +104,11 @@ class SpikeEncoder(nn.Module):
             with torch.no_grad():
                 embedding = model.encode(content_str, convert_to_tensor=True)
                 if isinstance(embedding, list):
-                    embedding = torch.tensor(embedding)
-            embedding = embedding.cpu()
+                    embedding = torch.tensor(embedding, device=self.device)
+            
+            # Ensure embedding is on the correct device
+            embedding = embedding.to(self.device)
+            
             current_dim = embedding.shape[0]
             if current_dim != N:
                 # 次元合わせ
@@ -128,9 +129,7 @@ class SpikeEncoder(nn.Module):
 
 class RateEncoder(SpikeEncoder):
     """レートコーディング"""
-
     def forward(self, x: torch.Tensor, duration: int) -> torch.Tensor:
-        # x: (Batch, Features) -> x_seq: (Batch, Duration, Features)
         if x.dim() == 1:
             x = x.unsqueeze(0)
         x_seq = x.unsqueeze(1).repeat(1, duration, *([1] * (x.ndim - 1)))
@@ -140,17 +139,17 @@ class RateEncoder(SpikeEncoder):
 
 class LatencyEncoder(SpikeEncoder):
     """レイテンシコーディング"""
-
-    def __init__(self, tau: float = 1.0, threshold: float = 0.01, num_neurons: Optional[int] = None) -> None:
-        super().__init__(num_neurons)
+    def __init__(self, tau: float = 1.0, threshold: float = 0.01, num_neurons: Optional[int] = None, device: str = 'cpu') -> None:
+        super().__init__(num_neurons, device)
         self.tau = tau
         self.threshold = threshold
 
     def forward(self, x: torch.Tensor, duration: int) -> torch.Tensor:
+        x = x.to(self.device)
         if x.dim() == 1:
             x = x.unsqueeze(0)
         x_expanded = x.unsqueeze(1)
-        time_axis = torch.arange(duration, device=x.device).view(
+        time_axis = torch.arange(duration, device=self.device).view(
             1, duration, 1).float()
         latency = (1.0 - x_expanded.clamp(0, 1)) * (duration - 1)
         fire_mask = (time_axis - latency).abs() < 0.5
@@ -159,12 +158,12 @@ class LatencyEncoder(SpikeEncoder):
 
 class DeltaEncoder(SpikeEncoder):
     """デルタコーディング"""
-
-    def __init__(self, threshold: float = 0.1, num_neurons: Optional[int] = None) -> None:
-        super().__init__(num_neurons)
+    def __init__(self, threshold: float = 0.1, num_neurons: Optional[int] = None, device: str = 'cpu') -> None:
+        super().__init__(num_neurons, device)
         self.threshold = threshold
 
     def forward(self, x_seq: torch.Tensor, duration: int = 0) -> torch.Tensor:
+        x_seq = x_seq.to(self.device)
         if x_seq.dim() < 3:
             raise ValueError(
                 "DeltaEncoder requires input with time dimension (Batch, Duration, Features).")
@@ -178,21 +177,24 @@ class DeltaEncoder(SpikeEncoder):
 class DifferentiableTTFSEncoder(SpikeEncoder):
     """学習可能なTTFS (Time-to-First-Spike) エンコーダ"""
 
-    def __init__(self, num_neurons: int, duration: int, initial_sensitivity: float = 1.0) -> None:
-        super().__init__(num_neurons)
+    def __init__(self, num_neurons: int, duration: int, initial_sensitivity: float = 1.0, device: str = 'cpu') -> None:
+        super().__init__(num_neurons, device)
         self.duration = duration
         self.sensitivity = nn.Parameter(
-            torch.ones(num_neurons) * initial_sensitivity)
+            torch.ones(num_neurons, device=device) * initial_sensitivity)
         self.v_th = 1.0
         self.tau = 2.0
+        self.to(device) # Parameter移動
 
     def forward(self, x: torch.Tensor, duration: Optional[int] = None) -> torch.Tensor:
+        x = x.to(self.device)
         T = duration if duration is not None else self.duration
         current = x * self.sensitivity.unsqueeze(0)
         spikes_list = []
         mem = torch.zeros_like(current)
         has_fired = torch.zeros_like(current, dtype=torch.bool)
-        decay = torch.exp(torch.tensor(-1.0 / self.tau, device=x.device))
+        decay = torch.exp(torch.tensor(-1.0 / self.tau, device=self.device))
+        
         for t in range(T):
             mem = mem * decay + current * (1 - decay)
             spike = (mem >= self.v_th).float()
@@ -204,29 +206,16 @@ class DifferentiableTTFSEncoder(SpikeEncoder):
 
 
 class HybridTemporal8BitEncoder(SpikeEncoder):
-    """
-    Hybrid Temporal-8-Bit Encoder.
-    8bit画素値をビットプレーン分解し、上位ビットから順にタイムステップにマッピングする。
-    これにより、重要な情報（上位ビット）を即座に伝達し、レイテンシを削減する。
-
-    Structure:
-    Input: (Batch, Channels, Height, Width) with values 0-255 (or 0.0-1.0)
-    Output: (Batch, Duration, Channels, Height, Width)
-    """
-
-    def __init__(self, duration: int = 8, num_neurons: Optional[int] = None) -> None:
-        super().__init__(num_neurons)
-        # Durationは最大8 (8bit分)。4などに設定された場合は上位ビットのみを使用。
+    """Hybrid Temporal-8-Bit Encoder."""
+    def __init__(self, duration: int = 8, num_neurons: Optional[int] = None, device: str = 'cpu') -> None:
+        super().__init__(num_neurons, device)
         self.duration = min(duration, 8)
 
     def forward(self, x: torch.Tensor, duration: Optional[int] = None) -> torch.Tensor:
-        """
-        x: (Batch, ...) ranges [0, 1] or [0, 255]
-        """
+        x = x.to(self.device)
         T = duration if duration is not None else self.duration
         T = min(T, 8)
 
-        # 0-1の範囲なら255倍して整数化
         if x.max() <= 1.0 and x.dtype.is_floating_point:
             x_int = (x * 255).int()
         else:
@@ -234,17 +223,11 @@ class HybridTemporal8BitEncoder(SpikeEncoder):
 
         x_int = torch.clamp(x_int, 0, 255)
 
-        # ビットプレーン展開
-        # 上位ビット(MSB)が t=0 に来るように展開する
         spikes_list = []
         for t in range(T):
-            # ビットシフト量: 7 (MSB) -> 0 (LSB)
             shift = 7 - t
-            # 指定ビットを取り出す: (x >> shift) & 1
             bit_plane = (x_int >> shift) & 1
             spikes_list.append(bit_plane.float())
 
-        # Stack to (Batch, Duration, ...)
         spikes = torch.stack(spikes_list, dim=1)
-
         return spikes

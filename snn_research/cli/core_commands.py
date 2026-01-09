@@ -1,8 +1,12 @@
-# snn_research/cli/core_commands.py
+# ファイルパス: snn_research/cli/core_commands.py
+# 日本語タイトル: SNN CLI コアコマンド定義
+# 目的: テスト、クリーンアップ、ヘルスチェックなどの基本機能を提供する。
 
 import click
 import os
+import sys
 import shutil
+import subprocess
 from glob import glob
 from pathlib import Path
 from .utils import run_script, logger
@@ -11,10 +15,24 @@ from .utils import run_script, logger
 
 
 @click.command(name="test")
-def run_tests():
-    """全テストスイートを実行 (scripts/tests/run_all_tests.py)"""
-    script_path = "scripts/tests/run_all_tests.py"
-    run_script(script_path, [])
+@click.argument('args', nargs=-1)
+def run_tests(args):
+    """
+    Pytestスイートを実行します。
+    引数を渡すことができます（例: snn-cli test -v）。
+    """
+    logger.info("🧪 テストスイートを実行中 (Pytest)...")
+    
+    cmd = [sys.executable, "-m", "pytest", "tests/"] + list(args)
+    
+    try:
+        # サブプロセスとしてPytestを実行
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            sys.exit(result.returncode)
+    except Exception as e:
+        logger.error(f"テスト実行中にエラーが発生しました: {e}")
+        sys.exit(1)
 
 # --- クリーンアップ機能 ---
 
@@ -55,7 +73,6 @@ def _perform_clean(delete_models=False, delete_data=False, clean_dev_cache=True,
                 if p.is_file():
                     files_to_delete.append(str(p))
 
-    # 2. プロジェクト固有ディレクトリ内のファイル (中身を削除)
     # 2. プロジェクト固有ディレクトリ内のファイル (中身を削除)
     project_targets = ['workspace/runs', 'workspace/results',
                        'workspace/logs', 'benchmarks/results']
@@ -192,7 +209,7 @@ def clean_all(yes, dry_run):
 
 @click.command(name="health-check")
 def health_check():
-    """健全性チェック"""
+    """健全性チェック (scripts/tests/run_project_health_check.py)"""
     script_path = "scripts/tests/run_project_health_check.py"
     run_script(script_path, [])
 

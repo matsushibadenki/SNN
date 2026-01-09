@@ -1,187 +1,143 @@
-# SNNプロジェクト: 学習・推論コマンドガイド
+# **SNNプロジェクト: 学習・推論コマンドガイド**
 
-このドキュメントでは、モデルの学習（Training）と推論・デモ（Inference/Demo）を実行するための主要なコマンドについて解説します。
+このドキュメントでは、モデルの学習（Training）と推論・デモ（Inference/Demo）を実行するための主要なコマンドについて解説します。  
 プロジェクトディレクトリのルートで実行してください。
 
-## 1. 学習 (Training)
+## **1\. 学習 (Training)**
 
 モデルを一から学習、あるいは継続学習させるためのコマンドです。
 
-### 汎用トレーナー
-CLIまたはスクリプト経由で、設定ファイル (`configs/`) を指定して学習を開始します。
+### **汎用トレーナー**
 
-```bash
-# SNN CLIを使用する場合 (推奨)
-snn-cli gradient-train --model_config configs/models/stable_small_snn.yaml --data_path data/smoke_test_data.jsonl
+CLIまたはスクリプト経由で、設定ファイル (configs/) を指定して学習を開始します。
 
-# 直接スクリプトを実行する場合
-python scripts/training/train.py --config configs/experiments/brain_v14_config.yaml
-```
+\# SNN CLIを使用する場合 (推奨)  
+snn-cli gradient-train \--model\_config configs/models/stable\_small\_snn.yaml \--data\_path data/smoke\_test\_data.jsonl
 
-### タスク特化型学習スクリプト
+\# 直接スクリプトを実行する場合  
+python scripts/training/train.py \--config configs/experiments/brain\_v14\_config.yaml
+
+### **タスク特化型学習スクリプト**
+
 特定のタスクやデータセットに特化した学習スクリプトです。
 
-*   **MNIST SNN学習**:
-    ```bash
-    python scripts/training/train_mnist_snn.py
-    ```
-*   **CIFAR-10 Bio-PC (Predictive Coding) 学習**:
-    ```bash
-    python scripts/training/train_bio_pc_cifar10.py
-    ```
-*   **Spiking VLM (Vision-Language Model) 学習**:
-    ```bash
-    python scripts/training/train_spiking_vlm.py
-    ```
-*   **Planner (推論エンジン) 学習**:
-    ```bash
-    python scripts/training/train_planner.py
-    ```
+* **MNIST SNN学習**:  
+  python scripts/training/train\_mnist\_snn.py
 
----
+* **CIFAR-10 Bio-PC (Predictive Coding) 学習**:  
+  python scripts/training/train\_bio\_pc\_cifar10.py
 
-## 2. 推論・デモ (Inference & Demos)
+* **Spiking VLM (Vision-Language Model) 学習**:  
+  python scripts/training/train\_spiking\_vlm.py
 
-学習済みモデルや、初期化されたエージェントを使用して推論や動作デモを行います。
-スクリプトは機能カテゴリごとに `scripts/demos/` 以下に整理されています。
+* **Planner (推論エンジン) 学習**:  
+  python scripts/training/train\_planner.py
 
-### 🧠 Brain & Agent (脳モデル・エージェント)
-*   **Brain v16 統合デモ**:
-    ```bash
-    python scripts/demos/brain/run_brain_v16_demo.py
-    ```
-*   **世界モデル (World Model)**:
-    ```bash
-    python scripts/demos/brain/run_world_model_demo.py
-    ```
-*   **好奇心エージェント**:
-    ```bash
-    python scripts/demos/brain/run_curiosity_demo.py
-    ```
+## **2\. 推論・デモ (Inference & Demo)**
 
-### 📚 Learning & Distillation (学習・蒸留)
-*   **睡眠サイクル (記憶固定化)**:
-    ```bash
-    python scripts/demos/learning/run_sleep_cycle_demo.py
-    ```
-*   **継続学習デモ**:
-    ```bash
-    python scripts/demos/learning/run_continual_learning_demo.py
-    ```
+学習済みモデルを使って推論を行ったり、対話デモを動かしたりします。
 
-### ⚙️ Systems (システム制御・制御理論)
-*   **能動的推論 (Active Inference)**:
-    ```bash
-    python scripts/demos/systems/run_active_inference_demo.py
-    ```
-*   **ニューロシンボリック推論**:
-    ```bash
-    python scripts/demos/systems/run_neuro_symbolic_demo.py
-    ```
+### **CLIによる推論**
 
-### 👁️ Visual & Sensors (視覚・センサー)
-*   **産業用Eye (DVS処理)**:
-    ```bash
-    python scripts/demos/visual/run_industrial_eye_demo.py
-    ```
-*   **Forward-Forward アルゴリズム**:
-    ```bash
-    python scripts/demos/visual/run_forward_forward_demo.py
-    ```
+\# 単一テキストの推論  
+snn-cli predict \--text "Hello SNN" \--model\_path models/checkpoints/best\_model.pt
 
----
+\# チャットモード  
+snn-cli chat \--model\_config configs/models/brain\_v4\_synesthesia.yaml
 
-## 3. 実験 (Experiments)
+### **Webアプリ/APIサーバー**
 
-研究開発フェーズの実験スクリプトは `scripts/experiments/` にあります。
+\# FastAPIサーバー起動  
+python app/main.py
 
-*   **継続学習実験**: `python scripts/experiments/learning/run_continual_learning_experiment.py`
-*   **蒸留実験**: `python scripts/experiments/learning/run_distillation_experiment.py`
-*   **進化実験**: `python scripts/experiments/brain/run_brain_evolution.py`
+### **統合デモ**
 
-詳細なテストコマンドについては `doc/test-command.md` を参照してください。
+視覚・言語・運動野を統合したデモを実行します。
 
----
+python app/unified\_perception\_demo.py
 
-## 4. 高度な使用例 (Advanced Usage)
+## **3\. 高度な学習パラダイム (Advanced Paradigms)**
 
-具体的なシナリオ別の実行コマンド例です。
+通常の勾配学習（Backpropagation）以外の、生物学的・効率的な学習手法です。
 
-### 📊 性能検証 (Verification)
-学習結果の精度やレイテンシを検証します。
+### **⚡ STDP (Spike-Timing Dependent Plasticity)**
 
-```bash
-# MNISTの結果（精度97.2%、レイテンシ3.5ms）を期待値として検証する場合
-python scripts/tests/verify_performance.py --task mnist --accuracy 0.972 --latency 3.5
+教師なし学習の一種で、スパイクのタイミングに基づいてシナプス結合を強化・減衰させます。
 
-# 学習スクリプトが出力したJSONを指定して検証する場合
-python scripts/training/train_mnist_snn.py
-python scripts/tests/verify_performance.py --metrics_json results/best_mnist_metrics.json
-```
+python scripts/experiments/learning/run\_stdp\_learning.py
 
-### 📈 可視化 (Visualization)
-スパイク発火パターンやモデルダイナミクスを可視化します。
+### **🧠 SCAL (Statistical Centroid Alignment Learning)**
 
-```bash
-python scripts/visualization/visualize_spike_patterns.py \
-    --model-config configs/models/micro.yaml \
-    --timesteps 8 \
-    --output_path "runs/dynamics_viz/micro_dynamics.png"
-```
+勾配計算を行わず、統計的な重心アライメントによって高速に学習する独自手法です。
 
-### 🚀 最適化 (Optimization)
-モデル効率の自動チューニングを行います。
+python scripts/training/run\_improved\_scal\_training.py \\  
+    \--config configs/templates/base\_config.yaml \\  
+    \--model\_config configs/models/small.yaml \\  
+    \--data\_path data/smoke\_test\_data.jsonl \\  
+    \--override\_config "training.epochs=10" \\  
+    \--override\_config "training.batch\_size=4" \\  
+    \--override\_config "training.gradient\_based.type=standard"
 
-```bash
-# 準備学習（ベースライン作成）
-python scripts/training/train.py \
-    --config configs/templates/base_config.yaml \
-    --model_config configs/models/small.yaml \
-    --data_path data/smoke_test_data.jsonl \
-    --override_config "training.epochs=10" \
-    --override_config "training.batch_size=4" \
-    --override_config "training.gradient_based.type=standard"
+\# 自動調整 (Auto-tune)  
+python scripts/optimization/auto\_tune\_efficiency.py \\  
+    \--model-config configs/models/small.yaml \\  
+    \--n-trials 20
 
-# 自動調整 (Auto-tune)
-python scripts/optimization/auto_tune_efficiency.py \
-    --model-config configs/models/small.yaml \
-    --n-trials 20
-```
+### **💧 蒸留ワークフロー (Distillation Workflow)**
 
-### 💧 蒸留ワークフロー (Distillation Workflow)
 データ生成から蒸留学習までの完全なフローです。
 
-```bash
-# 1. 古いデータを削除（クリーンな状態で再作成）
-rm -rf precomputed_data/smoke_distill
+\# 1\. 古いデータを削除（クリーンな状態で再作成）  
+rm \-rf precomputed\_data/smoke\_distill
 
-# 2. 蒸留データの再生成
-python scripts/data/prepare_distillation_data.py  \
-    --input_file data/smoke_test_data.jsonl \
-    --output_dir precomputed_data/smoke_distill \
-    --teacher_model gpt2
+\# 2\. 蒸留データの再生成  
+python scripts/data/prepare\_distillation\_data.py  \\  
+    \--input\_file data/smoke\_test\_data.jsonl \\  
+    \--output\_dir precomputed\_data/smoke\_distill \\  
+    \--teacher\_model gpt2
 
-# 3. 蒸留学習の実行
-python scripts/training/train.py \
-    --model_config configs/models/bit_rwkv_micro.yaml \
-    --data_path precomputed_data/smoke_distill/distillation_data.jsonl \
-    --paradigm gradient_based \
-    --override_config "training.gradient_based.type=distillation" \
-    --override_config "training.gradient_based.distillation.teacher_model=gpt2" \
-    --override_config "training.epochs=2"
-```
+\# 3\. 蒸留学習の実行  
+python scripts/training/train.py \\  
+    \--model\_config configs/models/bit\_rwkv\_micro.yaml \\  
+    \--data\_path precomputed\_data/smoke\_distill/distillation\_data.jsonl \\  
+    \--paradigm gradient\_based \\  
+    \--override\_config "training.gradient\_based.type=distillation" \\  
+    \--override\_config "training.gradient\_based.distillation.teacher\_model=gpt2"
 
-### 🛠️ その他の有用なコマンド
-```bash
-# 全テスト実行
-python scripts/tests/run_all_tests.py
+## **4\. 進化と自己改善 (Evolution & Self-Improvement)**
 
-# 論理ゲート学習実験
-python scripts/experiments/learning/run_logic_gated_learning.py
+Phase 6以降のシステムでは、単なる「学習」を超え、\*\*「経験」**と**「進化」\*\*によってモデルが自律的に更新されます。
 
-# 改良版SCAL学習（アンサンブルモード）
-python scripts/training/run_improved_scal_training.py --ensemble
+### **A. 自己修正による適応 (On-Chip Self-Correction)**
 
-# Forward-Forward デモ
-python scripts/demos/visual/run_forward_forward_demo.py
-```
+バックプロパゲーション（勾配法）を使わず、稼働中にリアルタイムでシナプス荷重を調整します。
+
+* **実行コマンド**:  
+  python scripts/experiments/systems/run\_phase6\_agi\_prototype.py
+
+* **メカニズム**:  
+  * **R-STDP (Reward-modulated STDP)**: 報酬信号に基づいて、局所的なヘブ則学習を変調します。  
+  * 外部からの教師データは不要で、環境からのフィードバックのみで適応します。
+
+### **B. 社会的学習と文化継承 (Social Learning)**
+
+個体単独の学習ではなく、集団での合意形成を通じて知識を獲得します。
+
+* **実行コマンド**:  
+  python scripts/experiments/systems/run\_phase7\_civilization.py
+
+* **メカニズム**:  
+  * **Meme Propagation**: 有用と判断された概念ベクトル（Meme）は CultureRepository に保存されます。  
+  * **Knowledge Retrieval**: 新しく生まれたエージェントは、このリポジトリから知識をロードした状態で開始できます。
+
+### **C. 再帰的自己改善 (Recursive Self-Improvement)**
+
+遺伝的アルゴリズムとメタ学習を組み合わせ、システム自体が次世代のシステムを設計・生成します。
+
+* **実行コマンド**:  
+  python scripts/experiments/systems/run\_phase8\_singularity.py
+
+* **メカニズム**:  
+  * **Mutation**: パラメータ空間およびハイパーパラメータにランダムな変異を加えます。  
+  * **Selection**: 仮想環境でのタスク実行スコアに基づき、最も適応度の高い個体を選択します。  
+  * **Hot-Swap**: 稼働中のOSカーネル上で、脳モデルを即座に最新版へ差し替えます。

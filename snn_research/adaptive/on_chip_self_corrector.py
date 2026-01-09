@@ -1,118 +1,86 @@
 # ファイルパス: snn_research/adaptive/on_chip_self_corrector.py
-# (Phase 4: Autonomous Adaptation)
-# Title: On-Chip Self-Correction Module
+# Title: On-Chip Self Corrector (LNN/RSNN Engine)
 # Description:
-#   推論時にリアルタイムでモデルの状態を監視し、自己修正を行う。
-#   - エントロピーに基づく不確実性検知
-#   - 恒常性維持（Homeostasis）による閾値調整
-#   - 局所的な重み更新（STDP/Hebbian）の動的トリガー
+# - Objective 5 & 6: 非勾配型学習システム(Non-gradient Learning)。
+# - バックプロパゲーションを使わず、局所的なスパイク活動と報酬信号のみで重みを更新する。
+# - Liquid State Machine / Reservoir Computing の概念を拡張した自己組織化ロジック。
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Dict, Any, List, Tuple, cast
+import logging
+from typing import Optional, List, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 class OnChipSelfCorrector(nn.Module):
     """
-    オンチップ自己修正・適応モジュール。
-    推論モード(eval)であっても、内部状態を監視して適応的なパラメータ更新を行う。
+    オンチップ自己修正モジュール。
+    推論中にリアルタイムでシナプス荷重を微調整し、環境に適応する。
     """
-    def __init__(
-        self,
-        monitor_layers: List[nn.Module],
-        adaptation_rate: float = 0.001,
-        entropy_threshold: float = 0.6,
-        homeostasis_target: float = 0.05  # 目標スパイク率
-    ):
+    def __init__(self, learning_rate: float = 1e-4, stdp_window: int = 20, device: str = 'cpu'):
         super().__init__()
-        self.monitor_layers = nn.ModuleList(monitor_layers)
-        self.adaptation_rate = adaptation_rate
-        self.entropy_threshold = entropy_threshold
-        self.homeostasis_target = homeostasis_target
+        self.lr = learning_rate
+        self.window = stdp_window
+        self.device = device
         
-        # 統計情報のバッファ
-        self.register_buffer("global_surprise", torch.tensor(0.0))
-        self.register_buffer("adaptation_count", torch.tensor(0))
+        # 報酬予測誤差 (RPE) の履歴
+        self.rpe_trace = 0.0
+        
+        logger.info("🔧 On-Chip Self Corrector initialized (Non-gradient mode).")
 
-    def _calculate_entropy(self, logits: torch.Tensor) -> torch.Tensor:
-        """予測分布のエントロピーを計算"""
-        probs = F.softmax(logits, dim=-1)
-        log_probs = F.log_softmax(logits, dim=-1)
-        entropy = -(probs * log_probs).sum(dim=-1).mean()
-        return entropy
-
-    def update_homeostasis(self):
+    def observe_and_correct(self, 
+                          layer_weights: torch.Tensor, 
+                          pre_spikes: torch.Tensor, 
+                          post_spikes: torch.Tensor, 
+                          reward_signal: float) -> torch.Tensor:
         """
-        恒常性維持: 各ニューロンの発火率を目標値に近づけるよう閾値を調整
-        （バックプロパゲーション不要の局所更新）
-        """
-        with torch.no_grad():
-            for layer in self.monitor_layers:
-                # AdaptiveLIFNeuron などを想定
-                # [Fix] Cast to Any to access dynamic attributes
-                layer_any = cast(Any, layer)
-                if hasattr(layer_any, "avg_firing_rate") and hasattr(layer_any, "base_threshold"):
-                    current_rate = layer_any.avg_firing_rate
-                    error = current_rate - self.homeostasis_target
-                    
-                    # 発火しすぎ -> 閾値を上げる (+ error)
-                    # 発火しなさすぎ -> 閾値を下げる (- error)
-                    # 不感帯を設ける
-                    mask = (error.abs() > (self.homeostasis_target * 0.2)).float()
-                    delta = error * self.adaptation_rate * mask
-                    
-                    layer_any.base_threshold.data += delta
-                    layer_any.base_threshold.data.clamp_(min=0.1)
-
-    def trigger_plasticity(self, layer: nn.Module, pre_spikes: torch.Tensor, post_spikes: torch.Tensor):
-        """
-        驚き（Surprise）が高い場合に可塑性（重み更新）をトリガーする
-        簡易的なSTDP/Hebbianルールの適用
-        """
-        with torch.no_grad():
-            # [Fix] Cast to Any to access .weight
-            layer_any = cast(Any, layer)
-            if hasattr(layer_any, "weight") and layer_any.weight.requires_grad:
-                # Hebbian: Fire together, wire together
-                # ΔW = η * (Post * Pre^T)
-                # バッチ処理のための簡易計算
-                if pre_spikes.dim() == 2 and post_spikes.dim() == 2:
-                    delta_w = torch.matmul(post_spikes.t(), pre_spikes)
-                    
-                    # 重みの大きさに応じた正規化 (Oja's rule like)
-                    # 実際には勾配を使わず、in-placeで値を更新
-                    # [Fix] Explicit cast to Tensor for accumulation
-                    layer_any.weight.data += self.adaptation_rate * 0.1 * delta_w
-                    
-                    # 重みの発散を防ぐための減衰
-                    layer_any.weight.data *= 0.999
-
-    def forward(self, logits: torch.Tensor, hidden_states: List[Tuple[torch.Tensor, torch.Tensor]]) -> Dict[str, float]:
-        """
-        推論ステップごとに呼び出される。
+        スパイク活動と報酬に基づいて重みを修正する (R-STDP: Reward-modulated STDP)。
+        
         Args:
-            logits: モデルの最終出力 (B, Classes)
-            hidden_states: 各層の (入力スパイク, 出力スパイク) のリスト
+            layer_weights: 対象レイヤーの重み (参照渡し想定だが、ここでは更新後のTensorを返す)
+            pre_spikes: プレニューロンのスパイク履歴 [Batch, Time, In_Features]
+            post_spikes: ポストニューロンのスパイク履歴 [Batch, Time, Out_Features]
+            reward_signal: 環境からの報酬 (-1.0 to 1.0)
+        
+        Returns:
+            updated_weights: 更新された重み
         """
-        stats = {}
-        
-        # 1. 不確実性（エントロピー）の監視
-        entropy = self._calculate_entropy(logits)
-        stats["entropy"] = entropy.item()
-        
-        # 2. 「驚き」の検知 (High Entropy = Surprise)
-        is_surprised = entropy > self.entropy_threshold
-        
-        if is_surprised:
-            self.global_surprise = entropy
-            # [Fix] Explicit cast to Tensor for accumulation
-            cast(torch.Tensor, self.adaptation_count).add_(1)
+        # 勾配計算を無効化 (完全な推論モードでの学習)
+        with torch.no_grad():
+            # 簡易的な同時発火検出 (Correlation-based Hebbian term)
+            # Pre[b, t, i] * Post[b, t, j] -> Weight[i, j] の相関
             
-            # 3. 適応ステップの実行
-            self.update_homeostasis()
+            # 時間次元での平均活動率
+            pre_rate = pre_spikes.float().mean(dim=(0, 1)) # [In]
+            post_rate = post_spikes.float().mean(dim=(0, 1)) # [Out]
             
-            # 層ごとの可塑性トリガー (監視対象層とhidden_statesが対応している前提)
-            # ここでは簡易的に実装
-            pass 
+            # ヘブ則項: "Fire together, wire together"
+            hebbian_term = torch.outer(pre_rate, post_rate) # [In, Out]
             
-        return stats
+            # 恒常性維持項 (LTD): 発火しすぎを防ぐ
+            # Post側の発火率が高い場合、全体的に抑制する
+            homeostatic_term = post_rate.unsqueeze(0) * 0.1
+            
+            # ドーパミン変調 (Reward Modulation)
+            # 報酬が正なら強化、負なら抑制 (Anti-Hebbian)
+            modulation = reward_signal
+            
+            # 3要素則 (Three-factor rule) の適用
+            # delta_w = LearningRate * Reward * (Hebbian - Homeostatic)
+            delta_w = self.lr * modulation * (hebbian_term - homeostatic_term)
+            
+            # 重みの更新
+            new_weights = layer_weights + delta_w.to(layer_weights.device)
+            
+            # 重みのクリッピング (発散防止)
+            new_weights = torch.clamp(new_weights, -1.0, 1.0)
+            
+            return new_weights
+
+    def compute_local_error(self, desired_activity: torch.Tensor, actual_activity: torch.Tensor) -> float:
+        """
+        局所的な予測誤差を計算する (Predictive Coding的アプローチ)。
+        """
+        with torch.no_grad():
+            error = torch.mean((desired_activity - actual_activity) ** 2).item()
+        return error
