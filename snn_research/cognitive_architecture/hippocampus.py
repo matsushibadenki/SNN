@@ -5,7 +5,7 @@
 import logging
 import torch
 import torch.nn.functional as F
-from typing import List, Any, Optional, Dict, Union
+from typing import List, Any, Optional
 from collections import deque
 from snn_research.cognitive_architecture.rag_snn import RAGSystem
 

@@ -1,6 +1,8 @@
 # ファイルパス: snn_research/models/cnn/hybrid_cnn_snn_model.py
-# Title: Hybrid CNN-SNN Model (Fixed Config)
-# Description: Adapter初期化時に neuron_config に 'features' を確実に含めるよう修正。
+# Title: Hybrid CNN-SNN Model (Fixed Config & Dimensions)
+# Description:
+# - Adapter初期化時に neuron_config に 'features' を確実に含めるよう修正。
+# - full_mems の結合軸を dim=4 から dim=1 (Layers) に修正。
 
 import torch
 import torch.nn as nn
@@ -114,6 +116,7 @@ class HybridCnnSnnModel(BaseModel):
 
         local_mems_history: List[torch.Tensor] = []
         if return_full_mems and adapter_mems is not None:
+            # adapter_mems: (B, T, D) -> (B, 1, T, D) for layer stack
             local_mems_history.append(adapter_mems.unsqueeze(1))
 
         hooks: List[torch.utils.hooks.RemovableHandle] = []
@@ -157,8 +160,10 @@ class HybridCnnSnnModel(BaseModel):
                 hook.remove()
 
             if local_mems_history:
+                # [Fix] Concatenate on dim=1 (Layers) instead of dim=4
+                # Each element is (B, 1, T, D) -> Concat to (B, L, T, D)
                 full_mems_cat: torch.Tensor = torch.cat(
-                    local_mems_history, dim=4)
+                    local_mems_history, dim=1)
                 full_mems = full_mems_cat
             else:
                 full_mems = torch.zeros(

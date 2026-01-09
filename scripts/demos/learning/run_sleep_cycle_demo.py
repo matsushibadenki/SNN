@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 import logging
 import time
-import random
 
 # プロジェクトルートにパスを通す
 sys.path.append(os.path.dirname(os.path.dirname(
@@ -46,7 +45,7 @@ def run_demo():
     # ダミーのコアモデルをセット（夢を見るため）
     brain.set_core_model(DummyCoreModel())
 
-    debugger = BrainDebugger(brain)
+    _ = BrainDebugger(brain)
 
     # 2. 日中の活動 (Daytime Activity)
     print("\n☀️ Day 1: Learning & Exploration Started")

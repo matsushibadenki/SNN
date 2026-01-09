@@ -4,7 +4,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Optional, List, Any
+from typing import Optional, List
 import logging
 from .rag_snn import RAGSystem
 

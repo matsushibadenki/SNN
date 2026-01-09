@@ -1,16 +1,14 @@
 # ファイルパス: scripts/tests/run_project_health_check.py
-# Title: SNN Project Health Check v5.4
+# Title: SNN Project Health Check v5.6 (Fix SFormer & BN)
 # Description:
 #   プロジェクト全体の健全性を検証する統合チェックスクリプト。
-#   ArtificialBrainのメソッド名変更(run_cognitive_cycle -> process_step)に対応。
+#   v5.6: Spikformerの引数修正とHybridモデルのバッチサイズ調整(BatchNorm対応)。
 
 import sys
 import os
 import time
 import subprocess
 import logging
-import torch
-import traceback
 
 # パス設定
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -65,6 +63,7 @@ def check_python_api(description, code_snippet):
 import sys
 import os
 import torch
+import torch.nn as nn
 sys.path.append(os.getcwd())
 {code_snippet}
 """
@@ -92,41 +91,62 @@ sys.path.append(os.getcwd())
 
 
 def main():
-    logger.info("🩺 SNNプロジェクト ヘルスチェック v5.4 (Pytest Integrated) 開始")
+    logger.info("🩺 SNNプロジェクト ヘルスチェック v5.6 (Fix SFormer & BN) 開始")
     print("-" * 60)
 
     checks = []
 
     # 1. Unit Tests (Pytest)
-    # 全テストではなく、高速なコア機能のみを対象とするマーカー等を推奨するが、
-    # ここでは既存の構成に従い tests/ を実行（-x で初回失敗時に停止）
     checks.append(run_command(
         f"{sys.executable} -m pytest tests/ -x -q --disable-warnings", "Unit Tests: Pytest Suite (Quick)"))
 
     # 2. Core: SNNCore & SFormer Init
+    # Fix: architecture_typeを指定
+    # Fix: Spikformerの引数を修正 (input_dim -> embed_dim, img_size指定)
     checks.append(check_python_api("Core: SNNCore & SFormer Init", """
 from snn_research.core.snn_core import SNNCore
 from snn_research.models.transformer.spikformer import Spikformer
 
-model = SNNCore(config={'d_model': 64, 'num_layers': 2}, vocab_size=100)
-sformer = Spikformer(input_dim=64, num_classes=10)
+# SNNCoreには architecture_type が必須
+config = {
+    'architecture_type': 'spiking_transformer',
+    'd_model': 64,
+    'num_layers': 2,
+    'time_steps': 4,
+    'neuron': {'type': 'lif'}
+}
+model = SNNCore(config=config, vocab_size=100)
+
+# Spikformerのテスト
+# img_sizeなどを明示し、embed_dimを使用
+sformer = Spikformer(img_size_h=32, img_size_w=32, embed_dim=64, num_classes=10)
 print("Models initialized successfully")
 """))
 
     # 3. Core: BitSpikeMamba
+    # Fix: 足りない引数を追加
     checks.append(check_python_api("Core: BitSpikeMamba (1.58bit LLM)", """
 from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
-model = BitSpikeMamba(vocab_size=100, d_model=32)
+
+model = BitSpikeMamba(
+    vocab_size=100,
+    d_model=32,
+    d_state=16,
+    d_conv=4,
+    expand=2,
+    num_layers=1,
+    time_steps=4,
+    neuron_config={'type': 'lif', 'tau_mem': 0.5, 'v_reset': 0.0}
+)
 x = torch.randint(0, 100, (1, 10))
 y = model(x)
 print("Forward pass successful")
 """))
 
-    # 4. Cognitive: ArtificialBrain Cycle (Fix: run_cognitive_cycle -> process_step)
+    # 4. Cognitive: ArtificialBrain Cycle
     checks.append(check_python_api("Cognitive: ArtificialBrain Cycle", """
 from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
 brain = ArtificialBrain(config={'stm_capacity': 10})
-# [Fix] Updated method name
 res = brain.process_step(sensory_input="test_input")
 print(f"Cycle result: {res}")
 """))
@@ -136,16 +156,29 @@ print(f"Cycle result: {res}")
         f"{sys.executable} scripts/demos/learning/run_sleep_cycle_demo.py", "Cognitive: Sleep & Consolidation Demo"))
 
     # 6. Agent: Planner SNN
+    # Fix: 足りない引数を追加
     checks.append(check_python_api("Agent: Planner SNN (Reasoning)", """
 from snn_research.cognitive_architecture.planner_snn import PlannerSNN
-planner = PlannerSNN(vocab_size=50, num_skills=5)
+
+planner = PlannerSNN(
+    vocab_size=50,
+    d_model=32,
+    d_state=16,
+    num_layers=1,
+    time_steps=4,
+    n_head=2,
+    num_skills=5,
+    neuron_config={'type': 'lif'}
+)
 print("Planner initialized")
 """))
 
     # 7. Logic: LogicGatedSNN
+    # Fix: 引数名変更
     checks.append(check_python_api("Logic: LogicGatedSNN (Neuro-Symbolic)", """
 from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
-layer = LogicGatedSNN(input_dim=10, output_dim=5)
+
+layer = LogicGatedSNN(in_features=10, out_features=5)
 x = torch.randn(1, 10)
 y = layer(x)
 print("Logic gate forward pass successful")
@@ -164,18 +197,55 @@ print("Encoding successful")
     checks.append(run_command(
         f"{sys.executable} scripts/demos/learning/run_distillation_demo.py", "Distill: Knowledge Distillation Manager"))
 
-    # 10. Evolution: Self-Evolving Agent
+    # 10. Evolution: Self-Evolving Agent Master
+    # Fix: 依存オブジェクトをMockで注入
     checks.append(check_python_api("Evolution: Self-Evolving Agent Master", """
 from snn_research.agent.self_evolving_agent import SelfEvolvingAgentMaster
-agent = SelfEvolvingAgentMaster(name="TestEvolver")
+
+# Mock dependencies
+class MockObj:
+    def __init__(self, *args, **kwargs): pass
+    def to(self, device): return self
+
+mock_planner = MockObj()
+mock_registry = MockObj()
+mock_memory = MockObj()
+mock_crawler = MockObj()
+mock_meta = MockObj()
+mock_motivation = MockObj()
+
+agent = SelfEvolvingAgentMaster(
+    name="TestEvolver",
+    planner=mock_planner,
+    model_registry=mock_registry,
+    memory=mock_memory,
+    web_crawler=mock_crawler,
+    meta_cognitive_snn=mock_meta,
+    motivation_system=mock_motivation,
+    model_config_path=None
+)
 print("Agent Master initialized")
 """))
 
     # 11. Model: Hybrid CNN-SNN
+    # Fix: クラス名修正
+    # Fix: バッチサイズを2に変更 (BatchNormエラー回避)
     checks.append(check_python_api("Model: Hybrid CNN-SNN (Vision)", """
-from snn_research.models.cnn.hybrid_cnn_snn_model import HybridCNNSNN
-model = HybridCNNSNN(num_classes=10)
-x = torch.randn(1, 3, 32, 32)
+from snn_research.models.cnn.hybrid_cnn_snn_model import HybridCnnSnnModel
+
+ann_config = {'name': 'mobilenet_v2', 'output_features': 1280, 'pretrained': False}
+snn_config = {'d_model': 32, 'n_head': 2, 'num_layers': 1}
+neuron_config = {'type': 'lif'}
+
+model = HybridCnnSnnModel(
+    vocab_size=10, 
+    time_steps=4,
+    ann_frontend=ann_config,
+    snn_backend=snn_config,
+    neuron_config=neuron_config
+)
+# Batch size > 1 required for BatchNorm training mode
+x = torch.randn(2, 3, 32, 32)
 y = model(x)
 print("Hybrid model forward pass successful")
 """))

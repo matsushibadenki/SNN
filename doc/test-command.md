@@ -19,6 +19,14 @@ pytest を使用して、tests/ ディレクトリ以下のテストを実行し
   \# または  
   python scripts/tests/run\_project\_health\_check.py
 
+* **クリーンアップ**:  
+  snn-cli clean all
+
+* **ログクリーンアップ**:  
+  snn-cli clean logs 
+* **キャッシュクリーンアップ**:  
+  snn-cli clean cache
+
 ### **カテゴリ別テスト**
 
 * **スモークテスト (簡易動作確認)**:  

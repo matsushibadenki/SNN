@@ -6,7 +6,7 @@ import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List
 import random
 
 # 型ヒント用 (循環参照回避のため文字列で指定する場合あり)

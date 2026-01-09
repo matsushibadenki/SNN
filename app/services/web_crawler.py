@@ -7,7 +7,7 @@
 #   - 知識ベースを用いた模擬検索機能（オフライン/エラー時用）
 #   - 複数のトピックに関連する情報を収集・統合する機能
 
-from typing import List, Dict, Optional, Set
+from typing import List, Optional, Set
 import random
 import re
 import os

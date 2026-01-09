@@ -4,7 +4,7 @@
 # - broadcast() メソッドを追加し、ArtificialBrainとのIF不整合を解消。
 # - 複数の入力を受け取り、最も顕著なものを意識に昇らせるロジックを統合。
 
-from typing import Dict, Any, List, Callable, Optional, Deque, Union
+from typing import Dict, Any, List, Callable, Optional, Deque
 from collections import deque
 import torch
 import logging

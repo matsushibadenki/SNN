@@ -20,7 +20,6 @@ import argparse
 import sys
 import os
 import random
-import re
 
 # ------------------------------------------------------------------------------
 # [Auto-inserted by fix_script_paths.py]

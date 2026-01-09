@@ -35,7 +35,7 @@ def test_intrinsic_motivation_fallback_hash():
     motivation = IntrinsicMotivationSystem()
 
     # Novel input
-    result1 = motivation.process("hello")
+    motivation.process("hello")
     # New hash -> Surprise internally high
 
     # Repeated input

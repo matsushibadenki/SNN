@@ -8,7 +8,12 @@ import os
 import time
 import logging
 
+
+from typing import cast
+from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
+
 logger = logging.getLogger("Scenario_BrainV14")
+
 
 def run_scenario(config_path: str = "configs/experiments/brain_v14_config.yaml"):
     """
@@ -23,7 +28,7 @@ def run_scenario(config_path: str = "configs/experiments/brain_v14_config.yaml")
 
     # 1. コンテナ初期化
     container = BrainContainer()
-    
+
     if os.path.exists(config_path):
         container.config.from_yaml(config_path)
     else:
@@ -48,10 +53,11 @@ def run_scenario(config_path: str = "configs/experiments/brain_v14_config.yaml")
     rag = container.agent_container.rag_system()
     # 現在のRAGSystemは vector_store 属性を持たないため、存在確認ロジックを変更
     kb_size = len(rag.knowledge_base)
-    logger.info(f"   - RAG System initialized. Current Knowledge Base Size: {kb_size}")
+    logger.info(
+        f"   - RAG System initialized. Current Knowledge Base Size: {kb_size}")
 
     # 脳の起動
-    brain = container.artificial_brain()
+    brain = cast(ArtificialBrain, container.artificial_brain())
 
     # 思考エンジンの確認 [Fix: Optional/Attribute check]
     engine_name = "unknown"
@@ -68,12 +74,12 @@ def run_scenario(config_path: str = "configs/experiments/brain_v14_config.yaml")
             engine_name = brain.thinking_engine.__class__.__name__
 
     print(f"   - Thinking Engine: {engine_name} (Ready)")
-    
+
     # アストロサイトの確認 [Fix: Optional check]
     astro_energy = 0.0
     if brain.astrocyte:
         astro_energy = brain.astrocyte.current_energy
-        
+
     print(f"   - Astrocyte: Energy={astro_energy:.1f}")
 
     # --- シナリオ実行 ---
@@ -107,15 +113,16 @@ def run_scenario(config_path: str = "configs/experiments/brain_v14_config.yaml")
         # 思考エンジンを酷使するタスク
         brain.run_cognitive_cycle(
             f"Complex reasoning task {i}: Calculate optimal path.")
-        
+
         # [Fix: Optional check]
         current_energy = 0.0
         current_fatigue = 0.0
         if brain.astrocyte:
             current_energy = brain.astrocyte.current_energy
             current_fatigue = brain.astrocyte.fatigue_toxin
-            
-        print(f"   Task {i+1}: Energy {current_energy:.1f} | Fatigue {current_fatigue:.1f}")
+
+        print(
+            f"   Task {i+1}: Energy {current_energy:.1f} | Fatigue {current_fatigue:.1f}")
 
     # Scene 3: Sleep & Evolution (睡眠と進化)
     print("\n💤 [Phase 3: Sleep & Consolidation]")
@@ -129,11 +136,11 @@ def run_scenario(config_path: str = "configs/experiments/brain_v14_config.yaml")
     # 知識の確認
     query = "SNN"
     print(f"   🧠 Checking Long-Term Memory for '{query}':")
-    
+
     # RAG検索の実行
     # Cortexクラスには retrieve_knowledge メソッドを追加済み
     knowledge = brain.cortex.retrieve_knowledge(query)
-    
+
     if not knowledge:
         print("      (No knowledge retrieved directly from Cortex retrieval)")
     else:

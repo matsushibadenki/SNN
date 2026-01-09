@@ -5,7 +5,7 @@
 import torch
 import torch.nn as nn
 import logging
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional
 
 # Cognitive Modules (Imports for type hinting/default instantiation)
 from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace

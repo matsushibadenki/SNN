@@ -31,7 +31,7 @@ class NeuromorphicOS:
     """
 
     def __init__(self, brain: ArtificialBrain):
-        self.brain = brain
+        self.brain: ArtificialBrain = brain
         self.scheduler_tick = 0.01  # 10ms
 
         # プロセス管理

@@ -88,6 +88,7 @@ def test_spike_ppo():
 def test_motor_cortex_reflex():
     logger.info(">>> Testing Motor Cortex (Reflex)...")
     motor = MotorCortex(device='cpu')
+    motor.reflex_enabled = True
 
     # Trigger Reflex
     # ReflexModule expects (Batch, Dim). Threshold is 2.0.

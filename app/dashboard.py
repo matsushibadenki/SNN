@@ -2,34 +2,38 @@
 # Title: Brain v20 Dashboard (Enhanced & Type Fix)
 # Description: fMRI風可視化機能を追加し、pandasのmypyエラーを修正したダッシュボード。
 
-import gradio as gr # type: ignore[import-untyped]
+import gradio as gr  # type: ignore[import-untyped]
 
 
 import json
-import pandas as pd # type: ignore[import-untyped] # 修正: スタブ欠落エラーを抑制
+import pandas as pd  # type: ignore[import-untyped] # 修正: スタブ欠落エラーを抑制
 
 # プロジェクトルートへのパス追加コードを削除しました。
 # パッケージとしてインストールするか、python -m app.dashboard で実行してください。
 
+from typing import cast
+from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
 from app.containers import BrainContainer
 
 print("🧠 Initializing Artificial Brain for Dashboard...")
 container = BrainContainer()
 container.config.from_yaml("configs/templates/base_config.yaml")
 container.config.from_yaml("configs/models/small.yaml")
-brain = container.artificial_brain()
+brain = cast(ArtificialBrain, container.artificial_brain())
 
 # --- CSS / HTML Generator for Brain Map ---
+
+
 def generate_brain_map_html(active_modules: list, valence: float, arousal: float) -> str:
     """脳のモジュール活性状態を可視化"""
     def get_opacity(module_name):
         return "1.0" if module_name in active_modules else "0.3"
-    
+
     def get_glow(module_name):
         return "box-shadow: 0 0 15px #00ff00;" if module_name in active_modules else ""
 
     bg_color = f"rgba({int(arousal * 50)}, {int(valence * 50)}, 100, 0.1)"
-    
+
     html = f"""
     <style>
         .brain-container {{
@@ -70,6 +74,7 @@ def generate_brain_map_html(active_modules: list, valence: float, arousal: float
     """
     return html
 
+
 def process_brain_cycle(user_input: str):
     """脳サイクル実行とダッシュボード更新"""
     if not user_input:
@@ -77,10 +82,10 @@ def process_brain_cycle(user_input: str):
 
     # Brain実行
     brain.run_cognitive_cycle(user_input)
-    
+
     # 状態取得
     active_modules = ["visual_cortex", "system1"]
-    
+
     # [mypy修正] upload_to_workspace で入った情報を正しく取得
     amygdala_info = brain.workspace.get_information("amygdala")
     valence = 0.5
@@ -88,45 +93,48 @@ def process_brain_cycle(user_input: str):
     if isinstance(amygdala_info, dict):
         valence = amygdala_info.get('valence', 0.5)
         arousal = amygdala_info.get('arousal', 0.5)
-    
+
     # 行動の取得
     action_str = str(brain.basal_ganglia.selected_action)
     if "thinking" in action_str:
         active_modules.append("reasoning_engine")
-    
+
     # コンテキスト情報の取得
     conscious_content = brain.workspace.conscious_broadcast_content
-    
+
     # ログデータ
     log_data = [
         {"Time": "T", "Event": "STIMULUS", "Payload": user_input},
-        {"Time": "T+1", "Event": "BROADCAST", "Payload": str(conscious_content)},
+        {"Time": "T+1", "Event": "BROADCAST",
+            "Payload": str(conscious_content)},
         {"Time": "T+2", "Event": "DECISION", "Payload": action_str}
     ]
     df_log = pd.DataFrame(log_data)
 
     # HTML生成
     brain_map = generate_brain_map_html(active_modules, valence, arousal)
-    
+
     return (
         df_log,
         action_str,
         json.dumps(conscious_content, indent=2, ensure_ascii=False),
-        "Memory active", # WM
-        "Nodes synchronized", # Cortex info
+        "Memory active",  # WM
+        "Nodes synchronized",  # Cortex info
         brain_map
     )
-    
+
+
 # --- UI Layout ---
 with gr.Blocks(theme=gr.themes.Soft(primary_hue="indigo"), title="Brain v20 Dashboard") as demo:
     gr.Markdown("# 🧠 Brain v20: Live Thought Dashboard")
-    
+
     with gr.Row():
         with gr.Column(scale=1):
             input_text = gr.Textbox(label="Sensory Input")
             run_btn = gr.Button("⚡ Inject Stimulus", variant="primary")
             action_display = gr.Textbox(label="Action")
-            conscious_display = gr.Code(label="Conscious Stream", language="json")
+            conscious_display = gr.Code(
+                label="Conscious Stream", language="json")
 
         with gr.Column(scale=2):
             brain_map_display = gr.HTML(label="Neural Activity Map")
@@ -136,8 +144,9 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="indigo"), title="Brain v20 Dash
     run_btn.click(
         fn=process_brain_cycle,
         inputs=[input_text],
-        outputs=[log_table, action_display, conscious_display, gr.Textbox(), cortex_display, brain_map_display],
-        queue=False 
+        outputs=[log_table, action_display, conscious_display,
+                 gr.Textbox(), cortex_display, brain_map_display],
+        queue=False
     )
 
 if __name__ == "__main__":

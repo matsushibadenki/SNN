@@ -50,7 +50,7 @@ class MotorCortex(nn.Module):
         [ArtificialBrain Interface]
         PFCからの計画や意識内容を受け取り、具体的なアクションコマンドを生成する。
         """
-        command = {
+        command: Dict[str, Any] = {
             "action_type": "wait",
             "parameters": {},
             "target_actuator": None
