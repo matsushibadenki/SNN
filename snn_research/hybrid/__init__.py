@@ -1,5 +1,4 @@
 # ファイルパス: snn_research/hybrid/__init__.py
-# (更新)
 # Title: ハイブリッドモデル関連モジュール
 # Description: ANNとSNNを組み合わせたハイブリッドモデルに関連する
 #              コンポーネント（アダプタ層など）を格納します。

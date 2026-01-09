@@ -5,7 +5,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Optional, Dict
+from typing import Optional, List, Dict
 
 from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
 from snn_research.io.universal_encoder import UniversalSpikeEncoder
@@ -101,7 +101,12 @@ class SynestheticBrain(nn.Module):
             # 感覚コンテキストと思考列を結合
             combined_input = torch.cat([sensory_context, text_emb], dim=1)
         else:
+            # テキスト入力がない場合でも、感覚情報だけで思考を開始できるようにする
+            # ただし空の入力はエラーになるのでチェック
             if sensory_context.size(1) == 0:
+                # 何も入力がない場合はダミー入力を入れるかエラーにする
+                # ここではエラー回避のためダミーのstart token相当を入れる運用も考えられるが
+                # ひとまずエラーとする
                 raise ValueError("No input provided to SynestheticBrain")
             combined_input = sensory_context
 

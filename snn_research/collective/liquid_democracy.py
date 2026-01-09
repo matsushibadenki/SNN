@@ -1,177 +1,153 @@
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Set
+# ファイルパス: snn_research/collective/liquid_democracy.py
+# 日本語タイトル: Liquid Democracy Protocol (LDP) Engine - Type Fixed
+# 修正内容: 戻り値の型ヒントをAnyに変更し、Proposalクラスを追加。
+
+import torch
 import logging
+from typing import List, Dict, Tuple, Optional, Any
+from dataclasses import dataclass
+
+# 既存のモジュールをインポート
+from snn_research.agent.synesthetic_agent import SynestheticAgent
+from snn_research.social.theory_of_mind import TheoryOfMindModule
 
 logger = logging.getLogger(__name__)
 
+@dataclass
+class Vote:
+    agent_id: str
+    decision: int  # 0 or 1 (Binary decision for simplicity)
+    weight: float = 1.0
 
 @dataclass
 class Proposal:
-    """Represents a decision or task to be voted on."""
+    """
+    投票対象となる提案や課題を格納するデータクラス。
+    他のスクリプト(run_unified_mission.py等)からの参照用に追加。
+    """
     id: str
-    description: str
-    content: Optional[str] = None
-    topic: str = "general"  # Topic for expertise routing
-    proposer_id: Optional[str] = None
-    choices: List[str] = field(default_factory=list)
-    correct_choice: Optional[str] = None
-
-
-@dataclass
-class Vote:
-    """Represents a vote cast by an agent."""
-    agent_id: str
-    proposal_id: str
-    approve: bool
-    confidence: float
-    delegated_to: Optional[str] = None
-    choice: Optional[str] = None  # To support multi-choice if needed
-
+    content: Any  # torch.Tensor or Text
+    description: str = ""
 
 class LiquidDemocracyProtocol:
     """
-    Manages the Liquid Democracy protocol, including voting, delegation,
-    and reputation tracking.
-    Enhanced to support Topic-based Reputation and Decay.
+    流動的民主主義プロトコル。
+    
+    Process:
+    1. Proposal: 課題（入力データ）が提示される。
+    2. Evaluation: 各エージェントが自身の自信度(Confidence)を評価。
+    3. Delegation: 自信がないエージェントは、ToMを用いて「自分より詳しそうなエージェント」に委任する。
+    4. Voting: 委任された票(Power)を持ったエージェントが投票する。
+    5. Consensus: 加重多数決で最終決定を行う。
     """
+    def __init__(self, agents: Dict[str, SynestheticAgent], toms: Dict[str, TheoryOfMindModule]):
+        self.agents = agents
+        self.toms = toms  # AgentID -> Its ToM Module
+        if agents:
+            self.device = next(iter(agents.values())).device
+        else:
+            self.device = 'cpu'
 
-    def __init__(self, decay_factor: float = 0.95) -> None:
-        # Reputation is now Dict[topic, Dict[agent_id, score]]
-        self.reputations: Dict[str, Dict[str, float]] = {}
-        self.vote_history: List[Vote] = []
-        # Map delegator -> topic -> delegatee (persistent)
-        self.delegations: Dict[str, Dict[str, str]] = {}
-        self.decay_factor = decay_factor
-
-    def register_agent(self, agent_id: str, initial_reputation: float = 1.0, topics: Optional[List[str]] = None) -> None:
-        if topics is None:
-            topics = ["general"]
-
-        for topic in topics:
-            if topic not in self.reputations:
-                self.reputations[topic] = {}
-            self.reputations[topic][agent_id] = initial_reputation
-
-    def get_reputation(self, agent_id: str, topic: str) -> float:
-        # Default to 1.0 if unknown
-        return self.reputations.get(topic, {}).get(agent_id, 1.0)
-
-    def get_leaderboard(self, topic: str = "general") -> List[Tuple[str, float]]:
-        if topic not in self.reputations:
-            return []
-        return sorted(self.reputations[topic].items(), key=lambda x: x[1], reverse=True)
-
-    def cast_vote(self, voter_id: str, proposal_id: str, approve: bool, confidence: float, delegate_to: Optional[str] = None, topic: str = "general") -> Vote:
+    def conduct_vote(self, task_input: torch.Tensor, ground_truth: Optional[int] = None) -> Dict[str, Any]:
         """
-        Records a vote or delegation.
+        1回の投票サイクルを実行する。
+        
+        Args:
+            task_input: 判定対象のデータ (例: 画像特徴量)
+            ground_truth: 正解ラベル (学習用、推論時はNone)
+        Returns:
+            metrics: {'accuracy': float, 'delegation_rate': float, 'consensus': float, 'correct': bool/None}
         """
-        v = Vote(
-            agent_id=voter_id,
-            proposal_id=proposal_id,
-            approve=approve,
-            confidence=confidence,
-            delegated_to=delegate_to
-        )
-        self.vote_history.append(v)
+        # 1. 各エージェントの初期判断と自信度
+        initial_decisions = {} # id -> (decision, confidence)
+        
+        for agent_id, agent in self.agents.items():
+            # エージェントに思考させる (Brain v4)
+            # 入力形式を整える (Brain v4は辞書入力を期待)
+            # task_inputの次元によって vision/audio 等に割り振るが、ここでは vision と仮定
+            obs = {'vision': task_input.unsqueeze(0) if task_input.dim() == 1 else task_input}
+            
+            with torch.no_grad():
+                action = agent.step(obs) # (1, ActionDim)
+                val = action[0, 0].item() # 1次元目を決定値とする
+                
+            decision = 1 if val > 0 else 0
+            confidence = abs(val)
+            initial_decisions[agent_id] = (decision, confidence)
 
-        # Also update persistent delegations map if this vote is a delegation
-        if delegate_to:
-            if voter_id not in self.delegations:
-                self.delegations[voter_id] = {}
-            self.delegations[voter_id][topic] = delegate_to
+        # 2. 委任フェーズ (Delegation Logic)
+        vote_powers = {aid: 1.0 for aid in self.agents.keys()} # 初期の持ち票は1
+        delegation_map = {} # from -> to
+        
+        for agent_id, (my_dec, my_conf) in initial_decisions.items():
+            # 自信が閾値以下なら委任を検討
+            if my_conf < 0.3: 
+                best_target = None
+                max_trust = -1.0
+                
+                # ToMを使って他のエージェントの信頼度を確認
+                tom = self.toms[agent_id]
+                for other_id in self.agents.keys():
+                    if other_id == agent_id: continue
+                    
+                    # ToMの predict_action は "相手が協力してくれる確率(0~1)" を返す
+                    # これを「信頼度」として代用
+                    trust = tom.predict_action(other_id)
+                    
+                    if trust > max_trust:
+                        max_trust = trust
+                        best_target = other_id
+                
+                # 信頼できる相手がいれば委任
+                if best_target and max_trust > 0.6:
+                    delegation_map[agent_id] = best_target
+                    logger.debug(f"🔄 {agent_id} delegates to {best_target} (Trust: {max_trust:.2f})")
 
-        return v
+        # 票の移動処理 (1ホップのみ実装)
+        final_voters = []
+        for agent_id in self.agents.keys():
+            if agent_id in delegation_map:
+                target = delegation_map[agent_id]
+                vote_powers[target] += vote_powers[agent_id]
+                vote_powers[agent_id] = 0 # 委任したので自分の行使権は消滅
+            else:
+                final_voters.append(agent_id)
 
-    def delegate(self, delegator_id: str, delegatee_id: str, topic: str = "general") -> None:
-        if delegator_id == delegatee_id:
-            raise ValueError("Cannot delegate to self.")
-        if delegator_id not in self.delegations:
-            self.delegations[delegator_id] = {}
-        self.delegations[delegator_id][topic] = delegatee_id
+        # 3. 集計 (Aggregation)
+        weighted_sum = 0.0
+        total_power = 0.0
+        
+        for voter_id in final_voters:
+            decision, _ = initial_decisions[voter_id]
+            power = vote_powers[voter_id]
+            
+            # 0 or 1
+            weighted_sum += decision * power
+            total_power += power
+            
+        final_score = weighted_sum / total_power if total_power > 0 else 0
+        final_decision = 1 if final_score >= 0.5 else 0
+        
+        # 4. 結果のフィードバックと学習 (Social Learning)
+        is_correct = None
+        if ground_truth is not None:
+            is_correct = (final_decision == ground_truth)
+            
+            for agent_id in self.agents.keys():
+                # ToMの更新
+                target_id = delegation_map.get(agent_id, agent_id) # 委任してなければ自分
+                
+                # 相手の個別の判断が正しかったか？
+                target_dec, _ = initial_decisions[target_id]
+                target_correct = (target_dec == ground_truth)
+                
+                # ToMのモデル更新
+                outcome_val = 1.0 if target_correct else 0.0
+                self.toms[agent_id].update_model(target_id, outcome_val)
 
-    def tally_votes(self, proposals: List[Proposal], votes: List[Vote]) -> Dict[str, float]:
-        """
-        Tally votes considering delegations and topics.
-        """
-        scores: Dict[str, float] = {p.id: 0.0 for p in proposals}
-
-        # Map proposal IDs to their topics for easy lookup
-        proposal_topics = {p.id: p.topic for p in proposals}
-
-        relevant_proposal_ids = {p.id for p in proposals}
-        active_voters: Set[str] = set()
-
-        # Map: agent_id -> (proposal_id, confidence)
-        direct_votes: Dict[str, Tuple[str, float]] = {}
-
-        # Handle Delegation Votes (Transient for this tally, but backed by persistent)
-        # We need a local delegation map that respects topics.
-        # Structure: delegator -> topic -> delegatee
-        local_delegations = {k: v.copy() for k, v in self.delegations.items()}
-
-        for v in votes:
-            # Determining topic for delegation vote is tricky if proposal_id is "DELEGATION"
-            # In our simulation, we treat "DELEGATION" votes as updates to the persistent map mostly.
-            # But here we need to know the TOPIC of the delegation if it's dynamic.
-            # For simplicity, if v.delegated_to is set, we assume it applies to the topic of the current context
-            # BUT wait, cast_vote doesn't store topic in Vote.
-            # We should probably infer it from context or add topic to Vote?
-            # Ideally, a Vote for a specific Proposal knows its topic.
-            # A pure Delegation vote might need a topic field or we assume it matches the current round's topic.
-
-            # Let's check if it's a direct vote
-            if v.proposal_id in relevant_proposal_ids and v.approve:
-                direct_votes[v.agent_id] = (v.proposal_id, v.confidence)
-                active_voters.add(v.agent_id)
-
-        # 2. Calculate Effective Weight for each Direct Voter
-
-        def get_weight(agent_id: str, topic: str, visited: Set[str]) -> float:
-            if agent_id in visited:
-                return 0.0
-            visited.add(agent_id)
-
-            # Base reputation for this topic
-            w = self.get_reputation(agent_id, topic)
-
-            # Plus delegations from others on THIS topic
-            # Find all X where local_delegations[X][topic] == agent_id
-            # AND X did NOT vote directly
-            for delegator, topic_map in local_delegations.items():
-                if topic_map.get(topic) == agent_id:
-                    if delegator not in active_voters:
-                        w += get_weight(delegator, topic, visited.copy())
-            return w
-
-        # 3. Sum up scores
-        for voter, (pid, conf) in direct_votes.items():
-            topic = proposal_topics.get(pid, "general")
-            weight = get_weight(voter, topic, set())
-            scores[pid] += weight * conf
-
-        return scores
-
-    def update_reputation(self, winner_proposal_id: str, feedback_score: float, topic: str = "general") -> None:
-        """
-        Update reputation of agents who supported the winning proposal.
-        Applies decay first.
-        """
-        # 1. Decay all reputations in this topic
-        if topic in self.reputations:
-            for agent in self.reputations[topic]:
-                self.reputations[topic][agent] *= self.decay_factor
-
-        # 2. Reward winners
-        # Find who voted for this proposal
-        supporters = []
-        for v in self.vote_history:
-            if v.proposal_id == winner_proposal_id and v.approve:
-                supporters.append(v.agent_id)
-
-        # Update
-        for agent_id in supporters:
-            if topic not in self.reputations:
-                self.reputations[topic] = {}
-            current_rep = self.reputations[topic].get(agent_id, 1.0)
-            self.reputations[topic][agent_id] = current_rep + \
-                (0.1 * feedback_score)
+        return {
+            'consensus_decision': final_decision,
+            'vote_ratio': final_score,
+            'delegation_count': len(delegation_map),
+            'correct': is_correct
+        }

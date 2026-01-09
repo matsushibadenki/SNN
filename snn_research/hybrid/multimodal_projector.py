@@ -1,10 +1,10 @@
 # ファイルパス: snn_research/hybrid/multimodal_projector.py
 # 日本語タイトル: Unified Sensory Projector (Multi-Modal Adapter)
-# 修正内容: UnifiedSensoryProjectorの実装と、旧MultimodalProjectorへの互換性クラスの追加。
+# 修正内容: 任意の感覚入力を統合するUnifiedSensoryProjectorの実装と、旧MultimodalProjectorへの互換性クラスの追加。
 
 import torch
 import torch.nn as nn
-from typing import Dict
+from typing import Dict, Any, Optional
 from snn_research.core.base import BaseModel
 
 
@@ -35,6 +35,7 @@ class UnifiedSensoryProjector(BaseModel):
                 input_dim, language_dim, use_bitnet)
 
             # 各感覚固有の「感覚タグ」としての学習可能な埋め込み
+            # これにより脳は「これは映像由来」「これは音由来」と識別可能になる
             self.pos_embeds[modality] = nn.Parameter(
                 torch.randn(1, 1, language_dim) * 0.02)
 
@@ -72,12 +73,15 @@ class UnifiedSensoryProjector(BaseModel):
         Returns:
             projected_context: (B, Total_Time, Language_Dim)
         """
-        batch_size = next(iter(sensory_inputs.values())
-                          ).shape[0] if sensory_inputs else 1
-        projected_features = []
-        device = next(self.parameters()).device
+        # バッチサイズの取得（入力が空の場合はデフォルト1とするが、通常は呼び出し側で制御）
+        if not sensory_inputs:
+            device = next(self.parameters()).device
+            return torch.zeros(1, 1, self.language_dim, device=device)
 
-        # 定義されたモダリティ順に処理
+        batch_size = next(iter(sensory_inputs.values())).shape[0]
+        projected_features = []
+
+        # 定義されたモダリティ順に処理 (順序を固定することで学習を安定化)
         for modality in self.modality_configs.keys():
             if modality not in sensory_inputs:
                 continue
@@ -107,9 +111,10 @@ class UnifiedSensoryProjector(BaseModel):
                 projected_features.append(x_proj)
 
         if not projected_features:
+            device = next(self.parameters()).device
             return torch.zeros(batch_size, 1, self.language_dim, device=device)
 
-        # 時間方向に結合
+        # 時間方向に結合 [Vision Tokens, Audio Tokens, ...]
         combined_context = torch.cat(projected_features, dim=1)
 
         # ゲート通過
@@ -121,7 +126,7 @@ class UnifiedSensoryProjector(BaseModel):
 
 class MultimodalProjector(UnifiedSensoryProjector):
     """
-    旧コード(Brain v4など)との互換性を保つためのラッパー。
+    旧コード(Brain v4初期版など)との互換性を保つためのラッパー。
     単一入力(主にVision)を想定したインターフェースを提供する。
     """
 

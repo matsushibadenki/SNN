@@ -1,7 +1,8 @@
 # ファイルパス: snn_research/core/architecture_registry.py
-# Title: モデルアーキテクチャレジストリ (Fixed for UnifiedModel)
+# Title: モデルアーキテクチャレジストリ (Bugfix: SpikingWorldModel Argument)
 # Description:
-#   spiking_vlm のビルダ関数を SpikingUnifiedModel に対応するように修正。
+#   SpikingWorldModel のビルダ関数に sensory_configs 引数の生成ロジックを追加し、
+#   mypy エラー (Missing positional argument) を修正。
 
 import torch.nn as nn
 from typing import Dict, Any, Callable, List, Optional, cast
@@ -227,8 +228,6 @@ def build_visual_cortex(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 
 @ArchitectureRegistry.register("spiking_vlm")
 def build_spiking_vlm(config: Dict[str, Any], vocab_size: int) -> nn.Module:
-    # 修正: SpikingVLM は SpikingUnifiedModel になりました。
-    # 古い config 構造を新しい sensory_configs 形式に適応させます。
     from snn_research.models.transformer.spiking_vlm import SpikingUnifiedModel
 
     vision_config = config.get('vision_config', {})
@@ -236,8 +235,12 @@ def build_spiking_vlm(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 
     # 既存のvision_configがある場合、'vision'モダリティとして登録
     if vision_config:
-        # vocab_size などを適宜設定（Projectorの出力次元と合わせるため）
         sensory_configs['vision'] = vision_config
+
+    # Brain v4 style の sensory_inputs があれば統合
+    if 'sensory_inputs' in config:
+        for k, v in config['sensory_inputs'].items():
+            sensory_configs[k] = v
 
     return SpikingUnifiedModel(
         vocab_size=vocab_size,
@@ -295,6 +298,31 @@ def build_dsa_transformer(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 @ArchitectureRegistry.register("spiking_world_model")
 def build_spiking_world_model(config: Dict[str, Any], vocab_size: int) -> nn.Module:
     from snn_research.models.experimental.world_model_snn import SpikingWorldModel
+
+    # sensory_configsの抽出 (config構造の差異を吸収)
+    sensory_configs = {}
+
+    # 1. config['sensory_configs'] が直接ある場合
+    if 'sensory_configs' in config:
+        sensory_configs = config['sensory_configs']
+
+    # 2. config['sensory_inputs'] (Brain v4 config style) がある場合
+    elif 'sensory_inputs' in config:
+        # { 'vision': {'input_dim': 784}, ... } -> { 'vision': 784, ... }
+        for key, val in config['sensory_inputs'].items():
+            if isinstance(val, dict) and 'input_dim' in val:
+                sensory_configs[key] = val['input_dim']
+            elif isinstance(val, int):
+                sensory_configs[key] = val
+
+    # 3. フォールバック: input_dimがあれば vision として扱う
+    if not sensory_configs and 'input_dim' in config:
+        sensory_configs = {'vision': config['input_dim']}
+
+    # 4. それでもなければデフォルト (784=MNIST size)
+    if not sensory_configs:
+        sensory_configs = {'vision': 784}
+
     return SpikingWorldModel(
         vocab_size=vocab_size,
         action_dim=config.get('action_dim', 4),
@@ -302,5 +330,7 @@ def build_spiking_world_model(config: Dict[str, Any], vocab_size: int) -> nn.Mod
         d_state=config.get('d_state', 128),
         num_layers=config.get('num_layers', 4),
         time_steps=config.get('time_steps', 16),
-        neuron_config=config.get('neuron', {})
+        sensory_configs=sensory_configs,  # ★ ここを修正
+        neuron_config=config.get('neuron', {}),
+        use_bitnet=config.get('use_bitnet', False)
     )

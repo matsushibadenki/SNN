@@ -1,136 +1,148 @@
 # ファイルパス: snn_research/models/experimental/world_model_snn.py
-# Title: Spiking World Model (SWM) v1.3 - Optimization
-# Description: 外部環境のダイナミクスを潜在空間で学習・予測する脳内シミュレーター。
+# 日本語タイトル: Spiking World Model (Multimodal Edition)
+# 目的: UnifiedSensoryProjectorを利用し、視覚だけでなく全感覚の未来状態を予測する世界モデル。
+#       これにより、ロボットは「触った結果」や「音がどう変わるか」をシミュレーション可能になる。
 
 import torch
 import torch.nn as nn
-from typing import Tuple, Optional, Dict, Any, Union
-import logging
+import torch.nn.functional as F
+from typing import Dict, Any, Tuple, Optional
 
-from snn_research.core.neurons import AdaptiveLIFNeuron
+from snn_research.core.base import BaseModel
+from snn_research.core.snn_core import SNNCore
+from snn_research.hybrid.multimodal_projector import UnifiedSensoryProjector
+from snn_research.io.universal_encoder import UniversalSpikeEncoder
 
-# SFormerBlockがない場合のフォールバック（単体テスト用）
-try:
-    from snn_research.models.transformer.sformer import SFormerBlock
-except ImportError:
-    # 簡易的なTransformerBlock
-    class SFormerBlock(nn.Module): # type: ignore
-        def __init__(self, d_model, **kwargs):
-            super().__init__()
-            self.attn = nn.MultiheadAttention(d_model, num_heads=4, batch_first=True)
-            self.ln = nn.LayerNorm(d_model)
-        def forward(self, x):
-            return self.ln(x + self.attn(x, x, x)[0])
 
-logger = logging.getLogger(__name__)
-
-class SpikingWorldModel(nn.Module):
+class SpikingWorldModel(BaseModel):
     """
-    脳内シミュレーター。
+    SNNベースのマルチモーダル世界モデル (JEPA / RSSM like architecture)
+
+    [Observation] -> [Encoder] -> [Projector] -> [Latent State z_t]
+                                      |
+    [Action a_t] ---------------------+---> [Transition Model] -> [Predicted z_{t+1}]
+                                      |
+                                      +---> [Decoder] -> [Reconstructed Observation]
     """
+
     def __init__(
         self,
-        vocab_size: int,
-        d_model: int = 256,
-        action_dim: int = 10,
-        d_state: int = 128,
-        num_layers: int = 2,
-        time_steps: int = 16,
-        input_dim: int = 128,
-        neuron_config: Optional[Dict[str, Any]] = None, # [Fix] Added argument
-        **kwargs: Any # [Fix] Added kwargs for flexibility
+        vocab_size: int,  # Not strictly used in continuous world model, but kept for compatibility
+        action_dim: int,
+        d_model: int,
+        d_state: int,
+        num_layers: int,
+        time_steps: int,
+        sensory_configs: Dict[str, int],  # {'vision': 784, 'tactile': 64, ...}
+        neuron_config: Dict[str, Any],
+        **kwargs: Any
     ):
         super().__init__()
         self.d_model = d_model
-        
-        # 1. Encoder (Sensory -> Latent)
-        # vocab_size=0 の場合は連続値入力(input_dim)として扱う
-        # [Fix] Type hint union
-        self.encoder_embedding: Union[nn.Embedding, nn.Linear]
-        if vocab_size > 0:
-            self.encoder_embedding = nn.Embedding(vocab_size, d_model)
-        else:
-            self.encoder_embedding = nn.Linear(input_dim, d_model)
+        self.time_steps = time_steps
+        self.action_dim = action_dim
 
-        # ニューロン層 (状態保持)
-        self.enc_neuron = AdaptiveLIFNeuron(features=d_model)
-        
-        # 2. Predictor (Latent_t + Action_t -> Latent_t+1)
+        # 1. Perception (Encoder + Projector)
+        self.encoder = UniversalSpikeEncoder(
+            time_steps=time_steps, d_model=d_model)
+        self.projector = UnifiedSensoryProjector(
+            language_dim=d_model,
+            modality_configs=sensory_configs,
+            use_bitnet=kwargs.get("use_bitnet", False)
+        )
+
+        # 2. Action Encoder
         self.action_encoder = nn.Linear(action_dim, d_model)
-        
-        # 未来予測ブロック (Transformer-like)
-        self.predictor_blocks = nn.ModuleList([
-            SFormerBlock(
-                d_model=d_model, 
-                nhead=4, 
-                dim_feedforward=d_model*2,
-                sf_threshold=2.0
-            ) for _ in range(num_layers)
-        ])
-        
-        # 状態遷移の発火
-        self.transition_lif = AdaptiveLIFNeuron(features=d_model)
-        
-        # 3. Reward Predictor (Latent -> Reward)
-        # 報酬予測ヘッド (Critic)
-        self.reward_head = nn.Linear(d_model, 1)
-        
-        logger.info(f"🌍 Spiking World Model initialized. Latent: {d_model}, Action: {action_dim}")
 
-    def _apply_neuron(self, neuron_module: nn.Module, x: torch.Tensor) -> torch.Tensor:
-        out = neuron_module(x)
-        if isinstance(out, tuple):
-            return out[0]
-        return out
+        # 3. Transition Model (SNN / SSM Core)
+        # 過去の状態と行動から、次の潜在状態を予測する
+        self.transition_model = SNNCore(
+            config={
+                "d_model": d_model,
+                "num_layers": num_layers,
+                "time_steps": time_steps,
+                "neuron": neuron_config,
+                "architecture": "spiking_mamba"  # 高速な推論のためにMambaを採用
+            },
+            vocab_size=d_model  # 出力は次の潜在状態(d_model次元)
+        )
 
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """観測を潜在状態にエンコード"""
-        h = self.encoder_embedding(x)
-        if h.dim() == 3: 
-            h = h.mean(dim=1)
-        h = self._apply_neuron(self.enc_neuron, h)
-        return h
+        # 4. Decoder / Reward Predictor (Optional for reconstruction)
+        # 潜在状態から各感覚を再構成するためのヘッド
+        self.decoders = nn.ModuleDict()
+        for mod, dim in sensory_configs.items():
+            self.decoders[mod] = nn.Linear(d_model, dim)
 
-    def predict_next_step(self, current_latent: torch.Tensor, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """1ステップ先の予測"""
-        # 行動の統合
-        action_emb = self.action_encoder(action)
-        x = current_latent + action_emb
-        
-        # 系列として処理するために次元追加 (B, 1, D)
-        x = x.unsqueeze(1) 
-        for block in self.predictor_blocks:
-            x = block(x)
-        x = x.squeeze(1)
-        
-        # 次の状態
-        next_latent = self._apply_neuron(self.transition_lif, x)
-        
-        # 報酬予測
-        reward = self.reward_head(next_latent)
-        
-        return next_latent, reward
+        self._init_weights()
 
-    def simulate_trajectory(self, initial_state: torch.Tensor, action_sequence: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def forward(
+        self,
+        sensory_inputs: Dict[str, torch.Tensor],
+        actions: torch.Tensor,  # (B, T_seq, ActionDim)
+        h_prev: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
         """
-        [Mental Simulation] 行動計画のシミュレーション
+        Args:
+            sensory_inputs: 現在の観測 (各モダリティ)
+            actions: 実行した行動
+            h_prev: 前回の隠れ状態
+        Returns:
+            predicted_states: 予測された潜在状態列
+            reconstructions: 再構成された観測
+            h_next: 更新された隠れ状態
         """
-        B, Steps, _ = action_sequence.shape
-        current_state = initial_state
-        
-        traj_states = []
-        traj_rewards = []
-        
-        for t in range(Steps):
-            action = action_sequence[:, t, :]
-            next_state, reward = self.predict_next_step(current_state, action)
-            
-            traj_states.append(next_state)
-            traj_rewards.append(reward)
-            current_state = next_state
-            
-        return {
-            "states": torch.stack(traj_states, dim=1),
-            "rewards": torch.stack(traj_rewards, dim=1),
-            "final_state": current_state
-        }
+        # --- 1. Encode Observation to Latent State z_t ---
+        sensory_spikes = {}
+        for mod, data in sensory_inputs.items():
+            sensory_spikes[mod] = self.encoder.encode(data, modality=mod)
+
+        # (B, T_seq, D)
+        z_t = self.projector(sensory_spikes)
+
+        # --- 2. Action Encoding ---
+        # 行動を同じ次元に射影 (B, T_seq, D)
+        a_t = self.action_encoder(actions)
+        if a_t.size(1) != z_t.size(1):
+            # 時間方向の長さが合わない場合は調整 (簡易実装)
+            a_t = F.interpolate(a_t.transpose(
+                1, 2), size=z_t.size(1)).transpose(1, 2)
+
+        # --- 3. State Transition (Prediction) ---
+        # 入力は「現在の状態 + 行動」
+        # 本来はRNN的にステップごとに回すが、ここでは並列学習用にまとめて入力
+        transition_input = z_t + a_t
+
+        transition_out = self.transition_model(transition_input)
+
+        if isinstance(transition_out, tuple):
+            z_next_pred = transition_out[0]
+            # spikes = transition_out[1]
+            h_next = transition_out[2]
+        else:
+            z_next_pred = transition_out
+            h_next = None
+
+        # --- 4. Decode (Reconstruction) ---
+        reconstructions = {}
+        for mod, decoder in self.decoders.items():
+            # 予測された潜在状態から観測を再構成
+            reconstructions[mod] = decoder(z_next_pred)
+
+        return z_next_pred, reconstructions, h_next
+
+    def predict_next(
+        self,
+        current_sensory_inputs: Dict[str, torch.Tensor],
+        action: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        """
+        推論用: 現在の観測と行動から、次の瞬間の感覚を予測する (夢を見る機能)
+        """
+        self.eval()
+        with torch.no_grad():
+            z_pred, recons, _ = self(
+                current_sensory_inputs, action.unsqueeze(1))
+
+            # 再構成結果の最後のステップを返す
+            next_senses = {k: v[:, -1, :] for k, v in recons.items()}
+            return next_senses

@@ -6,12 +6,14 @@
 #   単一の Spiking Language Brain で処理する「単一学習エンジン」。
 
 import torch
-from typing import Dict, Any, Tuple
+import torch.nn as nn
+from typing import Dict, Any, Tuple, Optional
 import logging
 
 from snn_research.core.base import BaseModel
 from snn_research.hybrid.multimodal_projector import UnifiedSensoryProjector
 # 互換性のため古いクラス名もインポート可能にしておく
+from snn_research.hybrid.multimodal_projector import MultimodalProjector as LegacyProjector
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +48,7 @@ class SpikingUnifiedModel(BaseModel):
 
         # 1. Sensory Encoders (Brain Cortex Areas)
         # 各モダリティに対応するエンコーダを辞書として保持
-        self.sensory_encoders = torch.nn.ModuleDict()
+        self.sensory_encoders = nn.ModuleDict()
         modality_dims = {}
 
         for mod_name, config in sensory_configs.items():

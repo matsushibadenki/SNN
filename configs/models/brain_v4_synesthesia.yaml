@@ -1,0 +1,54 @@
+# ファイルパス: configs/models/brain_v4_synesthesia.yaml
+# 日本語タイトル: Brain v4 Synesthesia Configuration
+# 目的: 五感統合アーキテクチャのハイパーパラメータ定義。
+#       視覚、聴覚に加え、触覚(Tactile)と嗅覚(Olfactory)の次元を定義。
+
+model:
+  name: "synesthetic_brain_v4"
+  architecture: "synesthetic_brain"  # Registry key (後ほど登録が必要、または直接指定)
+  
+  # 中枢エンジンの設定 (Mamba / Transformer)
+  core:
+    d_model: 512            # 思考の深さ (潜伏空間の次元)
+    num_layers: 6           # 脳の層数
+    vocab_size: 32000       # 言語語彙サイズ
+    dropout: 0.1
+    time_steps: 8           # 時間方向の展開ステップ数 (SNNのシミュレーション時間)
+    
+    # ニューロン設定
+    neuron:
+      type: "lif"
+      tau_mem: 2.0
+      tau_syn: 2.0
+      v_threshold: 1.0
+      surrogate_function: "atan"
+
+  # 感覚入力の定義 (Unified Sensory Bridge用)
+  sensory_inputs:
+    # 1. 視覚 (Vision) - MNIST/CIFAR画像など
+    vision:
+      input_dim: 784        # 28x28 flattened, or use CNN encoder output dim
+      modality_type: "image"
+      
+    # 2. 聴覚 (Audio) - MFCC/Spectrogram
+    audio:
+      input_dim: 64
+      modality_type: "audio"
+      
+    # 3. 触覚 (Tactile) - 圧力センサーアレイ
+    tactile:
+      input_dim: 128        # 例: 16x8 センサー配列
+      modality_type: "tactile"
+      
+    # 4. 嗅覚 (Olfactory) - 電子鼻 (E-Nose)
+    olfactory:
+      input_dim: 32         # 例: 32種のガスセンサー
+      modality_type: "olfactory"
+
+  # 学習設定
+  training:
+    batch_size: 16
+    learning_rate: 3e-4
+    optimizer: "adamw"
+    weight_decay: 0.01
+    use_bitnet: true        # 1.58bit量子化を使用するか
