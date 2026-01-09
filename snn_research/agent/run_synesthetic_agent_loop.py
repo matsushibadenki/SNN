@@ -4,7 +4,6 @@
 #       知覚-行動ループと世界モデルによる予測(Dream)のサイクルを検証する。
 
 from snn_research.agent.synesthetic_agent import SynestheticAgent
-from snn_research.models.experimental.world_model_snn import SpikingWorldModel
 from snn_research.models.experimental.brain_v4 import SynestheticBrain
 from snn_research.core.architecture_registry import ArchitectureRegistry
 import os
@@ -12,7 +11,6 @@ import sys
 import torch
 import torch.nn as nn
 import logging
-import time
 from typing import Dict, Any
 
 # プロジェクトルートをパスに追加
@@ -156,8 +154,8 @@ def main():
 
         # 1. Dream (Before Act) - 行動前のシミュレーション
         logger.info("   💭 Dreaming future possibilities...")
-        imagined_trajectory = agent.dream(obs, horizon=5)
-        logger.info(f"      -> Imagined 5 steps into the future.")
+        _ = agent.dream(obs, horizon=5)
+        logger.info("      -> Imagined 5 steps into the future.")
 
         # 2. Act (Brain Decision)
         # 外部からの指示 (任意)

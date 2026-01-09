@@ -6,8 +6,6 @@ import os
 import sys
 import torch
 import logging
-import random
-import matplotlib.pyplot as plt
 from typing import cast, Tuple
 
 # プロジェクトルートをパスに追加
@@ -113,7 +111,7 @@ def main():
     avg_acc = sum(history_accuracy) / len(history_accuracy)
     avg_del = sum(delegation_counts) / len(delegation_counts)
     
-    logger.info(f"\n📊 Simulation Result:")
+    logger.info("\n📊 Simulation Result:")
     logger.info(f"   Average Accuracy: {avg_acc:.2%}")
     logger.info(f"   Avg Delegation Count: {avg_del:.1f} / {len(agents)}")
     

@@ -8,9 +8,10 @@ import logging
 import time
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Union, Optional
+from typing import Dict, Any, Union
 
 logger = logging.getLogger(__name__)
+
 
 class AstrocyteNetwork(nn.Module):
     """
@@ -33,7 +34,7 @@ class AstrocyteNetwork(nn.Module):
         self.fatigue_threshold: float = fatigue_threshold
 
         self.fatigue_toxin: float = 0.0
-        
+
         self.modulators: Dict[str, float] = {
             "glutamate": 0.5,
             "gaba": 0.5,
@@ -41,11 +42,12 @@ class AstrocyteNetwork(nn.Module):
             "cortisol": 0.1,
             "acetylcholine": 0.5
         }
-        
+
         self.consumption_history: Dict[str, float] = {}
         self.last_update_time: float = time.time()
 
-        logger.info(f"🌟 Astrocyte Network initialized (Fatigue Threshold: {fatigue_threshold}).")
+        logger.info(
+            f"🌟 Astrocyte Network initialized (Fatigue Threshold: {fatigue_threshold}).")
 
     @property
     def current_energy(self) -> float:
@@ -69,9 +71,10 @@ class AstrocyteNetwork(nn.Module):
         if self.energy >= required_energy:
             self.energy -= required_energy
             self._update_history(module_name, required_energy)
-            
+
             # 副作用
-            self.modulators["glutamate"] = min(1.0, self.modulators["glutamate"] + 0.01)
+            self.modulators["glutamate"] = min(
+                1.0, self.modulators["glutamate"] + 0.01)
             self.fatigue_toxin += 0.01 * amount
             return True
         else:
@@ -89,24 +92,27 @@ class AstrocyteNetwork(nn.Module):
         consumption = val * 0.1
         self.energy = max(0.0, self.energy - consumption)
         self.fatigue_toxin += val * 0.05
-        
+
         target_glutamate = min(1.0, val / 100.0)
-        self.modulators["glutamate"] = 0.9 * self.modulators["glutamate"] + 0.1 * target_glutamate
+        self.modulators["glutamate"] = 0.9 * \
+            self.modulators["glutamate"] + 0.1 * target_glutamate
 
     def step(self):
         """時間経過更新"""
         now = time.time()
         dt = now - self.last_update_time
-        if dt > 10.0: dt = 1.0
+        if dt > 10.0:
+            dt = 1.0
         self.last_update_time = now
 
         # 回復
-        recovery = self.recovery_rate * dt * (1.0 - self.modulators["cortisol"] * 0.5)
+        recovery = self.recovery_rate * dt * \
+            (1.0 - self.modulators["cortisol"] * 0.5)
         self.energy = min(self.max_energy, self.energy + recovery)
-        
+
         # 自然減少
         self.energy = max(0.0, self.energy - (self.decay_rate * dt))
-        
+
         # 修飾物質更新
         for k in self.modulators:
             diff = 0.5 - self.modulators[k]
@@ -129,7 +135,8 @@ class AstrocyteNetwork(nn.Module):
 
     def get_energy_level(self) -> float:
         """エネルギーレベル (0.0 - 1.0)"""
-        if self.max_energy <= 0: return 0.0
+        if self.max_energy <= 0:
+            return 0.0
         return self.energy / self.max_energy
 
     def replenish_energy(self, amount: float):
@@ -143,14 +150,15 @@ class AstrocyteNetwork(nn.Module):
 
     def consume_energy(self, source: str, amount: float = 5.0):
         self.request_resource(source, amount)
-        
+
     def request_compute_boost(self) -> bool:
         if self.energy > self.max_energy * 0.3 and self.modulators["cortisol"] < 0.8:
             self.energy -= 20.0
-            self.modulators["glutamate"] = min(1.0, self.modulators["glutamate"] + 0.2)
+            self.modulators["glutamate"] = min(
+                1.0, self.modulators["glutamate"] + 0.2)
             return True
         return False
-        
+
     def log_fatigue(self, amount: float):
         self.fatigue_toxin += amount * 10.0
 
@@ -162,7 +170,7 @@ class AstrocyteNetwork(nn.Module):
             scaling = 1.0 + learning_rate
         else:
             return
-            
+
         with torch.no_grad():
             for param in model.parameters():
                 if param.dim() > 1:
@@ -180,7 +188,7 @@ class AstrocyteNetwork(nn.Module):
                     mask = torch.rand_like(param) > death_rate
                     # 死滅 (Weight -> 0)
                     param.data.mul_(mask.float())
-                    
+
                     # リルート (補償)
                     # エネルギーが十分ある場合、残存シナプスを強化し、エネルギーを消費する
                     if self.energy > 50.0:
@@ -188,7 +196,8 @@ class AstrocyteNetwork(nn.Module):
                         param.data.mul_(compensation)
                         self.energy -= 1.0  # コスト消費
 
-        logger.warning(f"🚑 Neuron death simulated (Rate: {death_rate}). Rerouting executed.")
+        logger.warning(
+            f"🚑 Neuron death simulated (Rate: {death_rate}). Rerouting executed.")
 
     def get_diagnosis_report(self) -> Dict[str, Any]:
         """

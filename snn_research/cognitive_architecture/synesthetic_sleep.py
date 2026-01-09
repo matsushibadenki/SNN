@@ -5,8 +5,7 @@
 import torch
 import torch.nn as nn
 import logging
-import time
-from typing import Dict, List, Any, Optional
+from typing import Dict, List
 
 from snn_research.agent.synesthetic_agent import SynestheticAgent
 

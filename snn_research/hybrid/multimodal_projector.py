@@ -4,7 +4,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional
+from typing import Dict
 from snn_research.core.base import BaseModel
 
 

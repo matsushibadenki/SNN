@@ -4,9 +4,8 @@
 #       相互変換（翻訳）ゲームを行い、シンボルグラウンディングを達成する。
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Dict, Any
+from typing import Dict, Any
 
 from snn_research.agent.synesthetic_agent import SynestheticAgent
 from snn_research.social.communication_channel import CommunicationChannel

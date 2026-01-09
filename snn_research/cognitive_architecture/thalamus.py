@@ -7,7 +7,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional
+from typing import Dict, Optional
 import logging
 
 logger = logging.getLogger(__name__)

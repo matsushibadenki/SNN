@@ -54,7 +54,7 @@ class RecursiveImprover:
         for i, candidate in enumerate(candidates):
             try:
                 score = task_function(candidate)
-            except Exception as e:
+            except Exception:
                 score = 0.0
             scores.append(score)
         

@@ -8,14 +8,12 @@ import sys
 import torch
 import logging
 import numpy as np
-import matplotlib.pyplot as plt
 
 # プロジェクトルートをパスに追加
 sys.path.append(os.getcwd())
 
 from snn_research.core.architecture_registry import ArchitectureRegistry
 from snn_research.models.experimental.brain_v4 import SynestheticBrain
-from snn_research.models.experimental.world_model_snn import SpikingWorldModel
 from snn_research.agent.synesthetic_agent import SynestheticAgent
 from snn_research.social.communication_channel import CommunicationChannel
 from snn_research.social.synesthetic_dialogue import SynestheticDialogue

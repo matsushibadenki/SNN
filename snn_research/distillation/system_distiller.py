@@ -6,7 +6,7 @@ import asyncio
 import torch
 import torch.nn.functional as F
 import logging
-from typing import Dict, Any, List, cast
+from typing import Dict, Any, List
 
 from snn_research.core.snn_core import SNNCore
 from snn_research.cognitive_architecture.reasoning_engine import ReasoningEngine

@@ -3,9 +3,6 @@
 # 目的: エージェント間の通信（発話・聴取）における物理的なノイズや劣化をシミュレートする。
 
 import torch
-import torch.nn as nn
-import random
-from typing import Optional, List
 
 class CommunicationChannel:
     """

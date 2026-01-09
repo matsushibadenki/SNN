@@ -5,7 +5,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Optional, List, Dict
+from typing import Optional, Dict
 
 from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
 from snn_research.io.universal_encoder import UniversalSpikeEncoder

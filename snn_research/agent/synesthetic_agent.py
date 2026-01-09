@@ -5,7 +5,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Optional, List
 import logging
 
 from snn_research.models.experimental.brain_v4 import SynestheticBrain
@@ -89,7 +89,7 @@ class SynestheticAgent(BaseModel):
                     "No valid modalities encoded from observations.")
 
             # 世界モデル視点のコンテキスト (直感的把握)
-            world_context = self.world_model.projector(
+            _ = self.world_model.projector(
                 encoded_obs)  # (B, T, D)
 
         # 2. Brainによる思考と意思決定 (Thinking & Decision Making)

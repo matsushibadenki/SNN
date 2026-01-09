@@ -7,13 +7,12 @@
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple
 import logging
 
 from snn_research.core.base import BaseModel
 from snn_research.hybrid.multimodal_projector import UnifiedSensoryProjector
 # 互換性のため古いクラス名もインポート可能にしておく
-from snn_research.hybrid.multimodal_projector import MultimodalProjector as LegacyProjector
 
 logger = logging.getLogger(__name__)
 

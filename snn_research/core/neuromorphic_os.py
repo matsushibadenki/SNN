@@ -5,13 +5,13 @@
 import logging
 import asyncio
 import time
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
-import torch
 
 from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class ProcessControlBlock:
@@ -23,39 +23,41 @@ class ProcessControlBlock:
     context: Dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
 
+
 class NeuromorphicOS:
     """
     Neuromorphic Operating System Kernel.
     人工脳のリソースを管理し、上位アプリケーションからの要求を調整する。
     """
+
     def __init__(self, brain: ArtificialBrain):
         self.brain = brain
         self.scheduler_tick = 0.01  # 10ms
-        
+
         # プロセス管理
         self.process_table: Dict[int, ProcessControlBlock] = {}
         self.ready_queue: List[int] = []
         self.next_pid = 1
         self.current_pid: Optional[int] = None
-        
+
         # カーネル状態
         self.is_running = False
         self.system_load = 0.0
-        
+
         logger.info("🖥️ Neuromorphic OS Kernel initialized.")
 
     async def boot(self):
         """OSの起動シーケンス"""
         logger.info("🟢 Booting Neuromorphic OS...")
         self.is_running = True
-        
+
         # 初期診断
         status = self.brain.get_brain_status()
         logger.info(f"   Hardware Check: {status['status']}")
-        
+
         # アイドルプロセスの生成
         self.spawn_process("SystemIdle", priority=0)
-        
+
         # メインループ開始
         await self.kernel_loop()
 
@@ -63,7 +65,7 @@ class NeuromorphicOS:
         """新しい思考プロセスの生成"""
         pid = self.next_pid
         self.next_pid += 1
-        
+
         pcb = ProcessControlBlock(
             pid=pid,
             name=name,
@@ -73,8 +75,9 @@ class NeuromorphicOS:
         self.process_table[pid] = pcb
         self.ready_queue.append(pid)
         # 優先度順にソート
-        self.ready_queue.sort(key=lambda x: self.process_table[x].priority, reverse=True)
-        
+        self.ready_queue.sort(
+            key=lambda x: self.process_table[x].priority, reverse=True)
+
         logger.info(f"   [OS] Process spawned: {name} (PID: {pid})")
         return pid
 
@@ -83,19 +86,20 @@ class NeuromorphicOS:
         while self.is_running:
             # 1. スケジューリング
             if self.ready_queue:
-                next_pid = self.ready_queue[0] # 最も優先度の高いプロセス
+                next_pid = self.ready_queue[0]  # 最も優先度の高いプロセス
                 self._context_switch(next_pid)
-            
+
             # 2. ハードウェアリソース監視 (Astrocyte連携)
             if self.brain.astrocyte:
                 energy_level = self.brain.astrocyte.get_energy_level()
                 if energy_level < 0.2:
-                    logger.warning("   [OS] Critical Energy! Throttling processes...")
-                    await asyncio.sleep(0.1) # スローダウン
-            
+                    logger.warning(
+                        "   [OS] Critical Energy! Throttling processes...")
+                    await asyncio.sleep(0.1)  # スローダウン
+
             # 3. 実行中のプロセスがある場合の処理 (シミュレーション)
             if self.current_pid:
-                proc = self.process_table[self.current_pid]
+                _ = self.process_table[self.current_pid]
                 # ここでBrainにタスクを実行させる
                 # 実際のOSならタイムスライス管理を行う
                 pass
@@ -116,7 +120,7 @@ class NeuromorphicOS:
 
         self.current_pid = target_pid
         next_proc.status = "RUNNING"
-        
+
         # logger.debug(f"   [OS] Context Switch: {prev_proc.name if prev_proc else 'None'} -> {next_proc.name}")
 
     def shutdown(self):
@@ -135,7 +139,7 @@ class NeuromorphicOS:
             return {"error": "OS not running"}
 
         # 割り込み禁止などの排他制御がここに入る想定
-        
+
         # 安全装置のチェック (Brain内部でも行われるが、OSレベルでも事前チェック可能)
         if isinstance(sensory_input, str):
             if self.brain.guardrail:
@@ -145,7 +149,7 @@ class NeuromorphicOS:
 
         # ハードウェア実行
         result = self.brain.run_cognitive_cycle(sensory_input)
-        
+
         return result
 
     async def sys_sleep(self):
@@ -153,7 +157,7 @@ class NeuromorphicOS:
         logger.info("   [OS] System Call: SLEEP requested.")
         # 優先度の低いプロセスを一時停止するなどの処理
         self.brain.sleep_cycle()
-        
+
     def sys_get_diagnostics(self) -> Dict[str, Any]:
         """システムコール: 診断情報の取得"""
         brain_status = self.brain.get_brain_status()
