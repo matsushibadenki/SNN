@@ -1,15 +1,21 @@
 # ファイルパス: snn_research/cognitive_architecture/visual_perception.py
 # 日本語タイトル: 視覚知覚モジュール (DIコンテナ対応版)
-# 修正: __init__引数を追加し、BrainContainerからの注入に対応。
+# 修正: クラス名をVisualPerceptionに変更し、ImportErrorを解消。
 
 import torch
 import torch.nn as nn
 from typing import Dict, Any, Optional
 
-class VisualCortex(nn.Module):
+
+class VisualPerception(nn.Module):
+    """
+    視覚情報のエンコーディングと特徴抽出を担当するモジュール。
+    BrainContainerからの依存注入(DI)に対応。
+    """
+
     def __init__(
-        self, 
-        num_neurons: int = 784, 
+        self,
+        num_neurons: int = 784,
         feature_dim: int = 256,
         workspace: Optional[Any] = None,
         vision_model_config: Optional[Any] = None,
@@ -19,8 +25,8 @@ class VisualCortex(nn.Module):
     ):
         """
         Args:
-            num_neurons: 入力ニューロン数 (Default legacy argument)
-            feature_dim: 特徴量次元 (Default legacy argument)
+            num_neurons: 入力ニューロン数
+            feature_dim: 特徴量次元
             workspace: GlobalWorkspace (DI injected)
             vision_model_config: 視覚モデル設定 (DI injected)
             projector_config: プロジェクター設定 (DI injected)
@@ -30,13 +36,13 @@ class VisualCortex(nn.Module):
         self.num_neurons = num_neurons
         self.workspace = workspace
         self.device = device
-        
+
         # projector_configが注入された場合はそれを使用、なければデフォルト
         if projector_config:
             # DictまたはObjectとしてのアクセスに対応
             v_dim = 128
             l_dim = 256
-            
+
             if isinstance(projector_config, dict):
                 v_dim = projector_config.get('visual_dim', 128)
                 l_dim = projector_config.get('lang_dim', 256)
@@ -44,7 +50,7 @@ class VisualCortex(nn.Module):
                 # OmegaConfやNamespaceの場合
                 v_dim = getattr(projector_config, 'visual_dim', 128)
                 l_dim = getattr(projector_config, 'lang_dim', 256)
-                
+
             self.projector: Any = nn.Linear(v_dim, l_dim).to(device)
         else:
             self.projector = nn.Linear(num_neurons, feature_dim).to(device)
@@ -52,6 +58,10 @@ class VisualCortex(nn.Module):
     def perceive(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         features = self.projector(x)
         return {"features": features}
+
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """PyTorch互換のためのforwardメソッド"""
+        return self.perceive(x)
 
     def reset_state(self) -> None:
         """状態のリセット。"""

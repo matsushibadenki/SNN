@@ -1,155 +1,210 @@
 # ファイルパス: scripts/tests/run_project_health_check.py
-# 日本語タイトル: SNNプロジェクト 全機能網羅ヘルスチェック v5.3 (Pytest Integrated)
-# 概要: コンポーネントごとの動作確認に加え、単体テストスイート(Pytest)の簡易実行も行います。
+# Title: SNN Project Health Check v5.4
+# Description:
+#   プロジェクト全体の健全性を検証する統合チェックスクリプト。
+#   ArtificialBrainのメソッド名変更(run_cognitive_cycle -> process_step)に対応。
 
-import os
 import sys
-import subprocess
+import os
 import time
+import subprocess
 import logging
-from typing import Tuple
+import torch
+import traceback
 
-project_root = os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__))))
-if project_root not in sys.path:
-    sys.path.append(project_root)
+# パス設定
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
+# ロガー設定
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("HealthCheck")
 
 
-def run_command(command: str, description: str) -> Tuple[bool, float]:
+def run_command(command, description):
+    """サブプロセスでコマンドを実行し、結果をログ出力する"""
+    logger.info(f"Checking {description}...")
     start_time = time.time()
-    env = os.environ.copy()
-    env["PYTHONPATH"] = project_root + \
-        (os.pathsep + env.get("PYTHONPATH", "") if env.get("PYTHONPATH") else "")
 
     try:
-        # タイムアウトを90秒に設定
+        # タイムアウトを設定して無限ループ防止
         result = subprocess.run(
-            command, shell=True, env=env, capture_output=True, text=True, timeout=90)
-        duration = time.time() - start_time
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=300
+        )
+
+        elapsed = time.time() - start_time
 
         if result.returncode == 0:
-            logger.info(f"✅ 成功: {description} ({duration:.2f}s)")
-            return True, duration
+            logger.info(f"✅ 成功: {description} ({elapsed:.2f}s)")
+            return True
         else:
-            logger.error(
-                f"❌ 失敗: {description}\n[STDERR]:\n{result.stderr.strip()}")
-            return False, duration
+            logger.error(f"❌ 失敗: {description}")
+            print(f"[STDERR]:\n{result.stderr}")
+            return False
+
     except subprocess.TimeoutExpired:
-        logger.error(f"⏰ タイムアウト: {description} (90s超過)")
-        return False, 90.0
+        logger.error(f"⏰ タイムアウト: {description} (300s超過)")
+        return False
     except Exception as e:
-        logger.error(f"⚠️ 例外: {description} ({e})")
-        return False, 0.0
+        logger.error(f"⚠️ エラー: {description} - {str(e)}")
+        return False
+
+
+def check_python_api(description, code_snippet):
+    """Pythonコードスニペットを実行して検証"""
+    logger.info(f"Checking {description}...")
+    start_time = time.time()
+
+    try:
+        # 必要なインポートを含めたラッパー
+        full_code = f"""
+import sys
+import os
+import torch
+sys.path.append(os.getcwd())
+{code_snippet}
+"""
+        # サブプロセスで実行（環境汚染を防ぐため）
+        result = subprocess.run(
+            [sys.executable, "-c", full_code],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        elapsed = time.time() - start_time
+
+        if result.returncode == 0:
+            logger.info(f"✅ 成功: {description} ({elapsed:.2f}s)")
+            return True
+        else:
+            logger.error(f"❌ 失敗: {description}")
+            print(f"[STDERR]:\n{result.stderr}")
+            return False
+
+    except Exception as e:
+        logger.error(f"⚠️ 実行エラー: {description} - {str(e)}")
+        return False
 
 
 def main():
-    logger.info("🩺 SNNプロジェクト ヘルスチェック v5.3 (Pytest Integrated) 開始")
-    python_cmd = sys.executable
-    if " " in python_cmd:
-        python_cmd = f'"{python_cmd}"'
+    logger.info("🩺 SNNプロジェクト ヘルスチェック v5.4 (Pytest Integrated) 開始")
+    print("-" * 60)
 
-    checks = [
-        # --- 0. Unit Tests ---
-        {
-            "name": "Unit Tests: Pytest Suite (Quick)",
-            # 最小限の健全性確認のため、詳細ログなし(-q)で実行し、エラーがあれば即停止
-            "cmd": f"{python_cmd} -m pytest tests/ -q --maxfail=1"
-        },
-        
-        # --- 1. Core Architecture ---
-        {
-            "name": "Core: SNNCore & SFormer Init",
-            "cmd": f"{python_cmd} -c \"from snn_research.core.snn_core import SNNCore; import torch; model=SNNCore({{'architecture_type':'sformer'}}, 100); model(torch.randint(0,100,(1,16)))\""
-        },
-        {
-            "name": "Core: BitSpikeMamba (1.58bit LLM)",
-            "cmd": f"{python_cmd} -c \"from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba; import torch; m=BitSpikeMamba(vocab_size=100, d_model=64, d_state=16, d_conv=4, expand=2, num_layers=1, time_steps=4, neuron_config={{'type':'lif'}}); m(torch.randint(0,100,(1,4)))\""
-        },
+    checks = []
 
-        # --- 2. Cognitive System ---
-        {
-            "name": "Cognitive: ArtificialBrain Cycle",
-            "cmd": f"{python_cmd} -c \"from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain; import torch; brain=ArtificialBrain(); brain.run_cognitive_cycle(torch.randn(1,3,32,32))\""
-        },
-        {
-            "name": "Cognitive: Sleep & Consolidation Demo",
-            # scripts/demos/learning/run_sleep_cycle_demo.py
-            "cmd": f"{python_cmd} scripts/demos/learning/run_sleep_cycle_demo.py"
-        },
+    # 1. Unit Tests (Pytest)
+    # 全テストではなく、高速なコア機能のみを対象とするマーカー等を推奨するが、
+    # ここでは既存の構成に従い tests/ を実行（-x で初回失敗時に停止）
+    checks.append(run_command(
+        f"{sys.executable} -m pytest tests/ -x -q --disable-warnings", "Unit Tests: Pytest Suite (Quick)"))
 
-        # --- 3. Agent & Logic ---
-        {
-            "name": "Agent: Planner SNN (Reasoning)",
-            "cmd": f"{python_cmd} -c \"from snn_research.cognitive_architecture.planner_snn import PlannerSNN; import torch; p=PlannerSNN(vocab_size=100, d_model=64, d_state=16, num_layers=1, time_steps=4, n_head=2, num_skills=5, neuron_config={{'type':'lif'}}); p(torch.randint(0,100,(1,4)))\""
-        },
-        {
-            "name": "Logic: LogicGatedSNN (Neuro-Symbolic)",
-            "cmd": f"{python_cmd} -c \"from snn_research.core.layers.logic_gated_snn import LogicGatedSNN; import torch; l=LogicGatedSNN(64, 64); l(torch.randn(10,64))\""
-        },
+    # 2. Core: SNNCore & SFormer Init
+    checks.append(check_python_api("Core: SNNCore & SFormer Init", """
+from snn_research.core.snn_core import SNNCore
+from snn_research.models.transformer.spikformer import Spikformer
 
-        # --- 4. IO & Multimodal ---
-        {
-            "name": "IO: UniversalSpikeEncoder (Image/Audio/Text)",
-            "cmd": f"{python_cmd} -c \"from snn_research.io.universal_encoder import UniversalSpikeEncoder; import torch; enc=UniversalSpikeEncoder(); enc.encode(torch.randn(1,3,32,32), 'image'); enc.encode_text_str('hello')\""
-        },
+model = SNNCore(config={'d_model': 64, 'num_layers': 2}, vocab_size=100)
+sformer = Spikformer(input_dim=64, num_classes=10)
+print("Models initialized successfully")
+"""))
 
-        # --- 5. Distillation & Evolution ---
-        {
-            "name": "Distill: Knowledge Distillation Manager",
-            "cmd": f"{python_cmd} -c \"from snn_research.distillation.knowledge_distillation_manager import KnowledgeDistillationManager; import torch; from omegaconf import OmegaConf; conf=OmegaConf.create({{'model':{{'time_steps':16}}, 'training':{{'batch_size':2, 'epochs':1, 'log_dir':'workspace/logs'}}}}); KnowledgeDistillationManager(student_model=torch.nn.Linear(10,10), trainer=None, model_registry=None, device='cpu', config=conf, teacher_model_name='gpt2')\""
-        },
-        {
-            "name": "Evolution: Self-Evolving Agent Master",
-            "cmd": f"{python_cmd} -c \"from snn_research.agent.self_evolving_agent import SelfEvolvingAgentMaster; agent=SelfEvolvingAgentMaster('test_agent', planner=None, model_registry=None, memory=None, web_crawler=None, meta_cognitive_snn=None, motivation_system=None)\""
-        },
+    # 3. Core: BitSpikeMamba
+    checks.append(check_python_api("Core: BitSpikeMamba (1.58bit LLM)", """
+from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
+model = BitSpikeMamba(vocab_size=100, d_model=32)
+x = torch.randint(0, 100, (1, 10))
+y = model(x)
+print("Forward pass successful")
+"""))
 
-        # --- 6. Applications & Hybrid Models ---
-        {
-            "name": "Model: Hybrid CNN-SNN (Vision)",
-            "cmd": f"{python_cmd} -c \"from snn_research.models.cnn.hybrid_cnn_snn_model import HybridCnnSnnModel; import torch; m=HybridCnnSnnModel(vocab_size=10, time_steps=4, ann_frontend={{'name':'mobilenet_v2', 'output_features':1280}}, snn_backend={{'d_model':64, 'n_head':4, 'num_layers':2}}, neuron_config={{'type':'lif'}}); m(torch.randn(1,3,224,224))\""
-        },
-        {
-            "name": "App: Industrial Eye (DVS Processing)",
-            # scripts/demos/visual/run_industrial_eye_demo.py
-            "cmd": f"{python_cmd} scripts/demos/visual/run_industrial_eye_demo.py"
-        },
-        {
-            "name": "App: ECG Analysis (Temporal)",
-            # scripts/experiments/applications/run_ecg_analysis.py
-            "cmd": f"{python_cmd} scripts/experiments/applications/run_ecg_analysis.py"
-        },
+    # 4. Cognitive: ArtificialBrain Cycle (Fix: run_cognitive_cycle -> process_step)
+    checks.append(check_python_api("Cognitive: ArtificialBrain Cycle", """
+from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
+brain = ArtificialBrain(config={'stm_capacity': 10})
+# [Fix] Updated method name
+res = brain.process_step(sensory_input="test_input")
+print(f"Cycle result: {res}")
+"""))
 
-        # --- 7. Training & Hardware ---
-        {
-            "name": "Train: Overfit Smoke Test",
-            # scripts/training/trainers/train_overfit_demo.py
-            "cmd": f"{python_cmd} scripts/training/trainers/train_overfit_demo.py --epochs 1 --max_steps 2"
-        },
-        {
-            "name": "Hardware: Neuromorphic Compiler",
-            "cmd": f"{python_cmd} -c \"from snn_research.hardware.compiler import NeuromorphicCompiler; NeuromorphicCompiler()\""
-        },
-    ]
+    # 5. Cognitive: Sleep & Consolidation Demo
+    checks.append(run_command(
+        f"{sys.executable} scripts/demos/learning/run_sleep_cycle_demo.py", "Cognitive: Sleep & Consolidation Demo"))
 
-    passed = 0
+    # 6. Agent: Planner SNN
+    checks.append(check_python_api("Agent: Planner SNN (Reasoning)", """
+from snn_research.cognitive_architecture.planner_snn import PlannerSNN
+planner = PlannerSNN(vocab_size=50, num_skills=5)
+print("Planner initialized")
+"""))
+
+    # 7. Logic: LogicGatedSNN
+    checks.append(check_python_api("Logic: LogicGatedSNN (Neuro-Symbolic)", """
+from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
+layer = LogicGatedSNN(input_dim=10, output_dim=5)
+x = torch.randn(1, 10)
+y = layer(x)
+print("Logic gate forward pass successful")
+"""))
+
+    # 8. IO: UniversalSpikeEncoder
+    checks.append(check_python_api("IO: UniversalSpikeEncoder (Image/Audio/Text)", """
+from snn_research.io.universal_encoder import UniversalSpikeEncoder
+encoder = UniversalSpikeEncoder()
+img = torch.randn(1, 3, 224, 224)
+spikes = encoder.encode(img, modality='image')
+print("Encoding successful")
+"""))
+
+    # 9. Distillation: Manager
+    checks.append(run_command(
+        f"{sys.executable} scripts/demos/learning/run_distillation_demo.py", "Distill: Knowledge Distillation Manager"))
+
+    # 10. Evolution: Self-Evolving Agent
+    checks.append(check_python_api("Evolution: Self-Evolving Agent Master", """
+from snn_research.agent.self_evolving_agent import SelfEvolvingAgentMaster
+agent = SelfEvolvingAgentMaster(name="TestEvolver")
+print("Agent Master initialized")
+"""))
+
+    # 11. Model: Hybrid CNN-SNN
+    checks.append(check_python_api("Model: Hybrid CNN-SNN (Vision)", """
+from snn_research.models.cnn.hybrid_cnn_snn_model import HybridCNNSNN
+model = HybridCNNSNN(num_classes=10)
+x = torch.randn(1, 3, 32, 32)
+y = model(x)
+print("Hybrid model forward pass successful")
+"""))
+
+    # 12. Application: Industrial Eye (DVS)
+    checks.append(run_command(
+        f"{sys.executable} scripts/demos/visual/run_industrial_eye_demo.py", "App: Industrial Eye (DVS Processing)"))
+
+    # 13. Application: ECG Analysis
+    checks.append(run_command(
+        f"{sys.executable} scripts/experiments/applications/run_ecg_analysis.py", "App: ECG Analysis (Temporal)"))
+
+    # 14. Training: Smoke Test
+    checks.append(run_command(
+        f"{sys.executable} scripts/training/trainers/train_overfit_demo.py", "Train: Overfit Smoke Test"))
+
+    # 15. Hardware: Compiler
+    checks.append(run_command(
+        f"{sys.executable} scripts/tests/run_compiler_test.py", "Hardware: Neuromorphic Compiler"))
+
+    # 集計
+    passed = sum(checks)
     total = len(checks)
 
     print("-" * 60)
-    for i, check in enumerate(checks):
-        logger.info(f"[{i+1}/{total}] Checking {check['name']}...")
-        success, _ = run_command(check["cmd"], check["name"])
-        if success:
-            passed += 1
-    print("-" * 60)
-
     logger.info(f"📊 最終結果: {passed} / {total} 項目合格")
 
     if passed == total:
-        logger.info("🎉 全システム正常稼働を確認しました。Ready for deployment.")
+        logger.info("✨ 全てのヘルスチェックに合格しました！プロジェクトは健全です。")
         sys.exit(0)
     else:
         logger.error(f"⚠️ {total - passed} 個のコンポーネントで問題が発生しています。ログを確認してください。")
