@@ -1,80 +1,144 @@
 # ファイルパス: snn_research/evolution/recursive_improver.py
-# Title: Recursive Self-Improver (Verbose Fix)
-# Description:
-# - エラーハンドリングとログ出力を強化。
+# 日本語タイトル: Recursive Improver (Evolutionary Engine) v1.0
+# 目的・内容:
+#   ROADMAP Phase 3.3 "Self-Evolution" 対応。
+#   遺伝的アルゴリズム(GA)を用いて、モデルのアーキテクチャ設定(Config)を進化させる。
+#   「精度(Accuracy)」と「効率(Efficiency)」のバランスが良い個体を選抜する。
 
-import torch
-import torch.nn as nn
-import logging
 import copy
 import random
-import numpy as np
-from typing import Dict, Any, List, Tuple
+import logging
+import torch
+import torch.nn as nn
+from typing import Dict, Any, List, Callable, Tuple
 
 logger = logging.getLogger(__name__)
 
-class RecursiveImprover:
-    def __init__(self, target_brain: nn.Module, mutation_rate: float = 0.05):
-        self.current_best_brain = target_brain
-        self.mutation_rate = mutation_rate
+class Genome:
+    """1つのモデル設定（個体）を表すクラス"""
+    def __init__(self, config: Dict[str, Any], fitness: float = 0.0):
+        self.config = copy.deepcopy(config)
+        self.fitness = fitness
         self.generation = 0
-        self.improvement_history: List[float] = []
-        logger.info("🧬 Recursive Self-Improver initialized.")
 
-    def spawn_generation(self, pop_size: int = 3) -> List[nn.Module]:
-        offspring = []
-        offspring.append(self.current_best_brain) # エリート
+class RecursiveImprover:
+    """
+    自己改善エンジン。
+    モデルの構成（ニューロン数、層数、パラメータなど）を変異させ、
+    より良い性能を持つ構造を探索する。
+    """
+    
+    def __init__(
+        self, 
+        base_config: Dict[str, Any],
+        evaluator_func: Callable[[Dict[str, Any]], float],
+        population_size: int = 5,
+        mutation_rate: float = 0.3
+    ):
+        self.base_config = base_config
+        self.evaluator = evaluator_func # Configを受け取りFitnessを返す関数
+        self.population_size = population_size
+        self.mutation_rate = mutation_rate
+        self.generation_count = 0
         
-        for i in range(pop_size - 1):
-            try:
-                # Deepcopy can be slow
-                child = copy.deepcopy(self.current_best_brain)
-                self._mutate(child)
-                offspring.append(child)
-            except Exception as e:
-                logger.error(f"Failed to spawn child: {e}")
-                # フォールバック: 元の脳を返す
-                offspring.append(self.current_best_brain)
-            
-        return offspring
+        # 初期個体群の生成
+        self.population: List[Genome] = []
+        logger.info(f"🧬 Recursive Improver initialized. PopSize: {population_size}")
 
-    def _mutate(self, brain: nn.Module):
-        with torch.no_grad():
-            params = list(brain.parameters())
-            # 全パラメータではなくランダムにいくつか選んで変異させる（高速化）
-            target_params = random.sample(params, k=min(len(params), 5))
+    def _mutate_value(self, value: Any, key: str) -> Any:
+        """値をランダムに変異させる"""
+        if isinstance(value, int):
+            # 整数パラメータ (例: hidden_dim, layers)
+            if "dim" in key or "width" in key:
+                # 2の倍数で増減
+                change = random.choice([-16, -8, 8, 16])
+                return max(16, value + change)
+            elif "layer" in key or "depth" in key:
+                # 層数の増減
+                change = random.choice([-1, 1])
+                return max(1, value + change)
+            else:
+                # その他 (Time stepsなど)
+                change = random.choice([-1, 0, 1])
+                return max(1, value + change)
+                
+        elif isinstance(value, float):
+            # 実数パラメータ (例: learning_rate, threshold)
+            change = random.uniform(0.8, 1.2)
+            return value * change
             
-            for param in target_params:
-                if param.requires_grad:
-                    noise = torch.randn_like(param) * self.mutation_rate
-                    param.add_(noise)
+        elif isinstance(value, bool):
+            # フラグ反転 (低確率)
+            return not value if random.random() < 0.1 else value
+            
+        return value
 
-    def evaluate_and_select(self, candidates: List[nn.Module], task_function) -> Tuple[nn.Module, float]:
-        scores = []
-        for i, candidate in enumerate(candidates):
-            try:
-                score = task_function(candidate)
-            except Exception:
-                score = 0.0
-            scores.append(score)
+    def _mutate_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """設定辞書を再帰的に走査して変異させる"""
+        new_config = copy.deepcopy(config)
         
-        best_idx = np.argmax(scores)
-        best_score = scores[best_idx]
-        best_brain = candidates[best_idx]
-        
-        prev_score = self.improvement_history[-1] if self.improvement_history else 0.0
-        improvement = best_score - prev_score
-            
-        self.improvement_history.append(best_score)
-        self.generation += 1
-        
-        if improvement > 0.001:
-            self.current_best_brain = best_brain
-            
-        return self.current_best_brain, best_score
+        for k, v in new_config.items():
+            if isinstance(v, dict):
+                new_config[k] = self._mutate_config(v)
+            else:
+                # 変異確率に基づく変更
+                if random.random() < self.mutation_rate:
+                    # 特定のキーだけ変異対象にする（簡易化）
+                    if k in ["hidden_dim", "num_layers", "d_model", "time_steps", "base_threshold"]:
+                        original = v
+                        new_config[k] = self._mutate_value(v, k)
+                        # logger.debug(f"   Mutation: {k} {original} -> {new_config[k]}")
+                        
+        return new_config
 
-    def get_status(self) -> Dict[str, Any]:
-        return {
-            "generation": self.generation,
-            "current_score": self.improvement_history[-1] if self.improvement_history else 0.0
-        }
+    def evolve(self, generations: int = 1) -> Genome:
+        """
+        指定世代数だけ進化を実行する。
+        """
+        # 初回のみベース個体を評価
+        if not self.population:
+            logger.info("🌱 Evaluating Adam (Base Individual)...")
+            base_fitness = self.evaluator(self.base_config)
+            self.population = [Genome(self.base_config, base_fitness)]
+
+        for gen in range(generations):
+            self.generation_count += 1
+            logger.info(f"🔄 Generation {self.generation_count} started. Best Fitness: {self.population[0].fitness:.4f}")
+            
+            # 1. Selection (Elitism)
+            # 現在のベスト個体を親とする
+            parent = self.population[0]
+            
+            # 2. Reproduction & Mutation
+            offsprings = []
+            for i in range(self.population_size - 1): # 親以外の子を作成
+                mutated_conf = self._mutate_config(parent.config)
+                child = Genome(mutated_conf)
+                child.generation = self.generation_count
+                offsprings.append(child)
+            
+            # 3. Evaluation
+            # 並列化可能だが、ここでは直列実行
+            for i, child in enumerate(offsprings):
+                # 評価関数を実行（実際にモデルを作ってテスト）
+                try:
+                    score = self.evaluator(child.config)
+                    child.fitness = score
+                    # logger.info(f"   Child {i+1}: Fitness = {score:.4f}")
+                except Exception as e:
+                    logger.warning(f"   Child {i+1} died (Invalid Config): {e}")
+                    child.fitness = -1.0
+            
+            # 4. Survival of the Fittest
+            # 親 + 子の中でランキング
+            pool = [parent] + offsprings
+            pool.sort(key=lambda x: x.fitness, reverse=True)
+            
+            # 上位1個体のみ残す（今回はSimple Hill Climbingに近いGA）
+            # または多様性維持のため上位N個を残す
+            self.population = pool[:self.population_size] # Keep top N for next parenthood if needed
+            
+            best = self.population[0]
+            logger.info(f"🏆 Gen {self.generation_count} Winner: Fitness {best.fitness:.4f} (Dims: {best.config.get('hidden_dim', 'N/A')}, Layers: {best.config.get('num_layers', 'N/A')})")
+            
+        return self.population[0]

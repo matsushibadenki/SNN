@@ -1,84 +1,121 @@
 # ファイルパス: snn_research/social/theory_of_mind.py
-# Title: Theory of Mind (ToM) Module v1.0
-# Description:
-#   エージェントが他者の行動意図や信念を推定するためのモジュール。
-#   相互作用履歴に基づき、相手の次の行動（投票、協力など）を予測する。
+# 日本語タイトル: Theory of Mind (ToM) Module v1.0
+# 目的・内容:
+#   ROADMAP Phase 2.4 "Social Intelligence" 対応。
+#   他者の行動観測データ（位置、視線、発話など）から、
+#   そのエージェントの「隠された意図（Goal/Intent）」を推論するモジュール。
+#   高速なBitSpikeMambaを用いて、リアルタイムに相手の心を読み取る。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Deque
-from collections import deque
 import logging
+from typing import Dict, Any, Optional, Tuple
+
+# 高速推論のためMambaを利用
+try:
+    from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
+except ImportError:
+    BitSpikeMamba = None
 
 logger = logging.getLogger(__name__)
 
 
-class TheoryOfMindModule(nn.Module):
+class TheoryOfMindEncoder(nn.Module):
     """
-    簡易的な心の理論（ToM）モジュール。
-    相手のIDと過去の行動から、メンタルモデル（内部状態の推定）を構築する。
+    心の理論（ToM）エンコーダ。
+    他者の行動シーケンスを入力とし、その意図（Intent Vector）を出力する。
     """
 
-    def __init__(self, observation_dim: int = 10, hidden_dim: int = 32, history_len: int = 5):
+    def __init__(
+        self,
+        input_dim: int,  # 観測次元 (例: 相手の座標 x,y + 速度 vx,vy = 4)
+        hidden_dim: int = 64,
+        intent_dim: int = 8,  # 予測する意図のクラス数や座標次元
+        model_type: str = "mamba"  # 'mamba' or 'lstm'
+    ):
         super().__init__()
-        self.history_len = history_len
-        self.observation_dim = observation_dim
+        self.input_dim = input_dim
+        self.model_type = model_type
 
-        # メンタルモデル用SNN (簡易的なMLP/RNNとして実装)
-        # 入力: [history_len * observation_dim] -> 出力: [action_prob]
-        self.predictor = nn.Sequential(
-            nn.Linear(history_len * observation_dim, hidden_dim),
-            nn.ReLU(),
+        logger.info(
+            f"🧠 Initializing Theory of Mind (ToM) Engine... (Type: {model_type})")
+
+        # 1. Sequence Modeler (Trajectory -> Latent)
+        if model_type == "mamba" and BitSpikeMamba is not None:
+            # 時系列パターン認識にMambaを使用
+            self.core = BitSpikeMamba(
+                vocab_size=0,  # Continuous input
+                d_model=hidden_dim,
+                d_state=16,
+                d_conv=4,
+                expand=2,
+                num_layers=2,
+                time_steps=16,  # ヒストリー長
+                neuron_config={"type": "lif"}
+            )
+            self.input_proj = nn.Linear(input_dim, hidden_dim)
+
+        else:
+            # Fallback to LSTM/GRU if Mamba not available
+            if model_type == "mamba":
+                logger.warning("BitSpikeMamba not found. Falling back to GRU.")
+            self.core = nn.GRU(
+                input_size=input_dim,
+                hidden_size=hidden_dim,
+                num_layers=2,
+                batch_first=True
+            )
+            self.input_proj = nn.Identity()
+
+        # 2. Intent Decoder (Latent -> Intent/Goal)
+        self.intent_head = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1),  # 0.0 (Reject) ~ 1.0 (Approve/Cooperate)
-            nn.Sigmoid()
+            nn.GELU(),
+            nn.Linear(hidden_dim, intent_dim)
         )
 
-        # エージェントごとの履歴: AgentID -> Deque[Observation]
-        self.interaction_history: Dict[str, Deque[torch.Tensor]] = {}
-
-        logger.info("🧠 TheoryOfMindModule initialized.")
-
-    def observe_agent(self, agent_id: str, action_vector: torch.Tensor):
+    def forward(self, observation_sequence: torch.Tensor) -> torch.Tensor:
         """
-        エージェントの行動を観察し、履歴に追加する。
-        action_vector: 行動の特徴量 (例: 投票内容、発言内容の埋め込み)
+        Args:
+            observation_sequence: [Batch, Time, Input_Dim]
+            (e.g., past 10 steps of another agent's position)
+
+        Returns:
+            predicted_intent: [Batch, Intent_Dim]
+            (e.g., predicted target coordinates)
         """
-        if agent_id not in self.interaction_history:
-            self.interaction_history[agent_id] = deque(maxlen=self.history_len)
+        B, T, D = observation_sequence.shape
 
-        # パディング処理
-        if action_vector.shape[0] < self.observation_dim:
-            padded = torch.zeros(self.observation_dim)
-            padded[:action_vector.shape[0]] = action_vector
-            action_vector = padded
+        # Feature Projection
+        x = self.input_proj(observation_sequence)  # [B, T, Hidden]
 
-        self.interaction_history[agent_id].append(action_vector)
+        # Sequence Modeling
+        if isinstance(self.core, nn.GRU):
+            out, _ = self.core(x)
+            final_state = out[:, -1, :]  # Last hidden state
+        else:
+            # Mamba Forward
+            # Mamba returns (logits/features, spikes, mem)
+            mamba_out = self.core(x)
+            if isinstance(mamba_out, tuple):
+                features = mamba_out[0]
+            else:
+                features = mamba_out
 
-    def predict_action(self, agent_id: str) -> float:
-        """
-        特定のエージェントの次の行動（例えば、賛成確率）を予測する。
-        """
-        if agent_id not in self.interaction_history or len(self.interaction_history[agent_id]) < 1:
-            return 0.5  # 情報なし
+            # Use the feature at the last time step
+            if features.dim() == 3:
+                final_state = features[:, -1, :]
+            else:
+                # If T=1 or collapsed
+                final_state = features
 
-        history = list(self.interaction_history[agent_id])
-        # 足りない分はゼロパディング
-        while len(history) < self.history_len:
-            history.insert(0, torch.zeros(self.observation_dim))
+        # Decode Intent
+        intent = self.intent_head(final_state)
 
-        input_tensor = torch.cat(history).unsqueeze(
-            0)  # [1, history_len * obs_dim]
+        return intent
 
+    def predict_goal(self, trajectory: torch.Tensor) -> torch.Tensor:
+        """推論用ラッパー"""
+        self.eval()
         with torch.no_grad():
-            prediction = self.predictor(input_tensor).item()
-
-        return prediction
-
-    def update_model(self, agent_id: str, actual_outcome: float):
-        """
-        予測と実際の結果との誤差に基づいてメンタルモデルを更新する（オンライン学習）。
-        """
-        # (簡易実装のため省略。本来はここでpredictorの逆伝播を行う)
-        pass
+            return self.forward(trajectory)

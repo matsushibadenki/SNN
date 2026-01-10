@@ -1,173 +1,268 @@
 # ファイルパス: snn_research/models/transformer/spiking_vlm.py
-# (Phase 3: Unified Multimodal Learning - Enhanced)
-# Title: Spiking Unified Model (Formerly SpikingVLM)
-# Description:
-#   視覚、音声、触覚などの多感覚入力を UnifiedSensoryProjector 経由で統合し、
-#   単一の Spiking Language Brain で処理する「単一学習エンジン」。
+# 日本語タイトル: Spiking Vision-Language Model (SNN-VLM) v2.1 with Mamba Fix
+# 目的・内容:
+#   [Fix] BitSpikeMambaの出力次元の取り扱いを修正し、Projectorとの互換性を確保。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Tuple
 import logging
+from typing import Dict, Any, Optional, List, Tuple, cast
 
-from snn_research.core.base import BaseModel
-from snn_research.hybrid.multimodal_projector import UnifiedSensoryProjector
-# 互換性のため古いクラス名もインポート可能にしておく
+from snn_research.hybrid.multimodal_projector import MultimodalProjector
+from snn_research.core.snn_core import SNNCore
+
+# Models import
+try:
+    from snn_research.models.transformer.spikformer import Spikformer
+except ImportError:
+    Spikformer = nn.Linear  # type: ignore
+
+try:
+    from snn_research.models.cnn.spiking_cnn_model import SpikingCNN
+except ImportError:
+    SpikingCNN = nn.Linear  # type: ignore
+
+try:
+    from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
+except ImportError:
+    BitSpikeMamba = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
 
-class SpikingUnifiedModel(BaseModel):
+class SpikingVLM(nn.Module):
     """
-    SNNベースの全感覚統合モデル。
-    Structure: [Multi-Sensory Encoders] -> [Unified Projector] -> [Language/Reasoning Brain]
+    SNNベースの視覚言語モデル。
     """
 
     def __init__(
         self,
         vocab_size: int,
-        language_config: Dict[str, Any],
-        # {'vision': config, 'audio': config, ...}
-        sensory_configs: Dict[str, Dict[str, Any]],
-        projector_config: Dict[str, Any],
-        **kwargs: Any
-    ) -> None:
+        vision_config: Optional[Dict[str, Any]] = None,
+        text_config: Optional[Dict[str, Any]] = None,
+        language_config: Optional[Dict[str, Any]] = None,
+        sensory_configs: Optional[Dict[str, Any]] = None,
+        projector_config: Optional[Dict[str, Any]] = None,
+        projection_dim: int = 512,
+        use_bitnet: bool = True
+    ):
         super().__init__()
-        self.vocab_size = vocab_size
 
-        # --- Import Core ---
-        try:
-            from snn_research.core.snn_core import SNNCore
-        except ImportError:
-            raise ImportError("Failed to import SNNCore.")
-        # -------------------
+        logger.info("👁️🗨️ Initializing SpikingVLM v2.1 (Mamba Fix)...")
 
-        logger.info(
-            "🧠 SpikingUnifiedModel: Initializing Single Learning Engine...")
+        # Normalize configs
+        t_conf = text_config if text_config else (
+            language_config if language_config else {})
+        v_conf = vision_config if vision_config else {}
 
-        # 1. Sensory Encoders (Brain Cortex Areas)
-        # 各モダリティに対応するエンコーダを辞書として保持
-        self.sensory_encoders = nn.ModuleDict()
-        modality_dims = {}
+        if not v_conf and sensory_configs and 'vision' in sensory_configs:
+            val = sensory_configs['vision']
+            if isinstance(val, dict):
+                v_conf = val
+            else:
+                v_conf = {'hidden_dim': val}
 
-        for mod_name, config in sensory_configs.items():
-            logger.info(f"   - Building Cortex Area: {mod_name}")
-            # 出力次元の設定 (Projectorへの入力次元)
-            output_dim = config.get("output_dim", 128)
-            modality_dims[mod_name] = output_dim
+        self.vision_hidden_dim = v_conf.get("hidden_dim", 384)
+        time_steps = v_conf.get("time_steps", 16)
+        neuron_conf = v_conf.get("neuron", {"type": "lif"})
 
-            # SNNCoreを汎用エンコーダとして利用 (Configに応じてCNN/Linear等を切り替え)
-            # vocab_size引数を出力次元として流用
-            self.sensory_encoders[mod_name] = SNNCore(
-                config=config, vocab_size=output_dim)
+        # --- 1. Vision Encoder Selection ---
+        self.vision_type = v_conf.get("type", "cnn")
 
-        # 2. Unified Sensory Projector (Thalamus/Bridge)
-        logger.info("🔗 SpikingUnifiedModel: Building Unified Sensory Bridge...")
-        self.projector = UnifiedSensoryProjector(
-            language_dim=language_config.get("d_model", 256),
-            modality_configs=modality_dims,
-            use_bitnet=projector_config.get("use_bitnet", False)
+        if self.vision_type == "bit_spike_mamba":
+            if BitSpikeMamba is None:
+                raise ImportError("BitSpikeMamba not found. Check imports.")
+
+            logger.info("   -> Using BitSpikeMamba as Vision Encoder 🐍")
+            # Mamba Config
+            self.vision_encoder = BitSpikeMamba(
+                vocab_size=0,  # Not used for vision embedding
+                d_model=self.vision_hidden_dim,
+                d_state=v_conf.get("d_state", 16),
+                d_conv=v_conf.get("d_conv", 4),
+                expand=v_conf.get("expand", 2),
+                num_layers=v_conf.get("num_layers", 2),
+                time_steps=time_steps,
+                neuron_config=neuron_conf
+            )
+
+            # Image Patch Projection
+            self.vision_proj = nn.Linear(3 * 32 * 32, self.vision_hidden_dim)
+
+        elif self.vision_type == "cnn":
+            logger.info("   -> Using SpikingCNN as Vision Encoder 🧠")
+            self.vision_encoder = SpikingCNN(
+                vocab_size=self.vision_hidden_dim,
+                time_steps=time_steps,
+                neuron_config=neuron_conf,
+                img_size=v_conf.get("img_size", 32)
+            )
+        else:
+            logger.warning("   -> Using Linear Placeholder for Vision")
+            self.vision_encoder = nn.Linear(3*32*32, self.vision_hidden_dim)
+
+        # --- 2. Text Model ---
+        self.text_hidden_dim = t_conf.get("d_model", 512)
+        self.text_model = nn.Embedding(vocab_size, self.text_hidden_dim)
+
+        self.text_blocks = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=self.text_hidden_dim,
+                nhead=8,
+                batch_first=True
+            ),
+            num_layers=t_conf.get("num_layers", 4)
         )
 
-        # 3. Language/Reasoning Core (Prefrontal Cortex)
-        logger.info("🗣️ SpikingUnifiedModel: Building Reasoning Core...")
-        self.brain_core = SNNCore(
-            config=language_config, vocab_size=vocab_size)
+        # --- 3. Multimodal Projector ---
+        p_dim = projection_dim
+        if projector_config:
+            p_dim = projector_config.get("projection_dim", projection_dim)
 
-        self._init_weights()
-        logger.info("✅ Single Learning Engine initialized.")
+        self.projector = MultimodalProjector(
+            vision_dim=self.vision_hidden_dim,
+            text_dim=self.text_hidden_dim,
+            embed_dim=p_dim,
+            use_bitnet=use_bitnet
+        )
+
+        self.lm_head = nn.Linear(p_dim, vocab_size)
 
     def forward(
         self,
-        input_ids: torch.Tensor,                    # (B, SeqLen) - テキスト思考/命令
-        # {'vision': img, 'audio': wav, ...}
-        sensory_inputs: Dict[str, torch.Tensor],
-        return_spikes: bool = False,
-        **kwargs: Any
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Unified Forward Pass
-        """
-        # 1. Encode All Senses (Parallel Processing)
-        encoded_features = {}
-        total_sensory_spikes = []
+        image_input: torch.Tensor,
+        text_input: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
 
-        for mod_name, encoder in self.sensory_encoders.items():
-            if mod_name in sensory_inputs:
-                raw_input = sensory_inputs[mod_name]
-                outputs = encoder(raw_input)
+        # A. Vision Encoding
+        if self.vision_type == "bit_spike_mamba":
+            B = image_input.shape[0]
+            # [B, C, H, W] -> [B, 1, C*H*W]
+            flat_img = image_input.view(B, 1, -1)
+            # Project -> [B, 1, Vision_Dim]
+            emb_img = self.vision_proj(flat_img)
 
-                if isinstance(outputs, tuple):
-                    feat = outputs[0]
-                    spikes = outputs[1]
-                else:
-                    feat = outputs
-                    spikes = torch.tensor(0.0, device=raw_input.device)
+            # Mamba Forward
+            mamba_out = self.vision_encoder(emb_img)
 
-                encoded_features[mod_name] = feat
-                if isinstance(spikes, torch.Tensor):
-                    total_sensory_spikes.append(spikes.mean())
+            if isinstance(mamba_out, tuple):
+                # (logits, spikes, mem)
+                vision_feats = mamba_out[0]
+            else:
+                vision_feats = mamba_out
 
-        # 2. Project to Unified Latent Space (Symbol Grounding)
-        # ここで全ての感覚が「言語的な埋め込み」に変換・結合される
-        context_embeds = self.projector(encoded_features)
+            # Ensure proper shape [B, T, D]
+            # Mamba output might be [B, L, D]
+            # If Time Loop in Mamba is 1 (for efficiency), L=1.
+            # Projector expects [B, T, D]
+            if vision_feats.dim() == 2:
+                vision_feats = vision_feats.unsqueeze(1)
 
-        # 3. Reasoning / Language Generation with Context
-        brain_outputs = self.brain_core(
-            input_ids,
-            context_embeds=context_embeds,
-            return_spikes=True,
-            **kwargs
-        )
+            # [Critial Check] Ensure last dimension matches vision_hidden_dim
+            if vision_feats.shape[-1] != self.vision_hidden_dim:
+                # This might happen if Mamba config overrides d_model internally or returns something else
+                logger.warning(
+                    f"Shape mismatch: {vision_feats.shape}, expected {self.vision_hidden_dim}")
 
-        logits = brain_outputs[0]
-        brain_spikes = brain_outputs[1]
-        mem = brain_outputs[2]
-
-        # 全体のスパイク活動量を計算 (エネルギー効率モニタリング用)
-        if total_sensory_spikes:
-            avg_sensory_spike = torch.stack(total_sensory_spikes).mean()
+        elif isinstance(self.vision_encoder, nn.Linear):
+            B = image_input.shape[0]
+            flat_img = image_input.view(B, -1)
+            vision_feats = self.vision_encoder(flat_img).unsqueeze(1)
         else:
-            avg_sensory_spike = torch.tensor(0.0, device=logits.device)
+            # SpikingCNN
+            vision_out = self.vision_encoder(image_input)
+            if isinstance(vision_out, tuple):
+                vision_feats = vision_out[0].unsqueeze(1)
+            else:
+                vision_feats = vision_out
+                if vision_feats.dim() == 2:
+                    vision_feats = vision_feats.unsqueeze(1)
 
-        final_spike_rate = (avg_sensory_spike + brain_spikes.mean()) / 2.0
+        # B. Text Encoding
+        text_emb = self.text_model(text_input)
+        text_feats = self.text_blocks(text_emb)
 
-        return logits, final_spike_rate, mem
+        # C. Projection & Fusion
+        # Calls Mode A of MultimodalProjector
+        # Vision Feats: [B, 1, D_v]
+        # Text Feats: [B, T_t, D_t]
+        proj_output = self.projector(vision_feats, text_features=text_feats)
 
-    def generate(
-        self,
-        input_ids: torch.Tensor,
-        sensory_inputs: Dict[str, torch.Tensor],
-        max_len: int = 20
-    ) -> torch.Tensor:
-        """
-        多感覚入力に基づいた思考・応答生成
-        """
+        # D. Output handling
+        if isinstance(proj_output, dict):
+            align_loss = self.projector.compute_alignment_loss(proj_output)
+            fused = proj_output["fused_representation"]
+            vision_latents = proj_output["vision_pooled"]
+            text_latents = proj_output["text_pooled"]
+        else:
+            align_loss = torch.tensor(0.0, device=image_input.device)
+            fused = proj_output
+            vision_latents = torch.tensor([])
+            text_latents = torch.tensor([])
+
+        logits = self.lm_head(fused)
+
+        return {
+            "logits": logits,
+            "alignment_loss": align_loss,
+            "vision_latents": vision_latents,
+            "text_latents": text_latents,
+            "fused_representation": fused
+        }
+
+    @torch.no_grad()
+    def generate_caption(self, image_input: torch.Tensor, max_len: int = 20) -> torch.Tensor:
         self.eval()
-        with torch.no_grad():
-            # 1. Encode
-            encoded_features = {}
-            for mod_name, encoder in self.sensory_encoders.items():
-                if mod_name in sensory_inputs:
-                    out = encoder(sensory_inputs[mod_name])
-                    encoded_features[mod_name] = out[0] if isinstance(
-                        out, tuple) else out
+        B = image_input.shape[0]
+        device = image_input.device
 
-            # 2. Project
-            context_embeds = self.projector(encoded_features)
+        curr_tokens = torch.tensor([[101]] * B, device=device)
 
-            # 3. Generate Thought
-            current_ids = input_ids
-            for _ in range(max_len):
-                outputs = self.brain_core(
-                    current_ids, context_embeds=context_embeds)
-                logits = outputs[0]
-                next_token = torch.argmax(
-                    logits[:, -1, :], dim=-1).unsqueeze(1)
-                current_ids = torch.cat([current_ids, next_token], dim=1)
+        # Vision Encode (Pre-calculate)
+        if self.vision_type == "bit_spike_mamba":
+            B = image_input.shape[0]
+            flat_img = image_input.view(B, 1, -1)
+            emb_img = self.vision_proj(flat_img)
+            mamba_out = self.vision_encoder(emb_img)
+            if isinstance(mamba_out, tuple):
+                vision_feats = mamba_out[0]
+            else:
+                vision_feats = mamba_out
+            if vision_feats.dim() == 2:
+                vision_feats = vision_feats.unsqueeze(1)
 
-            return current_ids
+        elif isinstance(self.vision_encoder, nn.Linear):
+            vision_feats = self.vision_encoder(
+                image_input.view(B, -1)).unsqueeze(1)
+        else:
+            vision_out = self.vision_encoder(image_input)
+            if isinstance(vision_out, tuple):
+                vision_feats = vision_out[0].unsqueeze(1)
+            else:
+                vision_feats = vision_out.unsqueeze(1)
+
+        for _ in range(max_len):
+            text_emb = self.text_model(curr_tokens)
+            text_feats = self.text_blocks(text_emb)
+
+            proj_out = self.projector(vision_feats, text_features=text_feats)
+
+            if isinstance(proj_out, dict):
+                fused = proj_out["fused_representation"]
+            else:
+                fused = proj_out
+
+            last_hidden = fused[:, -1, :]
+            next_logit = self.lm_head(last_hidden)
+            next_token = torch.argmax(next_logit, dim=-1, keepdim=True)
+
+            curr_tokens = torch.cat([curr_tokens, next_token], dim=1)
+
+            if (next_token == 102).all():
+                break
+
+        return curr_tokens
 
 
-# 互換性のためのエイリアス
-SpikingVLM = SpikingUnifiedModel
+# Backward compatibility alias
+SpikingUnifiedModel = SpikingVLM

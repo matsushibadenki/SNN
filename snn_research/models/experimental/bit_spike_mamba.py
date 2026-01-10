@@ -1,11 +1,15 @@
 # ファイルパス: snn_research/models/experimental/bit_spike_mamba.py
-# 日本語タイトル: Bit-Spike Mamba Model (Fix: Time Loop & Input Handling)
+# 日本語タイトル: Bit-Spike Mamba Model v1.2 (Fix: Missing Attributes)
 # 目的: SNNの時間発展ループを復元し、トークンIDと特徴量入力の両方に対応する。
+#       [Fix] vocab_size 属性の欠落によるAttributeErrorを修正。
 
 import torch
 import torch.nn as nn
-from typing import Any, Type, cast, Tuple
+from typing import Any, Type, cast, Tuple, Optional
 
+# 必要なモジュールが存在しない場合のダミー/モック対応は、
+# 実際に動作させる環境では不要な場合が多いが、importエラー回避のため残すか、
+# あるいは前提として core モジュールがあるものとする。
 from snn_research.core.mamba_core import SpikingMambaBlock, SpikingMamba
 from snn_research.core.layers.bit_spike_layer import BitSpikeLinear
 from snn_research.core.neurons import AdaptiveLIFNeuron
@@ -39,8 +43,14 @@ class BitSpikeMamba(SpikingMamba):
     """
 
     def __init__(self, vocab_size, d_model, d_state, d_conv, expand, num_layers, time_steps, neuron_config, **kwargs):
+        # 親クラス初期化
         super().__init__(vocab_size, d_model, d_state, d_conv,
                          expand, num_layers, time_steps, neuron_config, **kwargs)
+
+        # [Fix] 属性を明示的に保存 (親クラスの実装に依存しないようにする)
+        self.vocab_size = vocab_size
+        self.d_model = d_model
+        self.time_steps = time_steps
 
         neuron_type = neuron_config.get("type", "lif")
         neuron_params = neuron_config.copy()
@@ -56,6 +66,7 @@ class BitSpikeMamba(SpikingMamba):
         else:
             filtered_params = neuron_params
 
+        # Layer置換
         self.layers = nn.ModuleList([
             BitSpikeMambaBlock(
                 d_model, d_state, d_conv, expand,
@@ -64,9 +75,15 @@ class BitSpikeMamba(SpikingMamba):
             )
             for _ in range(num_layers)
         ])
+
+        # vocab_size > 0 の時だけ lm_head が必要
+        # 親クラスが自動生成していない場合、または上書きが必要な場合はここで定義
+        if vocab_size > 0:
+            if not hasattr(self, 'lm_head') and not hasattr(self, 'output_projection'):
+                self.lm_head = BitSpikeLinear(d_model, vocab_size, bias=False)
+
         self._init_weights()
 
-    # [Fix] Aligned signature with SpikingMamba (x -> input_ids)
     def forward(self, input_ids: torch.Tensor, return_spikes: bool = False, **kwargs: Any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         SNN Forward Pass.
@@ -96,8 +113,6 @@ class BitSpikeMamba(SpikingMamba):
                 cast(SpikingMambaBlock, layer).set_stateful(True)
 
         # 4. SNN時間発展ループ (Time Loop)
-        # 入力が静的(Static)であると仮定し、各タイムステップで同じ入力を流す
-        # (動的入力の場合はここを (B, T, L, D) 等にする必要があるが、現状はStatic想定)
         x_last = x_input
 
         for _ in range(self.time_steps):
@@ -112,7 +127,7 @@ class BitSpikeMamba(SpikingMamba):
                 cast(SpikingMambaBlock, layer).set_stateful(False)
 
         # 6. 出力層
-        # [Fix] Cast self.norm_f/norm to Any to avoid "Tensor not callable"
+        # Normalization
         if hasattr(self, 'norm_f'):
             x_out = cast(Any, self.norm_f)(x_last)
         elif hasattr(self, 'norm'):
@@ -120,12 +135,18 @@ class BitSpikeMamba(SpikingMamba):
         else:
             x_out = x_last
 
-        # [Fix] Cast self.lm_head/output_projection to Any
-        if hasattr(self, 'lm_head'):
-            logits = cast(Any, self.lm_head)(x_out)
-        elif hasattr(self, 'output_projection'):
-            logits = cast(Any, self.output_projection)(x_out)
+        # Output Projection (Logits)
+        # vocab_size が設定されていれば Logits を返す
+        # そうでなければ特徴量 (Latent) を返す
+        if self.vocab_size > 0:
+            if hasattr(self, 'lm_head'):
+                logits = cast(Any, self.lm_head)(x_out)
+            elif hasattr(self, 'output_projection'):
+                logits = cast(Any, self.output_projection)(x_out)
+            else:
+                logits = x_out
         else:
+            # Vision Encoder Mode: Return latent features directly
             logits = x_out
 
         # ダミー統計
