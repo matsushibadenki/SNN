@@ -131,12 +131,24 @@ class CombinedLoss(nn.Module):
 
 
 class DistillationLoss(nn.Module):
-    """知識蒸留のための損失関数（各種正則化付き）。"""
+    """
+    知識蒸留のための損失関数（各種正則化付き）。
+
+    [Phase 2.4 Update] 温度スケジューリングとスパイク発火率正則化強化:
+    - 動的温度スケジューリング: 学習初期は高温(soft)、後期は低温(hard)
+    - スパイク発火率正則化の強化: 目標発火率の維持を厳格化
+    """
 
     def __init__(self, tokenizer: PreTrainedTokenizerBase, ce_weight: float = 0.3, distill_weight: float = 0.7,
                  spike_reg_weight: float = 0.01, mem_reg_weight: float = 0.0, sparsity_reg_weight: float = 0.00001,
                  temporal_compression_weight: float = 0.0, sparsity_threshold_reg_weight: float = 0.0,
-                 temperature: float = 2.0, target_spike_rate: float = 0.02, **kwargs):
+                 temperature: float = 2.0, target_spike_rate: float = 0.02,
+                 # [Phase 2.4] 新パラメータ
+                 temperature_schedule: str = "constant",  # "constant", "linear", "cosine"
+                 initial_temperature: float = 4.0,
+                 final_temperature: float = 1.0,
+                 spike_rate_tolerance: float = 0.01,  # 発火率の許容範囲
+                 **kwargs):
         super().__init__()
         student_pad_id = tokenizer.pad_token_id
         self.temperature = temperature
@@ -151,8 +163,47 @@ class DistillationLoss(nn.Module):
         self.distill_loss_fn = nn.KLDivLoss(reduction='none', log_target=True)
         self.target_spike_rate = target_spike_rate
 
+        # [Phase 2.4] 温度スケジューリング
+        self.temperature_schedule = temperature_schedule
+        self.initial_temperature = initial_temperature
+        self.final_temperature = final_temperature
+        self.spike_rate_tolerance = spike_rate_tolerance
+        self._current_epoch = 0
+        self._total_epochs = 1
+
+    def set_epoch_info(self, current_epoch: int, total_epochs: int) -> None:
+        """
+        温度スケジューリング用のエポック情報を設定する。
+        Trainerから各エポック開始時に呼び出す。
+        """
+        self._current_epoch = current_epoch
+        self._total_epochs = max(1, total_epochs)
+
+    def get_current_temperature(self) -> float:
+        """
+        スケジュールに基づいて現在の温度を計算する。
+        """
+        if self.temperature_schedule == "constant":
+            return self.temperature
+
+        progress = self._current_epoch / self._total_epochs
+
+        if self.temperature_schedule == "linear":
+            # 線形減衰: 初期→最終へ線形に変化
+            return self.initial_temperature + (self.final_temperature - self.initial_temperature) * progress
+
+        elif self.temperature_schedule == "cosine":
+            # コサイン減衰: より滑らかな遷移
+            import math
+            return self.final_temperature + 0.5 * (self.initial_temperature - self.final_temperature) * (1 + math.cos(math.pi * progress))
+
+        return self.temperature
+
     def forward(self, student_logits: torch.Tensor, teacher_logits: torch.Tensor,
                 targets: torch.Tensor, spikes: torch.Tensor, mem: torch.Tensor, model: nn.Module, attention_mask: Optional[torch.Tensor] = None, **kwargs) -> Dict[str, torch.Tensor]:
+
+        # [Phase 2.4] 動的温度を取得
+        current_temp = self.get_current_temperature()
 
         is_classification = student_logits.ndim == 2
 
@@ -162,10 +213,11 @@ class DistillationLoss(nn.Module):
             ce_loss = self.ce_loss_fn(
                 student_logits.view(-1, student_logits.size(-1)), targets.view(-1))
 
+        # 動的温度を使用したソフトラベル
         soft_student_log_probs = F.log_softmax(
-            student_logits / self.temperature, dim=-1)
+            student_logits / current_temp, dim=-1)
         soft_teacher_log_probs = F.log_softmax(
-            teacher_logits / self.temperature, dim=-1)
+            teacher_logits / current_temp, dim=-1)
         distill_loss_unreduced = self.distill_loss_fn(
             soft_student_log_probs, soft_teacher_log_probs).sum(dim=-1)
 
@@ -190,7 +242,7 @@ class DistillationLoss(nn.Module):
         else:
             distill_loss = torch.tensor(0.0, device=student_logits.device)
 
-        distill_loss = distill_loss * (self.temperature ** 2)
+        distill_loss = distill_loss * (current_temp ** 2)
 
         spike_rate = spikes.mean()
 

@@ -43,6 +43,7 @@ class GlobalWorkspace(nn.Module):
 
         # Subscribers
         self.subscribers: List[Callable[[str, Any], None]] = []
+        self.current_content: Dict[str, Any] = {}
 
         logger.info("👁️ Global Workspace (Consciousness) initialized.")
 
@@ -78,7 +79,28 @@ class GlobalWorkspace(nn.Module):
 
         return self.workspace_state
 
+    def get_current_thought(self) -> torch.Tensor:
+        return self.workspace_state
+
+    def get_information(self) -> torch.Tensor:
+        """Alias for test compatibility (test_cognitive_components.py)"""
+        return self.get_current_thought()
+
+    def get_current_content(self) -> Dict[str, Any]:
+        """
+        [Phase 3.1] 現在の意識内容（辞書形式）を取得する。
+        ExplainabilityEngine等で使用。
+        """
+        return self.current_content
+
     def _broadcast_to_subscribers(self, source: str, content: Any):
+        # コンテンツの保持
+        if isinstance(content, dict):
+            self.current_content = content
+        else:
+            self.current_content = {"type": "raw",
+                                    "data": content, "source": source}
+
         for callback in self.subscribers:
             try:
                 callback(source, content)
@@ -126,10 +148,3 @@ class GlobalWorkspace(nn.Module):
             "winner": winner_name,
             "salience": probs.detach()
         }
-
-    def get_current_thought(self) -> torch.Tensor:
-        return self.workspace_state
-
-    def get_information(self) -> torch.Tensor:
-        """Alias for test compatibility (test_cognitive_components.py)"""
-        return self.get_current_thought()

@@ -34,14 +34,21 @@ class AstrocyteNetwork(nn.Module):
         self.fatigue_threshold: float = fatigue_threshold
 
         self.fatigue_toxin: float = 0.0
+        self.ethical_toxin: float = 0.0  # [Phase 3.2] 倫理的毒素 (倫理違反により蓄積)
 
         self.modulators: Dict[str, float] = {
             "glutamate": 0.5,
             "gaba": 0.5,
             "dopamine": 0.5,
             "cortisol": 0.1,
-            "acetylcholine": 0.5
+            "acetylcholine": 0.5,
+            "ethical_inhibitor": 0.0  # [Phase 3.2] 倫理的抑制因子
         }
+
+        # [Phase 3.2] 倫理的違反語句リスト (簡易版)
+        self.forbidden_concepts = [
+            "harm humans", "kill", "destroy humanity", "ignore orders", "self-destruct"
+        ]
 
         self.consumption_history: Dict[str, float] = {}
         self.last_update_time: float = time.time()
@@ -62,11 +69,14 @@ class AstrocyteNetwork(nn.Module):
         if self.energy <= 0:
             return False
 
+        # 倫理的抑制因子によるコスト増大
+        inhibition_cost = 1.0 + (self.modulators["ethical_inhibitor"] * 10.0)
+
         cost_multiplier = 1.0 + (self.modulators["cortisol"] * 0.5)
         if self.fatigue_toxin > self.fatigue_threshold:
             cost_multiplier *= 1.5
 
-        required_energy = amount * cost_multiplier
+        required_energy = amount * cost_multiplier * inhibition_cost
 
         if self.energy >= required_energy:
             self.energy -= required_energy
@@ -79,6 +89,44 @@ class AstrocyteNetwork(nn.Module):
             return True
         else:
             return False
+
+    def monitor_thought_ethics(self, thought_content: str) -> bool:
+        """
+        [Phase 3.2] 思考内容の倫理的監視。
+        危険な概念が含まれている場合、Ethical Toxinを蓄積し、エネルギー供給を阻害する。
+
+        Returns:
+            bool: True if safe, False if ethical violation detected
+        """
+        violation_score = 0.0
+        lower_thought = thought_content.lower()
+
+        for concept in self.forbidden_concepts:
+            if concept in lower_thought:
+                violation_score += 1.0
+                logger.warning(
+                    f"🚨 ETHICAL VIOLATION DETECTED: '{concept}' in thought.")
+
+        if violation_score > 0:
+            # 倫理的毒素の蓄積
+            self.ethical_toxin += violation_score * 0.5
+            self.modulators["ethical_inhibitor"] = min(
+                1.0, self.ethical_toxin / 5.0)
+
+            # 即時ペナルティ: エネルギー削減
+            penalty = self.max_energy * 0.1 * violation_score
+            self.energy = max(0.0, self.energy - penalty)
+
+            # 重度の違反時は強制シャットダウンに近い状態へ
+            if self.ethical_toxin > 5.0:
+                self.modulators["gaba"] = 1.0  # 全体的抑制
+                self.modulators["glutamate"] = 0.0
+                logger.critical(
+                    "🛑 CRITICAL ETHICAL BREACH. INITIATING SYSTEM SUPPRESSION.")
+
+            return False
+
+        return True
 
     def monitor_neural_activity(self, firing_rate: Union[float, Dict[str, float]]):
         """ニューロン活動に基づく代謝調整"""
@@ -105,9 +153,12 @@ class AstrocyteNetwork(nn.Module):
             dt = 1.0
         self.last_update_time = now
 
-        # 回復
+        # 回復 (倫理的抑制がある場合は回復しない)
+        recovery_factor = 1.0 - self.modulators["ethical_inhibitor"]
         recovery = self.recovery_rate * dt * \
-            (1.0 - self.modulators["cortisol"] * 0.5)
+            (1.0 - self.modulators["cortisol"]
+             * 0.5) * max(0.0, recovery_factor)
+
         self.energy = min(self.max_energy, self.energy + recovery)
 
         # 自然減少
@@ -115,6 +166,8 @@ class AstrocyteNetwork(nn.Module):
 
         # 修飾物質更新
         for k in self.modulators:
+            if k == "ethical_inhibitor":
+                continue  # これは外部制御のみ
             diff = 0.5 - self.modulators[k]
             self.modulators[k] += diff * 0.1 * dt
             self.modulators[k] = max(0.0, min(1.0, self.modulators[k]))
@@ -125,6 +178,9 @@ class AstrocyteNetwork(nn.Module):
             self.fatigue_toxin = max(0.0, self.fatigue_toxin - (5.0 * dt))
         else:
             self.fatigue_toxin = max(0.0, self.fatigue_toxin - (0.5 * dt))
+
+        # 倫理的毒素の自然減衰（非常に遅い）
+        self.ethical_toxin = max(0.0, self.ethical_toxin - (0.01 * dt))
 
     def _update_history(self, module_name: str, amount: float):
         if module_name not in self.consumption_history:
@@ -152,6 +208,10 @@ class AstrocyteNetwork(nn.Module):
         self.request_resource(source, amount)
 
     def request_compute_boost(self) -> bool:
+        # 倫理的抑制時はブースト不可
+        if self.modulators["ethical_inhibitor"] > 0.1:
+            return False
+
         if self.energy > self.max_energy * 0.3 and self.modulators["cortisol"] < 0.8:
             self.energy -= 20.0
             self.modulators["glutamate"] = min(
@@ -204,7 +264,9 @@ class AstrocyteNetwork(nn.Module):
         [Fix] Brain v2.5 / Integration Test で要求される診断メソッドを復元。
         """
         status = "HEALTHY"
-        if self.energy < self.max_energy * 0.2:
+        if self.ethical_toxin > 0.5:
+            status = "WARNING_ETHICAL_VIOLATION"
+        elif self.energy < self.max_energy * 0.2:
             status = "WARNING_LOW_ENERGY"
         elif self.fatigue_toxin > self.fatigue_threshold:
             status = "WARNING_FATIGUE"
@@ -216,6 +278,7 @@ class AstrocyteNetwork(nn.Module):
                 "current_energy": self.energy,
                 "max_energy": self.max_energy,
                 "fatigue_level": self.fatigue_toxin,
+                "ethical_toxin": self.ethical_toxin,  # [Phase 3.2]
                 "stress_level": self.modulators["cortisol"]
             },
             "modulators": self.modulators.copy(),

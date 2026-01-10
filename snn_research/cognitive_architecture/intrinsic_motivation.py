@@ -8,9 +8,12 @@
 import torch.nn as nn
 import logging
 import numpy as np
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Callable, List
 
 logger = logging.getLogger(__name__)
+
+# 知識獲得コールバックの型定義
+KnowledgeCallback = Callable[[str, str, float, str], None]
 
 
 class IntrinsicMotivationSystem(nn.Module):
@@ -50,8 +53,37 @@ class IntrinsicMotivationSystem(nn.Module):
             "competence": 0.3    # 有能感 (予測成功やタスク達成に基づく)
         }
 
+        # [Phase 2.1] 知識獲得時のコールバックリスト
+        self._knowledge_callbacks: List[KnowledgeCallback] = []
+
         logger.info(
             "🔥 Intrinsic Motivation System v2.5 (Intrinsic Reward Enabled) initialized.")
+
+    def register_knowledge_callback(self, callback: KnowledgeCallback) -> None:
+        """
+        知識獲得時に呼び出されるコールバックを登録する。
+        CuriosityKnowledgeIntegrator.on_knowledge_acquired を登録することで、
+        獲得した知識が自動的に知識グラフへ統合される。
+        """
+        self._knowledge_callbacks.append(callback)
+        logger.debug(
+            f"📝 Knowledge callback registered. Total: {len(self._knowledge_callbacks)}")
+
+    def notify_knowledge_acquired(
+        self,
+        query: str,
+        content: str,
+        surprise: float,
+        source: str = "curiosity_search"
+    ) -> None:
+        """
+        新しい知識を獲得したことを全てのコールバックに通知する。
+        """
+        for callback in self._knowledge_callbacks:
+            try:
+                callback(query, content, surprise, source)
+            except Exception as e:
+                logger.warning(f"⚠️ Knowledge callback error: {e}")
 
     def process(self, input_payload: Any, prediction_error: Optional[float] = None) -> Dict[str, float]:
         """

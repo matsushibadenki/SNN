@@ -2,7 +2,7 @@
 # 日本語タイトル: STDP学習トレーナー (No-Grad版)
 # 修正: 勾配計算の記録を明示的に禁止し、ポリシーを遵守。
 
-from typing import Dict
+from typing import Dict, cast, Any
 import torch
 import torch.nn as nn
 import logging
@@ -47,7 +47,8 @@ class STDPTrainer(AbstractTrainer):
                     _ = self.model.forward(inputs)
                     metrics = {}
                 elif hasattr(self.model, 'run_learning_step'):
-                    metrics = self.model.run_learning_step(inputs, targets)
+                    metrics = cast(Any, self.model).run_learning_step(
+                        inputs, targets)
                 elif isinstance(self.model, nn.Module):
                     _ = self.model(inputs)
                     metrics = {}

@@ -36,6 +36,11 @@ from .hybrid_perception_cortex import HybridPerceptionCortex
 from .hdc_engine import HDCEngine, HDCReasoningAgent
 from .tsetlin_machine import TsetlinMachine
 
+# Phase 2.1: Knowledge Graph Integration
+from .curiosity_knowledge_integrator import CuriosityKnowledgeIntegrator, create_curiosity_integrator
+from .theory_of_mind import TheoryOfMind
+from .explainability import ExplainabilityEngine
+
 __all__ = [
     "ArtificialBrain",
     "GlobalWorkspace",
@@ -54,7 +59,7 @@ __all__ = [
     "ReasoningEngine",
     "MetaCognitiveSNN",
     "SleepConsolidator",
-    "HierarchicalMemorySystem", # Added
+    "HierarchicalMemorySystem",  # Added
     "AdaptiveFrankenMoE",       # Added
     "DeltaLearningSystem",      # Added
     "NeuroSymbolicBridge",      # Added
@@ -64,7 +69,13 @@ __all__ = [
     "PhysicsEvaluator",
     "SomFeatureMap",
     "HybridPerceptionCortex",
-    "HDCEngine", 
+    "HDCEngine",
     "HDCReasoningAgent",
     "TsetlinMachine",
+    # Phase 2.1
+    "CuriosityKnowledgeIntegrator",
+    "create_curiosity_integrator",
+    # Phase 3.1
+    "TheoryOfMind",
+    "ExplainabilityEngine",
 ]

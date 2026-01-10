@@ -42,7 +42,8 @@ class SleepConsolidator:
         dream_rate: float = 0.1,
         learning_rate: float = 1e-4,
         device: Any = "cpu",
-        buffer_size: int = 1000
+        buffer_size: int = 1000,
+        curiosity_integrator: Optional[Any] = None  # [Phase 2.1] 知識グラフ統合器
     ):
         """
         Args:
@@ -65,10 +66,13 @@ class SleepConsolidator:
         # レガシー/テスト用の内部バッファ
         self.memory_buffer: Deque[Episode] = deque(maxlen=buffer_size)
 
+        # [Phase 2.1] 知識グラフ統合器
+        self.curiosity_integrator = curiosity_integrator
+
         self.is_active = False
 
         logger.info(
-            "💤 Sleep Consolidator v2.5 initialized (Hippocampus -> Cortex link established).")
+            "💤 Sleep Consolidator v2.6 initialized (Knowledge Graph Integration enabled).")
 
     def _init_optimizer(self):
         """オプティマイザの遅延初期化"""
@@ -141,7 +145,17 @@ class SleepConsolidator:
 
         avg_loss = total_loss / duration_cycles if duration_cycles > 0 else 0.0
 
-        # 4. Synaptic Homeostasis (テスト要件対応: Hebbian Reinforcement)
+        # 4. [Phase 2.1] 知識グラフ統合 (Curiosity -> KG)
+        kg_report: Dict[str, Any] = {}
+        if self.curiosity_integrator is not None:
+            try:
+                kg_report = self.curiosity_integrator.integrate_during_sleep()
+                logger.info(
+                    f"   -> Knowledge Graph integration: {kg_report.get('integrated', 0)} entries.")
+            except Exception as e:
+                logger.warning(f"⚠️ Knowledge Graph integration failed: {e}")
+
+        # 5. Synaptic Homeostasis (テスト要件対応: Hebbian Reinforcement)
         # 睡眠の終わりにシナプス強度を調整する
         self._apply_hebbian_reinforcement(strength=0.1)
 
@@ -158,7 +172,8 @@ class SleepConsolidator:
             "cycles": duration_cycles,
             "processed_episodes": num_memories,
             "consolidated_to_cortex": consolidated_count,
-            "avg_replay_loss": avg_loss
+            "avg_replay_loss": avg_loss,
+            "knowledge_graph": kg_report  # [Phase 2.1]
         }
         logger.info(f"🌅 Sleep Cycle Complete. {report}")
         return report
@@ -229,91 +244,109 @@ class SleepConsolidator:
         """重要度順にソートする"""
         return sorted(memories, key=self._get_importance, reverse=True)
 
+    def _extract_spike_pattern(self, memory: Any) -> Optional[torch.Tensor]:
+        """
+        記憶からスパイクパターンを抽出する。
+
+        目標⑤対応: Hebbian学習に使用するスパイク活動パターンを取得する。
+        """
+        if hasattr(memory, 'state'):
+            return memory.state.to(self.device)
+        elif isinstance(memory, dict):
+            inp = memory.get("input")
+            if isinstance(inp, torch.Tensor):
+                return inp.to(self.device)
+        return None
+
     def _train_step(self, batch: List[Any]) -> float:
-        """1バッチ分のリプレイ学習"""
-        if not self.brain_model or not self.optimizer:
+        """
+        1バッチ分のリプレイ学習 (Non-Gradient / Hebbian Based)
+
+        目標⑤対応: 
+        誤差逆伝播（BP）を使用せず、生物学的に妥当なHebbian学習則に基づいて
+        重みを更新する。これにより、オンチップでの継続的な自己修正・適応が可能になる。
+
+        学習則: Δw = η * pre * post (同時発火による強化)
+        """
+        if not self.brain_model:
             return 0.0
 
-        self.optimizer.zero_grad()
-        batch_loss = torch.tensor(0.0, device=self.device)
+        total_update = 0.0
         valid_samples = 0
 
-        for item in batch:
-            try:
-                # Case A: Legacy Episode Object
-                if hasattr(item, 'state') and hasattr(item, 'text'):
-                    img = item.state.to(self.device)
-                    txt = item.text.to(self.device)
-                    if img.dim() == 3:
-                        img = img.unsqueeze(0)
-                    if txt.dim() == 1:
-                        txt = txt.unsqueeze(0)
+        # 勾配計算を完全に無効化 (Non-gradient learning)
+        with torch.no_grad():
+            for item in batch:
+                try:
+                    # スパイクパターンの抽出
+                    spike_pattern = self._extract_spike_pattern(item)
+                    if spike_pattern is None:
+                        continue
 
-                    # Forward
+                    # 次元の正規化
+                    if spike_pattern.dim() == 3:
+                        spike_pattern = spike_pattern.unsqueeze(0)
+                    elif spike_pattern.dim() == 1:
+                        spike_pattern = spike_pattern.unsqueeze(0)
+
+                    # モデルのフォワードパス（スパイク活動を取得）
                     if hasattr(self.brain_model, 'forward'):
                         try:
-                            out = self.brain_model(img, txt)  # VLM signature
-                        except TypeError:
-                            # Vision only signature
-                            out = self.brain_model(img)
+                            out = self.brain_model(spike_pattern)
+                        except Exception:
+                            continue
 
-                        if isinstance(out, dict) and "alignment_loss" in out:
-                            batch_loss += out["alignment_loss"]
-                            valid_samples += 1
-                        elif isinstance(out, torch.Tensor):
-                            # ダミーの自己教師あり損失 (出力の安定化)
-                            batch_loss += torch.mean(out ** 2) * 0.01
-                            valid_samples += 1
-
-                # Case B: Dictionary Memory (Hippocampus style)
-                elif isinstance(item, dict):
-                    inp = item.get("input")
-                    if isinstance(inp, torch.Tensor):
-                        x = inp.to(self.device)
-                        if x.dim() < 4 and len(x.shape) > 0:
-                            x = x.unsqueeze(0)
-
-                        out = self.brain_model(x)
-
-                        # 損失計算の型安全化
-                        loss: torch.Tensor
-
-                        if isinstance(out, dict):
-                            val: Any = None
-                            if "alignment_loss" in out:
-                                val = out["alignment_loss"]
-                            elif "loss" in out:
-                                val = out["loss"]
-
-                            if isinstance(val, torch.Tensor):
-                                loss = val
+                        # 出力からスパイク活動率を算出
+                        if isinstance(out, torch.Tensor):
+                            post_activity = out.float().mean()
+                        elif isinstance(out, dict):
+                            # 辞書出力の場合、スパイクまたはlogitsを取得
+                            if "spikes" in out:
+                                post_activity = out["spikes"].float().mean()
+                            elif "logits" in out:
+                                post_activity = torch.sigmoid(
+                                    out["logits"]).mean()
                             else:
-                                loss = torch.tensor(
-                                    0.0, device=self.device, requires_grad=True)
+                                post_activity = torch.tensor(
+                                    0.5, device=self.device)
                         else:
-                            # 出力が辞書でない場合、安全なデフォルト値
-                            loss = torch.tensor(
-                                0.0, device=self.device, requires_grad=True)
+                            post_activity = torch.tensor(
+                                0.5, device=self.device)
 
-                        # 勾配がない場合はダミー勾配を付与してエラー回避
-                        if not loss.requires_grad:
-                            loss = torch.tensor(
-                                0.1, device=self.device, requires_grad=True)
+                        pre_activity = spike_pattern.float().mean()
 
-                        batch_loss += loss
+                        # 報酬による変調（あれば）
+                        reward_mod = 1.0
+                        if isinstance(item, dict) and "reward" in item:
+                            reward_mod = 1.0 + float(item["reward"]) * 0.5
+                        elif hasattr(item, 'reward'):
+                            reward_mod = 1.0 + float(item.reward) * 0.5
+
+                        # Hebbian学習則の適用
+                        # Δw = η * reward * pre * post
+                        for param in self.brain_model.parameters():
+                            if param.dim() > 1:  # 重み行列のみ対象
+                                # Hebbian項: "Fire together, wire together"
+                                hebbian_term = pre_activity * post_activity * reward_mod
+
+                                # 重み減衰（恒常性維持）
+                                decay_term = 0.0001 * param.data
+
+                                # 更新: Δw = lr * (hebbian - decay)
+                                delta_w = self.learning_rate * \
+                                    (hebbian_term - decay_term)
+                                param.data.add_(delta_w)
+
+                                total_update += delta_w.abs().mean().item()
+
                         valid_samples += 1
 
-            except Exception:
-                # 学習時の一時的なエラーはスキップして続行
-                # logger.debug(f"Replay step error: {e}")
-                pass
+                except Exception:
+                    # 学習時の一時的なエラーはスキップして続行
+                    pass
 
         if valid_samples > 0:
-            batch_loss = batch_loss / valid_samples
-            if batch_loss.requires_grad:
-                batch_loss.backward()
-                self.optimizer.step()
-            return batch_loss.item()
+            return total_update / valid_samples
 
         return 0.0
 
