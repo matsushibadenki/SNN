@@ -1,6 +1,6 @@
 # ファイルパス: configs/experiments/cifar10_spikingcnn_config.yaml
-# 機能: CIFAR-10画像分類タスク向けのSpiking CNNモデル設定。
-# 修正: Hydra構文を削除し、正しいYAMLフォーマットに修正。
+# 機能: CIFAR-10 96%+ Accuracy SNN Experiment Config
+# 更新: 高精度化のためOptimizerをSGDに変更し、Augmentation設定を追加。
 
 seed: 42
 device: "auto"
@@ -8,38 +8,44 @@ device: "auto"
 data:
   dataset_name: cifar10
   path: "data/cifar10"
-  format: "simple_text" # ベンチマークスクリプトで DatasetClass が強制されるため、ここは形式的
-  tokenizer_name: "gpt2"
+  format: "simple_text"
+  tokenizer_name: "gpt2" # Placeholder
+  augmentation:
+    auto_augment: true
+    cutout: true
+    mixup: true
+    mixup_alpha: 1.0
 
 model:
   architecture_type: "spiking_cnn"
   num_classes: 10
-  time_steps: 16
+  time_steps: 6 # Accuracy/Speed Trade-off (96%狙いなら6-8推奨)
   neuron:
     type: "lif"
-    tau_mem: 10.0
-    base_threshold: 0.1
-    v_threshold: 0.1
+    tau_mem: 2.0
+    base_threshold: 1.0
+    v_threshold: 1.0
+    v_reset: 0.0
 
 training:
-  epochs: 100
-  batch_size: 64
-  log_dir: "workspace/runs/cifar10_experiment"
+  epochs: 300 # SNN SOTAには300エポック必要
+  batch_size: 128
+  log_dir: "workspace/runs/cifar10_sota"
   eval_interval: 1
   log_interval: 1
   paradigm: "gradient_based"
   gradient_based:
-    type: "standard"
-    learning_rate: 0.0003
+    type: "sgd" # AdamW -> SGD for Better Generalization
+    learning_rate: 0.1
+    momentum: 0.9
+    weight_decay: 0.0005
+    label_smoothing: 0.1
     loss:
       ce_weight: 1.0
-      spike_reg_weight: 0.5
-      sparsity_reg_weight: 0.00005
-      mem_reg_weight: 0.0
-      temporal_compression_weight: 0.0
-      sparsity_threshold_reg_weight: 0.0
-      ewc_weight: 0.0
+      spike_reg_weight: 0.00001
+      sparsity_reg_weight: 0.0
   scheduler:
     type: cosine_annealing
-    warmup_epochs: 5
-    max_lr: 0.0003
+    warmup_epochs: 10
+    max_lr: 0.1
+    min_lr: 0.000001
