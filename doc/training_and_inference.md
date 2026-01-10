@@ -1,31 +1,48 @@
-# **SNNプロジェクト: 学習・推論コマンドガイド**
+# **SNNプロジェクト: 学習・推論コマンドガイド (v17.3)**
 
 このドキュメントでは、モデルの学習（Training）と推論・デモ（Inference/Demo）を実行するための主要なコマンドについて解説します。  
 プロジェクトディレクトリのルートで実行してください。
 
+## **⚠️ 実行前の注意**
+
+スクリプトを実行する際、モジュールのインポートエラー（ModuleNotFoundError）が発生する場合は、環境変数 PYTHONPATH にカレントディレクトリを追加してください。
+
+\# Mac/Linux  
+export PYTHONPATH=.
+
+\# Windows (PowerShell)  
+$env:PYTHONPATH="."
+
+または、各コマンドの先頭に PYTHONPATH=. を付けて実行します（例: PYTHONPATH=. python scripts/...）。
+
 ## **1\. 学習 (Training)**
 
-モデルを一から学習、あるいは継続学習させるためのコマンドです。
+### **A. 高精度レシピ (High-Performance Recipes)**
 
-### **汎用トレーナー**
+特定のタスク（CIFAR-10, MNIST）で最高精度を目指すための推奨スクリプトです。  
+これらは snn\_research/recipes/ 内に定義されており、以下のように実行します。
 
-CLIまたはスクリプト経由で、設定ファイル (configs/) を指定して学習を開始します。
+* **CIFAR-10 学習 (96% Aim)**  
+  \# Pythonモジュールとして実行  
+  python \-c "from snn\_research.recipes.cifar10 import run\_cifar10\_training; run\_cifar10\_training()"
 
-\# SNN CLIを使用する場合 (推奨)  
-snn-cli gradient-train \--model\_config configs/models/stable\_small\_snn.yaml \--data\_path data/smoke\_test\_data.jsonl
+* **MNIST 学習**  
+  \# Pythonモジュールとして実行  
+  python \-c "from snn\_research.recipes.mnist import run\_mnist\_training; run\_mnist\_training()"
 
-\# 直接スクリプトを実行する場合  
-python scripts/training/train.py \--config configs/experiments/brain\_v14\_config.yaml
+### **B. 汎用トレーナー (Generic Trainer)**
 
-### **タスク特化型学習スクリプト**
+設定ファイル (configs/) を指定して、様々なアーキテクチャのモデルを学習させます。
 
-特定のタスクやデータセットに特化した学習スクリプトです。
+\# Spiking CNNの設定で学習  
+PYTHONPATH=. python scripts/training/train.py \--config configs/experiments/cifar10\_spikingcnn\_config.yaml
 
-* **MNIST SNN学習**:  
-  python scripts/training/train\_mnist\_snn.py
+\# デフォルト設定（小規模モデル）で学習  
+PYTHONPATH=. python scripts/training/train.py \--model\_config configs/models/small.yaml
 
-* **CIFAR-10 Bio-PC (Predictive Coding) 学習**:  
-  python scripts/training/train\_bio\_pc\_cifar10.py
+**注意**: 現在、データセット自動ダウンロード機能の一部（WikiTextなど）はモジュール構成の変更により無効化されています。smoke\_test\_data.jsonl は自動生成されます。
+
+### **C. 特定モデルの学習スクリプト**
 
 * **Spiking VLM (Vision-Language Model) 学習**:  
   python scripts/training/train\_spiking\_vlm.py
@@ -33,111 +50,50 @@ python scripts/training/train.py \--config configs/experiments/brain\_v14\_confi
 * **Planner (推論エンジン) 学習**:  
   python scripts/training/train\_planner.py
 
+* SCAL (Statistical Centroid Alignment Learning):  
+  勾配計算を行わない高速学習手法です。  
+  python scripts/training/run\_improved\_scal\_training.py \\  
+      \--config configs/templates/base\_config.yaml \\  
+      \--model\_config configs/models/small.yaml
+
 ## **2\. 推論・デモ (Inference & Demo)**
-
-学習済みモデルを使って推論を行ったり、対話デモを動かしたりします。
-
-### **CLIによる推論**
-
-\# 単一テキストの推論  
-snn-cli predict \--text "Hello SNN" \--model\_path models/checkpoints/best\_model.pt
-
-\# チャットモード  
-snn-cli chat \--model\_config configs/models/brain\_v4\_synesthesia.yaml
 
 ### **Webアプリ/APIサーバー**
 
-\# FastAPIサーバー起動  
+FastAPIサーバーを起動し、ブラウザから対話や画像認識を行います。
+
 python app/main.py
 
-### **統合デモ**
+### **統合デモ (Unified Perception)**
 
 視覚・言語・運動野を統合したデモを実行します。
 
 python app/unified\_perception\_demo.py
 
-## **3\. 高度な学習パラダイム (Advanced Paradigms)**
+### **CLIによる推論**
 
-通常の勾配学習（Backpropagation）以外の、生物学的・効率的な学習手法です。
+snn-cli コマンドがインストールされている場合、以下のように使用できます。
 
-### **⚡ STDP (Spike-Timing Dependent Plasticity)**
+\# ヘルスチェック  
+snn-cli health-check
 
-教師なし学習の一種で、スパイクのタイミングに基づいてシナプス結合を強化・減衰させます。
+\# レシピ一覧（実装されている場合）  
+\# snn-cli recipe list
 
-python scripts/experiments/learning/run\_stdp\_learning.py
+もし snn-cli コマンドがパスに通っていない場合は、以下のように実行します。
 
-### **🧠 SCAL (Statistical Centroid Alignment Learning)**
+python snn-cli.py health-check
 
-勾配計算を行わず、統計的な重心アライメントによって高速に学習する独自手法です。
+## **3\. 高度な学習パラダイム**
 
-python scripts/training/run\_improved\_scal\_training.py \\  
-    \--config configs/templates/base\_config.yaml \\  
-    \--model\_config configs/models/small.yaml \\  
-    \--data\_path data/smoke\_test\_data.jsonl \\  
-    \--override\_config "training.epochs=10" \\  
-    \--override\_config "training.batch\_size=4" \\  
-    \--override\_config "training.gradient\_based.type=standard"
+生物学的妥当性を重視した学習手法です。
 
-\# 自動調整 (Auto-tune)  
-python scripts/optimization/auto\_tune\_efficiency.py \\  
-    \--model-config configs/models/small.yaml \\  
-    \--n-trials 20
+* **STDP (Spike-Timing Dependent Plasticity)**:  
+  python scripts/experiments/learning/run\_stdp\_learning.py
 
-### **💧 蒸留ワークフロー (Distillation Workflow)**
+* オンチップ学習 (On-Chip Learning):  
+  エッジデバイス上での適応を想定した学習です。  
+  python scripts/experiments/learning/run\_on\_chip\_learning.py
 
-データ生成から蒸留学習までの完全なフローです。
-
-\# 1\. 古いデータを削除（クリーンな状態で再作成）  
-rm \-rf precomputed\_data/smoke\_distill
-
-\# 2\. 蒸留データの再生成  
-python scripts/data/prepare\_distillation\_data.py  \\  
-    \--input\_file data/smoke\_test\_data.jsonl \\  
-    \--output\_dir precomputed\_data/smoke\_distill \\  
-    \--teacher\_model gpt2
-
-\# 3\. 蒸留学習の実行  
-python scripts/training/train.py \\  
-    \--model\_config configs/models/bit\_rwkv\_micro.yaml \\  
-    \--data\_path precomputed\_data/smoke\_distill/distillation\_data.jsonl \\  
-    \--paradigm gradient\_based \\  
-    \--override\_config "training.gradient\_based.type=distillation" \\  
-    \--override\_config "training.gradient\_based.distillation.teacher\_model=gpt2"
-
-## **4\. 進化と自己改善 (Evolution & Self-Improvement)**
-
-Phase 6以降のシステムでは、単なる「学習」を超え、\*\*「経験」**と**「進化」\*\*によってモデルが自律的に更新されます。
-
-### **A. 自己修正による適応 (On-Chip Self-Correction)**
-
-バックプロパゲーション（勾配法）を使わず、稼働中にリアルタイムでシナプス荷重を調整します。
-
-* **実行コマンド**:  
-  python scripts/experiments/systems/run\_phase6\_agi\_prototype.py
-
-* **メカニズム**:  
-  * **R-STDP (Reward-modulated STDP)**: 報酬信号に基づいて、局所的なヘブ則学習を変調します。  
-  * 外部からの教師データは不要で、環境からのフィードバックのみで適応します。
-
-### **B. 社会的学習と文化継承 (Social Learning)**
-
-個体単独の学習ではなく、集団での合意形成を通じて知識を獲得します。
-
-* **実行コマンド**:  
-  python scripts/experiments/systems/run\_phase7\_civilization.py
-
-* **メカニズム**:  
-  * **Meme Propagation**: 有用と判断された概念ベクトル（Meme）は CultureRepository に保存されます。  
-  * **Knowledge Retrieval**: 新しく生まれたエージェントは、このリポジトリから知識をロードした状態で開始できます。
-
-### **C. 再帰的自己改善 (Recursive Self-Improvement)**
-
-遺伝的アルゴリズムとメタ学習を組み合わせ、システム自体が次世代のシステムを設計・生成します。
-
-* **実行コマンド**:  
-  python scripts/experiments/systems/run\_phase8\_singularity.py
-
-* **メカニズム**:  
-  * **Mutation**: パラメータ空間およびハイパーパラメータにランダムな変異を加えます。  
-  * **Selection**: 仮想環境でのタスク実行スコアに基づき、最も適応度の高い個体を選択します。  
-  * **Hot-Swap**: 稼働中のOSカーネル上で、脳モデルを即座に最新版へ差し替えます。
+* **蒸留学習 (Distillation)**:  
+  python scripts/experiments/learning/run\_distillation\_experiment.py  

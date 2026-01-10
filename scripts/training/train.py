@@ -1,11 +1,9 @@
 # ファイルパス: scripts/training/train.py
-# タイトル: SNN学習実行スクリプト (Fault Tolerant & Auto-Fallback)
+# タイトル: SNN学習実行スクリプト (修正版: Import Error解消)
 # 修正内容:
-# 1. '--model_config ...' のようなプレースホルダー入力時に、デフォルト設定(small.yaml)へ自動フォールバックする機能を追加。
-# 2. 設定ファイル読み込みエラー時の回復ロジックを強化。
-# 3. architecture_type未定義時のデフォルト設定注入ロジックを追加。
+# 1. 存在しない 'scripts.data.data_preparation' のインポートを削除。
+# 2. '--model_config ...' のフォールバックロジックなどの堅牢性は維持。
 
-from scripts.data.data_preparation import prepare_wikitext_data
 from snn_research.training.bio_trainer import BioRLTrainer
 from snn_research.training.trainers import (
     BreakthroughTrainer,
@@ -39,9 +37,6 @@ project_root = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "../.."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
-
-# アプリケーションコンポーネントのインポート
-# インポートパス修正済み
 
 # ロガー設定
 logging.basicConfig(level=logging.INFO,
@@ -165,9 +160,11 @@ def train(args: argparse.Namespace, config: DictConfig, tokenizer: Optional[PreT
         data_path = args.data_path or OmegaConf.select(
             config, "data.path", default="data/default_data.jsonl")
 
+        # WikiTextの自動ダウンロード機能は scripts.data が存在しないため無効化
         if "wikitext-103" in str(data_path) and not os.path.exists(str(data_path)):
-            logger.info("Downloading WikiText-103 dataset...")
-            prepare_wikitext_data()
+            logger.warning(
+                "⚠️ WikiText-103 dataset is missing and automatic download is disabled (module missing).")
+            # prepare_wikitext_data()
 
         if not os.path.exists(str(data_path)):
             if "smoke_test_data.jsonl" in str(data_path):
@@ -465,7 +462,6 @@ def main() -> None:
                         {"model": default_conf_raw})
 
                 # ベース設定にマージ（ユーザー設定は優先されるべきだが、アーキテクチャが無い場合はこれで埋める）
-                # マージ順序に注意：既存を上書きしないよう、本来は逆にすべきだが、ここは欠損補完目的
                 base_conf = OmegaConf.merge(base_conf, default_model_conf)
                 # 再取得
                 base_conf_typed = cast(DictConfig, base_conf)
