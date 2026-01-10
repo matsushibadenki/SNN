@@ -1,4 +1,7 @@
-# ファイルパス: snn_research/cognitive_architecture/__init__.py
+# snn_research/cognitive_architecture/__init__.py
+# Title: Cognitive Architecture Init
+# Description: 認知アーキテクチャコンポーネントのエクスポート定義。
+
 from .artificial_brain import ArtificialBrain
 from .global_workspace import GlobalWorkspace
 from .perception_cortex import PerceptionCortex
@@ -15,8 +18,14 @@ from .symbol_grounding import SymbolGrounding
 from .planner_snn import PlannerSNN
 from .reasoning_engine import ReasoningEngine
 from .meta_cognitive_snn import MetaCognitiveSNN
-# [Fix 12] 正しいクラス名でインポート
+
+# New Components for Phase 1-4
+from .memory_consolidation import HierarchicalMemorySystem
 from .sleep_consolidation import SleepConsolidator
+from .adaptive_moe import AdaptiveFrankenMoE
+from .delta_learning import DeltaLearningSystem
+from .neuro_symbolic_bridge import NeuroSymbolicBridge
+
 from .intrinsic_motivation import IntrinsicMotivationSystem
 from .causal_inference_engine import CausalInferenceEngine
 from .emergent_system import EmergentCognitiveSystem
@@ -45,6 +54,10 @@ __all__ = [
     "ReasoningEngine",
     "MetaCognitiveSNN",
     "SleepConsolidator",
+    "HierarchicalMemorySystem", # Added
+    "AdaptiveFrankenMoE",       # Added
+    "DeltaLearningSystem",      # Added
+    "NeuroSymbolicBridge",      # Added
     "IntrinsicMotivationSystem",
     "CausalInferenceEngine",
     "EmergentCognitiveSystem",

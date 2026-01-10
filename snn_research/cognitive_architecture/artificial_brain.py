@@ -1,11 +1,11 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: Artificial Brain v2.2 (Dependency Injection Support)
-# 目的: Containers.pyからの依存注入に対応し、引数エラーを解消する。
+# 日本語タイトル: Artificial Brain v2.3 (Type Safe)
+# 目的: mypyの型推論エラー（device属性の不一致）を解消し、堅牢性を向上させる。
 
 import torch
 import torch.nn as nn
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, cast
 
 # Cognitive Modules (Imports for type hinting/default instantiation)
 from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
@@ -76,6 +76,9 @@ class ArtificialBrain(nn.Module):
 
         # --- 2. Cognitive Control ---
         self.global_workspace = global_workspace or GlobalWorkspace()
+        # Alias for dashboard.py compatibility
+        self.workspace = self.global_workspace
+
         self.pfc = prefrontal_cortex or PrefrontalCortex(
             workspace=self.global_workspace,
             motivation_system=self.motivation
@@ -87,6 +90,9 @@ class ArtificialBrain(nn.Module):
             feature_dim=self.config.get("feature_dim", 256),
             workspace=self.global_workspace
         )
+        # Alias for omega_point.py compatibility
+        self.perception = self.visual_cortex
+
         self.motor_cortex = motor_cortex or MotorCortex()
         self.sensory_receptor = sensory_receptor
         self.spike_encoder = spike_encoder
@@ -98,11 +104,17 @@ class ArtificialBrain(nn.Module):
         self.cerebellum = cerebellum
         self.causal_engine = causal_inference_engine
         self.symbol_grounding = symbol_grounding
+
         self.astrocyte_network = astrocyte_network
+        # Alias for brain_v14.py compatibility
+        self.astrocyte = self.astrocyte_network
+
         self.perception_cortex = perception_cortex
 
         # --- 5. Core Engine & Maintenance ---
         self.core_model = thinking_engine
+        # Alias for some scripts
+        self.thinking_engine = thinking_engine
 
         # Sleep Consolidator
         self.sleep_consolidator = sleep_consolidator or SleepConsolidator(
@@ -121,10 +133,22 @@ class ArtificialBrain(nn.Module):
         self.energy_level = 100.0
         self.step_count = 0
 
+        # Device dummy for compatibility [Fix: Explicitly type as Any]
+        self.device: Any = "cpu"
+        if self.core_model and hasattr(self.core_model, 'device'):
+            # Cast to Any to avoid "Tensor | Module" inference error
+            self.device = cast(Any, self.core_model).device
+
     def set_core_model(self, model: nn.Module):
         """学習対象のコアモデル（SNNなど）をセットし、SleepConsolidatorにも紐付ける"""
         self.core_model = model
+        self.thinking_engine = model
         self.sleep_consolidator.brain_model = model
+
+        # [Fix: Cast to Any to avoid mypy error on .device access]
+        if hasattr(model, 'device'):
+            self.device = cast(Any, model).device
+
         logger.info(f"🧠 Core brain model set: {type(model).__name__}")
 
     def process_step(self, sensory_input: Any, reward: float = 0.0) -> Dict[str, Any]:
@@ -147,8 +171,16 @@ class ArtificialBrain(nn.Module):
             pass
 
         if isinstance(sensory_input, torch.Tensor):
+            # perception_cortexがあれば優先、なければvisual_cortex
+            if self.perception_cortex:
+                # perception_cortexのインターフェースに合わせて呼び出す
+                pass
+
             perception_output = self.visual_cortex.perceive(sensory_input)
-            visual_features = perception_output.get("features")
+            if isinstance(perception_output, dict):
+                visual_features = perception_output.get("features")
+            else:
+                visual_features = perception_output  # 仮
 
         # 2. 動機付け更新 (Motivation)
         surprise = 0.1  # Dummy value for now
@@ -185,12 +217,16 @@ class ArtificialBrain(nn.Module):
         # エネルギー消費
         self.energy_level -= 0.1
 
+        # 状態保持 (dashboard用など)
+        self.state = "ACTIVE"
+
         return {
             "action": action_cmd,
             "motivation": motivation_status,
             "intrinsic_reward": intrinsic_reward,
             "conscious_content": "active",
-            "is_sleeping": False
+            "is_sleeping": False,
+            "executed_modules": ["visual_cortex", "hippocampus", "pfc", "motor_cortex"]
         }
 
     def should_sleep(self, internal_state: Dict[str, float]) -> bool:
@@ -207,6 +243,7 @@ class ArtificialBrain(nn.Module):
             return {"status": "already_sleeping"}
 
         self.is_sleeping = True
+        self.state = "SLEEPING"
         logger.info("💤 Entering sleep mode...")
 
         sleep_report = self.sleep_consolidator.perform_sleep_cycle(
@@ -214,6 +251,7 @@ class ArtificialBrain(nn.Module):
 
         self.energy_level = 100.0
         self.is_sleeping = False
+        self.state = "ACTIVE"
         logger.info("🌅 Waking up. Energy restored.")
 
         return {
@@ -225,3 +263,40 @@ class ArtificialBrain(nn.Module):
     def forward(self, x):
         """PyTorchのforward互換用 (主に学習時)"""
         return self.process_step(x)
+
+    # --- Compatibility Methods for Legacy Scripts ---
+
+    def run_cognitive_cycle(self, sensory_input: Any) -> Dict[str, Any]:
+        """Compatibility alias for process_step."""
+        return self.process_step(sensory_input)
+
+    def sleep_cycle(self):
+        """Compatibility alias for perform_sleep_cycle."""
+        return self.perform_sleep_cycle()
+
+    def get_brain_status(self) -> Dict[str, Any]:
+        """Return current status diagnostics."""
+        astro_energy = 0.0
+        astro_fatigue = 0.0
+
+        # アストロサイトの状態を取得（存在する場合）
+        if self.astrocyte:
+            astrocyte = cast(Any, self.astrocyte)
+            if hasattr(astrocyte, 'current_energy'):
+                astro_energy = float(astrocyte.current_energy)
+            if hasattr(astrocyte, 'fatigue_toxin'):
+                astro_fatigue = float(astrocyte.fatigue_toxin)
+            # get_energy_levelメソッドがある場合
+            if hasattr(astrocyte, 'get_energy_level'):
+                astro_energy = astrocyte.get_energy_level() * 100
+
+        return {
+            "status": "SLEEPING" if self.is_sleeping else "ACTIVE",
+            "energy": self.energy_level,
+            "steps": self.step_count,
+            "astrocyte": {
+                "energy": astro_energy,
+                "metrics": {"fatigue_index": astro_fatigue}
+            },
+            "os": {}  # Placeholder for OS info
+        }

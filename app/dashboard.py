@@ -3,15 +3,10 @@
 # Description: fMRI風可視化機能を追加し、pandasのmypyエラーを修正したダッシュボード。
 
 import gradio as gr  # type: ignore[import-untyped]
-
-
 import json
-import pandas as pd  # type: ignore[import-untyped] # 修正: スタブ欠落エラーを抑制
+import pandas as pd  # type: ignore[import-untyped]
 
-# プロジェクトルートへのパス追加コードを削除しました。
-# パッケージとしてインストールするか、python -m app.dashboard で実行してください。
-
-from typing import cast
+from typing import cast, Any
 from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
 from app.containers import BrainContainer
 
@@ -80,14 +75,18 @@ def process_brain_cycle(user_input: str):
     if not user_input:
         return pd.DataFrame(), "Waiting...", "", "", "", "<div>Inactive</div>"
 
+    brain_instance = cast(ArtificialBrain, brain)
+
     # Brain実行
-    brain.run_cognitive_cycle(user_input)
+    brain_instance.run_cognitive_cycle(user_input)
 
     # 状態取得
     active_modules = ["visual_cortex", "system1"]
 
-    # [mypy修正] upload_to_workspace で入った情報を正しく取得
-    amygdala_info = brain.workspace.get_information("amygdala")
+    # [mypy修正] 型キャストを使用してアクセス
+    workspace = cast(Any, brain_instance.workspace)
+    amygdala_info = workspace.get_information("amygdala")
+
     valence = 0.5
     arousal = 0.5
     if isinstance(amygdala_info, dict):
@@ -95,12 +94,15 @@ def process_brain_cycle(user_input: str):
         arousal = amygdala_info.get('arousal', 0.5)
 
     # 行動の取得
-    action_str = str(brain.basal_ganglia.selected_action)
+    # BasalGangliaへのアクセスを型キャストで安全に
+    basal_ganglia = cast(Any, brain_instance.basal_ganglia)
+    action_str = str(basal_ganglia.selected_action)
+
     if "thinking" in action_str:
         active_modules.append("reasoning_engine")
 
     # コンテキスト情報の取得
-    conscious_content = brain.workspace.conscious_broadcast_content
+    conscious_content = workspace.conscious_broadcast_content
 
     # ログデータ
     log_data = [

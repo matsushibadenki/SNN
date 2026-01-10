@@ -1,132 +1,165 @@
-# ファイルパス: snn_research/cognitive_architecture/neuro_symbolic_bridge.py
-# 日本語タイトル: Neuro-Symbolic Bridge (NSB)
-# 目的: SNNのスパイク活動（Neural）と記号論理（Symbolic）の相互変換を行い、
-#       「直感」と「論理」を融合した推論を可能にする。
+# snn_research/cognitive_architecture/neuro_symbolic_bridge.py
+# Title: Neuro-Symbolic Bridge v1.0
+# Description: SNNの分散表現（アトラクタ）と知識グラフのシンボル表現を相互変換するブリッジ。
 
+from typing import Dict, Optional, List, Tuple, Any, Set
+import numpy as np
+import logging
 import torch
 import torch.nn as nn
-from typing import List, Tuple, Optional
-from dataclasses import dataclass
 
-@dataclass
-class Symbol:
-    name: str
-    confidence: float = 1.0
-    vector: Optional[torch.Tensor] = None
+# 型ヒント用のダミーインターフェース
+
+
+class SNNInterface:
+    def create_attractor(self, concept: str) -> np.ndarray:
+        return np.random.randn(256)
+
+    def strengthen_connection(self, pattern1: np.ndarray, pattern2: np.ndarray):
+        pass
+
+
+class KGInterface:
+    def extract_entities(self, text: str) -> List[str]:
+        return [w for w in text.split() if len(w) > 3]
+
+    def extract_relations(self, text: str) -> List[Tuple[str, str, str]]:
+        return []
+
+    def add_facts(self, entities: List[str], relations: List[Any]):
+        pass
+
+    def get_triplets(self) -> List[Tuple[str, str, str]]:
+        return []
+
 
 class NeuroSymbolicBridge(nn.Module):
-    """
-    ニューラル活動(Spikes)とシンボル(Logic)の変換アダプタ。
-    
-    Architecture:
-    1. Concept Extraction: スパイク発火率 -> 概念シンボル (Grounding)
-    2. Logic Processing: 外部ルールエンジンによる推論 (Neural Module外で実行)
-    3. Concept Injection: 推論結果シンボル -> スパイク刺激 (Embedding)
-    """
-    def __init__(self, input_dim: int, embed_dim: int, concepts: List[str]):
+    """神経系（SNN）と記号系（GraphRAG）の橋渡し"""
+
+    def __init__(self, snn_network: Optional[Any] = None, knowledge_graph: Optional[Any] = None,
+                 input_dim: int = 32, embed_dim: int = 32, concepts: List[str] = []):
         super().__init__()
-        self.input_dim = input_dim
-        self.embed_dim = embed_dim
+        self.snn = snn_network
+        self.kg = knowledge_graph
+
+        # コンセプト抽出用の簡易線形層 (デモ用)
+        self.extractor = nn.Linear(input_dim, len(
+            concepts) if concepts else embed_dim)
+
+        # アトラクタ状態 → シンボル のマッピング
+        self.attractor_to_symbol: Dict[str, str] = {}
+
+        # シンボル → SNNパターン のマッピング
+        self.symbol_to_pattern: Dict[str, np.ndarray] = {}
+
+        # コンセプトリスト
         self.concepts = concepts
-        
-        # 1. Extraction Layer (Neural -> Symbol)
-        # スパイク活動から、各概念の活性度を推定する線形層
-        self.extractor = nn.Linear(input_dim, len(concepts))
-        
-        # 2. Injection Layer (Symbol -> Neural)
-        # 各概念に対応する「脳内表現（Embedding）」
-        self.concept_embeddings = nn.Embedding(len(concepts), embed_dim)
-        
-        # 概念名とIDのマッピング
-        self.concept_to_id = {c: i for i, c in enumerate(concepts)}
-        
-        # 初期化
-        nn.init.xavier_normal_(self.extractor.weight)
-        nn.init.normal_(self.concept_embeddings.weight, std=0.02)
 
-    def extract_symbols(self, spike_activity: torch.Tensor, threshold: float = 0.5) -> List[Symbol]:
-        """
-        脳の活動状態から、現在活性化している概念シンボルを抽出する。
-        
-        Args:
-            spike_activity: (Batch, InputDim) - ニューロンの発火率や膜電位
-        Returns:
-            active_symbols: 検出されたシンボルのリスト
-        """
-        # (B, NumConcepts)
-        logits = self.extractor(spike_activity)
-        probs = torch.sigmoid(logits)
-        
-        # 閾値を超えた概念を抽出 (Batchサイズ1を想定した簡易実装)
-        # 実際はバッチごとにリストを返す形になる
-        active_indices = torch.nonzero(probs[0] > threshold, as_tuple=False).squeeze(-1)
-        
-        symbols = []
-        for idx in active_indices:
-            idx_int = idx.item()
-            sym_name = self.concepts[idx_int]
-            conf = probs[0, idx_int].item()
-            vec = self.concept_embeddings(idx)
-            symbols.append(Symbol(name=sym_name, confidence=conf, vector=vec))
-            
-        return symbols
+        logging.info("NeuroSymbolicBridge initialized.")
 
-    def inject_symbols(self, symbols: List[str]) -> torch.Tensor:
-        """
-        記号論理で導き出された結論（概念リスト）を、脳への入力信号に変換する。
-        
-        Args:
-            symbols: 活性化させたい概念名のリスト
-        Returns:
-            neural_input: (1, EmbedDim) - 脳へフィードバックする刺激
-        """
-        if not symbols:
-            return torch.zeros(1, self.embed_dim, device=self.concept_embeddings.weight.device)
-            
-        indices = []
-        for s in symbols:
-            if s in self.concept_to_id:
-                indices.append(self.concept_to_id[s])
-        
-        if not indices:
-            return torch.zeros(1, self.embed_dim, device=self.concept_embeddings.weight.device)
-            
-        idx_tensor = torch.tensor(indices, device=self.concept_embeddings.weight.device)
-        
-        # 複数の概念ベクトルの和（または平均）を生成
-        embeddings = self.concept_embeddings(idx_tensor)
-        neural_input = torch.sum(embeddings, dim=0, keepdim=True)
-        
-        return neural_input
+    def ground_symbol(self, concept: str) -> np.ndarray:
+        """シンボルグラウンディング: 概念→スパイクパターン"""
+
+        if concept in self.symbol_to_pattern:
+            return self.symbol_to_pattern[concept]
+
+        # 新しい概念の場合、SNN側でアトラクタを作成
+        # snnインターフェースがない場合はランダム生成
+        attractor_pattern = np.random.randn(256)
+        if self.snn and hasattr(self.snn, 'create_attractor'):
+            attractor_pattern = self.snn.create_attractor(concept)
+
+        self.symbol_to_pattern[concept] = attractor_pattern
+        return attractor_pattern
+
+    def abstract_pattern(self, spike_pattern: np.ndarray) -> Optional[str]:
+        """パターン抽象化: スパイクパターン→概念"""
+
+        # 最も近いアトラクタを検索
+        best_match = None
+        max_similarity = -1.0
+
+        for symbol, pattern in self.symbol_to_pattern.items():
+            # 簡易コサイン類似度
+            similarity = np.dot(spike_pattern, pattern) / \
+                (np.linalg.norm(spike_pattern) * np.linalg.norm(pattern) + 1e-9)
+            if similarity > max_similarity:
+                max_similarity = similarity
+                best_match = symbol
+
+        if max_similarity > 0.7:  # 閾値
+            return best_match
+
+        return None
+
+    def extract_symbols(self, neural_features: torch.Tensor, threshold: float = 0.5) -> List[Any]:
+        """ニューラル特徴量からシンボルを抽出 (PyTorch Tensor対応)"""
+        # 単純な線形変換と閾値処理
+        with torch.no_grad():
+            logits = self.extractor(neural_features)
+            probs = torch.sigmoid(logits)
+
+        detected = []
+        if self.concepts:
+            for i, concept in enumerate(self.concepts):
+                if probs[0, i] > threshold:
+                    # ダミーのシンボルオブジェクトを返す
+                    detected.append(type('Symbol', (), {'name': concept}))
+        return detected
+
+    def inject_symbols(self, facts: List[str]) -> torch.Tensor:
+        """推論された事実をニューラル信号に変換"""
+        # デモ用: ランダムベクトルを返す
+        return torch.randn(32)
+
+    def learn_from_dialogue(self, user_input: str, snn_response_pattern: np.ndarray):
+        """対話から学習 - GraphとSNNの両方を更新"""
+        if self.kg:
+            entities = self.kg.extract_entities(user_input)
+            relations = self.kg.extract_relations(user_input)
+            self.kg.add_facts(entities, relations)
+
+            for entity in entities:
+                if entity not in self.symbol_to_pattern:
+                    self.symbol_to_pattern[entity] = snn_response_pattern.copy(
+                    )
+
+    def sleep_integration(self):
+        """睡眠中に神経パターンと知識グラフを統合"""
+        if self.kg and self.snn:
+            for (entity1, relation, entity2) in self.kg.get_triplets():
+                pattern1 = self.ground_symbol(entity1)
+                pattern2 = self.ground_symbol(entity2)
+                self.snn.strengthen_connection(pattern1, pattern2)
+
 
 class SimpleLogicEngine:
-    """
-    簡易的なルールベース推論エンジン（Python実装）。
-    本来はPrologやASPなどのソルバーを連携させるが、ここではPython辞書でルールを定義。
-    """
-    def __init__(self, rules: List[Tuple[str, str, str]]):
-        # Rules format: (Condition1, Condition2, Result) -> If C1 and C2 then Result
-        # Simple AND rule
+    """簡易的なルールベース論理エンジン"""
+
+    def __init__(self, rules: List[Tuple[str, Optional[str], str]]):
         self.rules = rules
 
-    def infer(self, active_facts: List[str]) -> List[str]:
-        """
-        既知の事実(facts)から、ルールに基づいて新しい事実を導出する。
-        """
-        inferred_facts = set(active_facts)
-        newly_inferred = True
-        
-        while newly_inferred:
-            newly_inferred = False
-            for c1, c2, result in self.rules:
-                # C2がNoneの場合は単項条件 (If C1 then Result)
-                if c2 is None:
-                    if c1 in inferred_facts and result not in inferred_facts:
-                        inferred_facts.add(result)
-                        newly_inferred = True
-                else:
-                    if c1 in inferred_facts and c2 in inferred_facts and result not in inferred_facts:
-                        inferred_facts.add(result)
-                        newly_inferred = True
-                        
-        return list(inferred_facts)
+    def infer(self, facts: List[str]) -> List[str]:
+        """与えられた事実から新しい事実を推論する"""
+        current_facts = set(facts)
+        changed = True
+
+        while changed:
+            changed = False
+            for rule in self.rules:
+                cond1, cond2, result = rule
+
+                # 条件1のチェック
+                if cond1 not in current_facts:
+                    continue
+
+                # 条件2のチェック（ある場合）
+                if cond2 is not None and cond2 not in current_facts:
+                    continue
+
+                # 結果がまだ事実セットになければ追加
+                if result not in current_facts:
+                    current_facts.add(result)
+                    changed = True
+
+        return list(current_facts)

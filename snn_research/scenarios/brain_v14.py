@@ -9,7 +9,7 @@ import time
 import logging
 
 
-from typing import cast
+from typing import cast, Any
 from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
 
 logger = logging.getLogger("Scenario_BrainV14")
@@ -78,7 +78,8 @@ def run_scenario(config_path: str = "configs/experiments/brain_v14_config.yaml")
     # アストロサイトの確認 [Fix: Optional check]
     astro_energy = 0.0
     if brain.astrocyte:
-        astro_energy = brain.astrocyte.current_energy
+        astrocyte = cast(Any, brain.astrocyte)
+        astro_energy = float(astrocyte.current_energy)
 
     print(f"   - Astrocyte: Energy={astro_energy:.1f}")
 
@@ -118,8 +119,9 @@ def run_scenario(config_path: str = "configs/experiments/brain_v14_config.yaml")
         current_energy = 0.0
         current_fatigue = 0.0
         if brain.astrocyte:
-            current_energy = brain.astrocyte.current_energy
-            current_fatigue = brain.astrocyte.fatigue_toxin
+            astrocyte = cast(Any, brain.astrocyte)
+            current_energy = float(astrocyte.current_energy)
+            current_fatigue = float(astrocyte.fatigue_toxin)
 
         print(
             f"   Task {i+1}: Energy {current_energy:.1f} | Fatigue {current_fatigue:.1f}")
@@ -139,12 +141,14 @@ def run_scenario(config_path: str = "configs/experiments/brain_v14_config.yaml")
 
     # RAG検索の実行
     # Cortexクラスには retrieve_knowledge メソッドを追加済み
-    knowledge = brain.cortex.retrieve_knowledge(query)
+    if hasattr(brain.cortex, 'retrieve_knowledge'):
+        cortex = cast(Any, brain.cortex)
+        knowledge = cortex.retrieve_knowledge(query)
 
-    if not knowledge:
-        print("      (No knowledge retrieved directly from Cortex retrieval)")
-    else:
-        for k in knowledge[:3]:
-            print(f"      - {k}")
+        if not knowledge:
+            print("      (No knowledge retrieved directly from Cortex retrieval)")
+        else:
+            for k in knowledge[:3]:
+                print(f"      - {k}")
 
     print("\n🎉 Simulation Complete. The Artificial Brain has successfully evolved.")

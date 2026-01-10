@@ -13,7 +13,7 @@ import torch
 import sys
 import os
 import random
-from typing import Optional
+from typing import Optional, cast
 
 # パス設定
 sys.path.append(os.getcwd())
@@ -53,13 +53,13 @@ class SocialAgent:
         logger.info(f"🤖 {self.name} is thinking about '{topic}'...")
 
         # 1. 思考シミュレーション (Brainを実行)
-        # 実際の思考回路を通すが、出力はテキストやアクションになることが多い
-        _ = self.brain.run_cognitive_cycle(topic)
+        # キャストしてメソッド呼び出し
+        brain_instance = cast(ArtificialBrain, self.brain)
+        _ = brain_instance.run_cognitive_cycle(topic)
 
         # 2. 提案ベクトルの生成 (Simulation)
         # 本来はBrainの内部状態（SNNの隠れ層など）からベクトルを抽出するが、
         # ここではシミュレーションとして、IDに基づくバイアスを加えたベクトルを生成する。
-        # トピックの意味ベクトルに近いものを目指すが、各個体でズレがある状態を再現。
 
         # 簡易的なトピックベクトル（正解のようなもの）
         topic_hash = abs(hash(topic)) % 1000 / 1000.0

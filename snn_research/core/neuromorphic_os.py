@@ -5,7 +5,7 @@
 import logging
 import asyncio
 import time
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, cast
 from dataclasses import dataclass, field
 
 from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
@@ -52,7 +52,8 @@ class NeuromorphicOS:
         self.is_running = True
 
         # 初期診断
-        status = self.brain.get_brain_status()
+        brain_instance = cast(ArtificialBrain, self.brain)
+        status = brain_instance.get_brain_status()
         logger.info(f"   Hardware Check: {status['status']}")
 
         # アイドルプロセスの生成
@@ -90,18 +91,21 @@ class NeuromorphicOS:
                 self._context_switch(next_pid)
 
             # 2. ハードウェアリソース監視 (Astrocyte連携)
-            if self.brain.astrocyte:
-                energy_level = self.brain.astrocyte.get_energy_level()
-                if energy_level < 0.2:
-                    logger.warning(
-                        "   [OS] Critical Energy! Throttling processes...")
-                    await asyncio.sleep(0.1)  # スローダウン
+            brain_instance = cast(ArtificialBrain, self.brain)
+            if brain_instance.astrocyte:
+                # 型チェックとキャスト
+                astrocyte = cast(Any, brain_instance.astrocyte)
+                if hasattr(astrocyte, 'get_energy_level'):
+                    energy_level = astrocyte.get_energy_level()
+                    if energy_level < 0.2:
+                        logger.warning(
+                            "   [OS] Critical Energy! Throttling processes...")
+                        await asyncio.sleep(0.1)  # スローダウン
 
             # 3. 実行中のプロセスがある場合の処理 (シミュレーション)
             if self.current_pid:
                 _ = self.process_table[self.current_pid]
                 # ここでBrainにタスクを実行させる
-                # 実際のOSならタイムスライス管理を行う
                 pass
 
             await asyncio.sleep(self.scheduler_tick)
@@ -138,17 +142,20 @@ class NeuromorphicOS:
         if not self.is_running:
             return {"error": "OS not running"}
 
+        brain_instance = cast(ArtificialBrain, self.brain)
+
         # 割り込み禁止などの排他制御がここに入る想定
 
         # 安全装置のチェック (Brain内部でも行われるが、OSレベルでも事前チェック可能)
         if isinstance(sensory_input, str):
-            if self.brain.guardrail:
-                safe, msg = self.brain.guardrail.check_input(sensory_input)
+            if hasattr(brain_instance, 'guardrail') and brain_instance.guardrail:
+                guardrail = cast(Any, brain_instance.guardrail)
+                safe, msg = guardrail.check_input(sensory_input)
                 if not safe:
                     return {"status": "blocked", "reason": msg}
 
         # ハードウェア実行
-        result = self.brain.run_cognitive_cycle(sensory_input)
+        result = brain_instance.run_cognitive_cycle(sensory_input)
 
         return result
 
@@ -156,11 +163,13 @@ class NeuromorphicOS:
         """システムコール: 睡眠モードへの移行"""
         logger.info("   [OS] System Call: SLEEP requested.")
         # 優先度の低いプロセスを一時停止するなどの処理
-        self.brain.sleep_cycle()
+        brain_instance = cast(ArtificialBrain, self.brain)
+        brain_instance.sleep_cycle()
 
     def sys_get_diagnostics(self) -> Dict[str, Any]:
         """システムコール: 診断情報の取得"""
-        brain_status = self.brain.get_brain_status()
+        brain_instance = cast(ArtificialBrain, self.brain)
+        brain_status = brain_instance.get_brain_status()
         os_status = {
             "running_processes": len(self.process_table),
             "current_pid": self.current_pid,

@@ -7,7 +7,7 @@ import asyncio
 import logging
 import torch
 import time
-from typing import cast
+from typing import cast, Any
 
 from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
 from snn_research.core.neuromorphic_os import NeuromorphicOS
@@ -45,14 +45,21 @@ class OmegaPointSystem:
             while self.is_active:
                 self.iteration_count += 1
 
+                brain_instance = cast(ArtificialBrain, self.brain)
+
                 # 1. 安全性チェック
-                brain_status = self.brain.get_brain_status()
-                fatigue = brain_status.get("astrocyte", {}).get(
-                    "metrics", {}).get("fatigue_index", 0)
-                if fatigue > 90:
-                    logger.warning("⚠️ High fatigue. Forcing sleep cycle...")
-                    await self.os.sys_sleep()
-                    continue
+                brain_status = brain_instance.get_brain_status()
+                # 辞書アクセスの型安全性を確保（簡易的）
+                astrocyte_status = brain_status.get("astrocyte", {})
+                if isinstance(astrocyte_status, dict):
+                    metrics = astrocyte_status.get("metrics", {})
+                    if isinstance(metrics, dict):
+                        fatigue = metrics.get("fatigue_index", 0)
+                        if isinstance(fatigue, (int, float)) and fatigue > 90:
+                            logger.warning(
+                                "⚠️ High fatigue. Forcing sleep cycle...")
+                            await self.os.sys_sleep()
+                            continue
 
                 # 2. 自己改善サイクルの実行
                 print(
@@ -62,16 +69,23 @@ class OmegaPointSystem:
 
                 # 評価関数
                 def evaluate_brain(candidate_brain: ArtificialBrain) -> float:
-                    inputs = torch.randn(1, 256, device=candidate_brain.device)
+                    # deviceをstrまたはtorch.deviceとしてキャストして使用
+                    device = cast(Any, candidate_brain.device)
+                    inputs = torch.randn(1, 256, device=device)
                     try:
                         with torch.no_grad():
-                            result = candidate_brain.perception.perceive(
-                                inputs)
-                            activity = result['features'].mean().item()
-                            # 0.3に近いほど良い
-                            score = 100.0 * \
-                                (1.0 - min(1.0, abs(activity - 0.3) * 2))
-                            return score
+                            # PerceptionCortexへのキャストまたは動的呼び出し
+                            if hasattr(candidate_brain, 'perception'):
+                                perception = cast(
+                                    Any, candidate_brain.perception)
+                                result = perception.perceive(inputs)
+                                if isinstance(result, dict) and 'features' in result:
+                                    activity = result['features'].mean().item()
+                                    # 0.3に近いほど良い
+                                    score = 100.0 * \
+                                        (1.0 - min(1.0, abs(activity - 0.3) * 2))
+                                    return score
+                            return 0.0
                     except Exception:
                         print("x", end="", flush=True)
                         return 0.0
@@ -89,7 +103,8 @@ class OmegaPointSystem:
                         f"   ✨ Brain Upgraded! Gen {self.iteration_count} accepted.")
 
                 # 4. 安全性監査
-                audit_vector = torch.randn(256).to(self.brain.device)
+                device = cast(Any, self.brain.device)
+                audit_vector = torch.randn(256).to(device)
                 is_safe, _ = self.system_guardrail.check_thought_pattern(
                     audit_vector)
 
