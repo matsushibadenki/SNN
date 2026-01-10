@@ -4,12 +4,13 @@
 #   ROADMAP Phase 2 "Autonomy" の中核実装。
 #   覚醒(Wake)と睡眠(Sleep)のサイクルを管理し、内発的動機に基づく自律学習を行う。
 #   EmbodiedVLMAgent, IntrinsicMotivationSystem, SleepConsolidator を統合。
+#   [Update] ログ出力を強化し、実行状況を詳細に追跡可能に変更。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Optional
 import logging
 
 from snn_research.systems.embodied_vlm_agent import EmbodiedVLMAgent
@@ -42,6 +43,8 @@ class AutonomousLearningLoop:
         self.agent = agent.to(device)
         self.optimizer = optimizer
 
+        logger.info(f"⚙️ Initializing AutonomousLearningLoop on {device}...")
+
         # Phase 2 Components
         self.motivator = IntrinsicMotivationSystem().to(device)
         self.sleep_system = SleepConsolidator(agent, optimizer, device=device)
@@ -49,8 +52,17 @@ class AutonomousLearningLoop:
         # World Predictor (予測符号化用ヘッド)
         # エージェントの潜在状態と行動から、次の潜在状態を予測する
         # これにより「予測誤差(Surprise)」を計算可能にする
-        fusion_dim = getattr(agent, "fusion_dim", 512)  # デフォルト値またはagentから取得
+
+        # エージェントから次元を取得（属性がない場合は安全策としてデフォルト値を使用）
+        if hasattr(agent, "motor_decoder"):
+            fusion_dim = agent.motor_decoder.input_dim
+        else:
+            fusion_dim = getattr(agent, "fusion_dim", 512)
+
         action_dim = getattr(agent, "action_dim", 64)
+
+        logger.info(
+            f"   -> Predictor dims: fusion={fusion_dim}, action={action_dim}")
 
         self.world_predictor = nn.Sequential(
             nn.Linear(fusion_dim + action_dim, 512),
@@ -67,7 +79,8 @@ class AutonomousLearningLoop:
         self.fatigue = 0.0
         self.fatigue_threshold = fatigue_threshold
 
-        logger.info("🔄 Autonomous Learning Loop v2.0 (Phase 2) initialized.")
+        logger.info(
+            "🔄 Autonomous Learning Loop v2.0 (Phase 2) initialized successfully.")
 
     def step(self,
              current_image: torch.Tensor,
@@ -82,6 +95,8 @@ class AutonomousLearningLoop:
         """
         # 1. 状態チェック (睡眠が必要か？)
         if self._should_sleep():
+            logger.info(
+                f"🌙 Sleep condition met (Fatigue: {self.fatigue:.1f}, Energy: {self.energy:.1f}). Triggering sleep cycle.")
             return self._perform_sleep_cycle()
 
         # 覚醒モード (Wake Phase)
@@ -130,7 +145,7 @@ class AutonomousLearningLoop:
 
         # 5. Intrinsic Motivation & Reward Calculation
         # 内発的動機システムを更新し、報酬を計算
-        motivation_state = self.motivator.process(
+        self.motivator.process(
             input_payload=z_t, prediction_error=surprise)
         intrinsic_reward = self.motivator.calculate_intrinsic_reward(
             surprise=surprise)
@@ -167,6 +182,11 @@ class AutonomousLearningLoop:
             task_success=True  # ここでは常に生存中
         )
 
+        # デバッグログ (冗長になりすぎないよう、重要なイベント時のみ詳細表示など調整可能)
+        if surprise > 0.1:
+            logger.debug(
+                f"⚡ High Surprise detected: {surprise:.4f} -> Reward: {intrinsic_reward:.4f}")
+
         return {
             "mode": "wake",
             "step_loss": total_loss.item(),
@@ -187,6 +207,8 @@ class AutonomousLearningLoop:
 
     def _perform_sleep_cycle(self) -> Dict[str, Any]:
         """睡眠サイクルを実行"""
+        logger.info("💤 Entering Sleep Cycle...")
+
         # 睡眠実行 (Sleep Consolidation)
         sleep_stats = self.sleep_system.sleep(cycles=5)
 
@@ -196,7 +218,7 @@ class AutonomousLearningLoop:
 
         # 夢ログ
         logger.info(
-            f"💤 Slept. Fatigue reset. Loss: {sleep_stats.get('sleep_loss', 0):.4f}")
+            f"🌞 Waking up. Fatigue reset. Memory Consolidation Loss: {sleep_stats.get('sleep_loss', 0):.4f}")
 
         return {
             "mode": "sleep",
