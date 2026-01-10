@@ -1,10 +1,7 @@
 # ファイルパス: snn_research/training/trainers/__init__.py
-# タイトル: トレーナーモジュール初期化 (修正版)
-# 機能説明: 
-#   各種学習パラダイムに対応したトレーナーをエクスポートする。
-#   修正: ProbabilisticEnsembleTrainer -> ProbabilisticTrainer
+# タイトル: トレーナーモジュール初期化 (No-BP Fix)
+# 修正: BPTTTrainer (誤差逆伝播) を削除
 
-from .bptt import BPTTTrainer
 from .stdp import STDPTrainer
 from .distillation import DistillationTrainer
 from .probabilistic import ProbabilisticTrainer
@@ -16,7 +13,6 @@ from .breakthrough import BreakthroughTrainer
 from .forward_forward import ForwardForwardTrainer
 
 __all__ = [
-    "BPTTTrainer",
     "STDPTrainer",
     "DistillationTrainer",
     "ProbabilisticTrainer",
