@@ -1,13 +1,12 @@
 # ファイルパス: snn_research/collective/liquid_democracy.py
-# 日本語タイトル: Liquid Democracy Protocol (LDP) Engine - Type Fixed
-# 修正内容: 戻り値の型ヒントをAnyに変更し、Proposalクラスを追加。
+# 日本語タイトル: Liquid Democracy Protocol (Type Safe)
+# 修正内容: Tensorとfloatの型不一致エラーを修正 (.item()の追加)。
 
 import torch
 import logging
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Tuple
 from dataclasses import dataclass
 
-# 既存のモジュールをインポート
 from snn_research.agent.synesthetic_agent import SynestheticAgent
 from snn_research.social.theory_of_mind import TheoryOfMindModule
 
@@ -17,15 +16,14 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Vote:
     agent_id: str
-    decision: int  # 0 or 1 (Binary decision for simplicity)
+    decision: int  # 0 or 1
     weight: float = 1.0
 
 
 @dataclass
 class Proposal:
     """
-    投票対象となる提案や課題を格納するデータクラス。
-    他のスクリプト(run_unified_mission.py等)からの参照用に追加。
+    投票対象となる提案や課題。
     """
     id: str
     content: Any  # torch.Tensor or Text
@@ -35,18 +33,12 @@ class Proposal:
 class LiquidDemocracyProtocol:
     """
     流動的民主主義プロトコル。
-
-    Process:
-    1. Proposal: 課題（入力データ）が提示される。
-    2. Evaluation: 各エージェントが自身の自信度(Confidence)を評価。
-    3. Delegation: 自信がないエージェントは、ToMを用いて「自分より詳しそうなエージェント」に委任する。
-    4. Voting: 委任された票(Power)を持ったエージェントが投票する。
-    5. Consensus: 加重多数決で最終決定を行う。
+    ToMを用いた委任(Delegation)と、加重投票(Weighted Voting)を管理する。
     """
 
     def __init__(self, agents: Dict[str, SynestheticAgent], toms: Dict[str, TheoryOfMindModule]):
         self.agents = agents
-        self.toms = toms  # AgentID -> Its ToM Module
+        self.toms = toms  # AgentID -> TheoryOfMindModule
         if agents:
             self.device = next(iter(agents.values())).device
         else:
@@ -54,54 +46,61 @@ class LiquidDemocracyProtocol:
 
     def conduct_vote(self, task_input: torch.Tensor, ground_truth: Optional[int] = None) -> Dict[str, Any]:
         """
-        1回の投票サイクルを実行する。
-
-        Args:
-            task_input: 判定対象のデータ (例: 画像特徴量)
-            ground_truth: 正解ラベル (学習用、推論時はNone)
-        Returns:
-            metrics: {'accuracy': float, 'delegation_rate': float, 'consensus': float, 'correct': bool/None}
+        投票サイクルを実行する。
         """
         # 1. 各エージェントの初期判断と自信度
-        initial_decisions = {}  # id -> (decision, confidence)
+        initial_decisions: Dict[str, Tuple[int, float]] = {}
 
         for agent_id, agent in self.agents.items():
-            # エージェントに思考させる (Brain v4)
-            # 入力形式を整える (Brain v4は辞書入力を期待)
-            # task_inputの次元によって vision/audio 等に割り振るが、ここでは vision と仮定
+            # 入力形式の調整
             obs = {'vision': task_input.unsqueeze(
                 0) if task_input.dim() == 1 else task_input}
 
             with torch.no_grad():
-                action = agent.step(obs)  # (1, ActionDim)
-                val = action[0, 0].item()  # 1次元目を決定値とする
+                # Agentのstep戻り値は {"action_pred": Tensor, ...} などを想定
+                # 簡易的に action_pred が Tensor(1, dim) で返ると仮定
+                result = agent.step(obs)
+
+                # 結果の取り出し（辞書またはTensorに対応）
+                if isinstance(result, dict):
+                    action = result.get("action_pred", torch.tensor([[0.0]]))
+                else:
+                    action = result
+
+                if isinstance(action, torch.Tensor):
+                    val = action.mean().item()  # 平均値で簡易判定
+                else:
+                    val = 0.0
 
             decision = 1 if val > 0 else 0
             confidence = abs(val)
             initial_decisions[agent_id] = (decision, confidence)
 
-        # 2. 委任フェーズ (Delegation Logic)
-        vote_powers = {aid: 1.0 for aid in self.agents.keys()}  # 初期の持ち票は1
-        delegation_map = {}  # from -> to
+        # 2. 委任フェーズ (Delegation)
+        vote_powers: Dict[str, float] = {
+            aid: 1.0 for aid in self.agents.keys()}
+        delegation_map: Dict[str, str] = {}  # from -> to
 
         for agent_id, (my_dec, my_conf) in initial_decisions.items():
-            # 自信が閾値以下なら委任を検討
+            # 自信が低い場合は委任を検討
             if my_conf < 0.3:
                 best_target = None
                 max_trust = -1.0
 
-                # ToMを使って他のエージェントの信頼度を確認
-                tom = self.toms[agent_id]
+                tom = self.toms.get(agent_id)
+                if tom is None:
+                    continue
+
                 for other_id in self.agents.keys():
                     if other_id == agent_id:
                         continue
 
-                    # ToMの predict_action は "相手が協力してくれる確率(0~1)" を返す
-                    # これを「信頼度」として代用
-                    trust = tom.predict_action(other_id)
+                    # ToMによる信頼度予測 (Tensor -> float)
+                    trust_tensor = tom.predict_action(other_id)
+                    trust_val = trust_tensor.item()
 
-                    if trust > max_trust:
-                        max_trust = trust
+                    if trust_val > max_trust:
+                        max_trust = trust_val
                         best_target = other_id
 
                 # 信頼できる相手がいれば委任
@@ -110,13 +109,15 @@ class LiquidDemocracyProtocol:
                     logger.debug(
                         f"🔄 {agent_id} delegates to {best_target} (Trust: {max_trust:.2f})")
 
-        # 票の移動処理 (1ホップのみ実装)
+        # 票の移動 (Single Hop)
         final_voters = []
         for agent_id in self.agents.keys():
             if agent_id in delegation_map:
                 target = delegation_map[agent_id]
-                vote_powers[target] += vote_powers[agent_id]
-                vote_powers[agent_id] = 0  # 委任したので自分の行使権は消滅
+                # 委任先の票を増やす
+                if target in vote_powers:
+                    vote_powers[target] += vote_powers[agent_id]
+                vote_powers[agent_id] = 0.0
             else:
                 final_voters.append(agent_id)
 
@@ -128,30 +129,29 @@ class LiquidDemocracyProtocol:
             decision, _ = initial_decisions[voter_id]
             power = vote_powers[voter_id]
 
-            # 0 or 1
             weighted_sum += decision * power
             total_power += power
 
-        final_score = weighted_sum / total_power if total_power > 0 else 0
+        final_score = weighted_sum / total_power if total_power > 0 else 0.0
         final_decision = 1 if final_score >= 0.5 else 0
 
-        # 4. 結果のフィードバックと学習 (Social Learning)
+        # 4. 社会的学習 (Social Learning)
         is_correct = None
         if ground_truth is not None:
             is_correct = (final_decision == ground_truth)
 
             for agent_id in self.agents.keys():
-                # ToMの更新
-                target_id = delegation_map.get(
-                    agent_id, agent_id)  # 委任してなければ自分
+                target_id = delegation_map.get(agent_id, agent_id)
 
-                # 相手の個別の判断が正しかったか？
+                # 委任先の判断が正しかったか評価
                 target_dec, _ = initial_decisions[target_id]
                 target_correct = (target_dec == ground_truth)
 
-                # ToMのモデル更新
                 outcome_val = 1.0 if target_correct else 0.0
-                self.toms[agent_id].update_model(target_id, outcome_val)
+
+                # ToMモデルの更新
+                if agent_id in self.toms:
+                    self.toms[agent_id].update_model(target_id, outcome_val)
 
         return {
             'consensus_decision': final_decision,
