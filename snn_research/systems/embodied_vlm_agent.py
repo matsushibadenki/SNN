@@ -6,7 +6,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any
 
 from snn_research.models.transformer.spiking_vlm import SpikingVLM
 from snn_research.models.motor.spiking_motor_decoder import SpikingMotorDecoder

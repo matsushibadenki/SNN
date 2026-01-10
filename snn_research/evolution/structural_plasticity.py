@@ -8,8 +8,7 @@
 import torch
 import torch.nn as nn
 import logging
-import math
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 

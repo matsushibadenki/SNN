@@ -10,7 +10,6 @@ from snn_research.cognitive_architecture.memory_consolidation import Hierarchica
 import sys
 import os
 import numpy as np
-import time
 import logging
 from typing import List, Optional
 
@@ -152,7 +151,7 @@ class AdaptiveBrainSystem:
         """ユーザーフィードバックを受け取り、差分学習に記録"""
 
         if not is_correct and correction:
-            print(f"📝 User provided feedback: Correction needed.")
+            print("📝 User provided feedback: Correction needed.")
             # 修正を記録
             spike_pattern = self.encode_to_spikes(query)
             self.delta_learning.record_correction(
@@ -161,7 +160,7 @@ class AdaptiveBrainSystem:
                 correct_output=correction,
                 context={'query': query}
             )
-            print(f"✅ Correction recorded for future use.")
+            print("✅ Correction recorded for future use.")
 
     def inspect_state(self):
         """現在の脳の学習状態を検査・表示する"""
@@ -173,7 +172,7 @@ class AdaptiveBrainSystem:
         print(f"\n[Adaptive MoE Rules] (Total: {len(self.moe.routing_rules)})")
         for h, expert in list(self.moe.routing_rules.items())[:5]:
             print(f"  - QueryHash({h}) -> {expert}")
-        print(f"[Expert Performance]")
+        print("[Expert Performance]")
         for name, perf in self.moe.expert_performance.items():
             print(f"  - {name}: {perf:.3f}")
 

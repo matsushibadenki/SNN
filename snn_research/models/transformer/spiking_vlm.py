@@ -6,10 +6,9 @@
 import torch
 import torch.nn as nn
 import logging
-from typing import Dict, Any, Optional, List, Tuple, cast
+from typing import Dict, Any, Optional
 
 from snn_research.hybrid.multimodal_projector import MultimodalProjector
-from snn_research.core.snn_core import SNNCore
 
 # Models import
 try:

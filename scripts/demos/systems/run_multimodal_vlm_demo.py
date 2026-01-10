@@ -10,10 +10,8 @@ from snn_research.core.architecture_registry import ArchitectureRegistry
 import os
 import sys
 import torch
-import torch.nn as nn
 import logging
 from torch.utils.data import DataLoader, Dataset
-import matplotlib.pyplot as plt  # グラフ化が必要な場合のため（今回は未使用）
 
 # プロジェクトルートへのパス追加
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../"))

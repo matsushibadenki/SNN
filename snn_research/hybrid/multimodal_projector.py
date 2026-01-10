@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import logging
-from typing import Tuple, Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union
 import numpy as np
 
 logger = logging.getLogger(__name__)

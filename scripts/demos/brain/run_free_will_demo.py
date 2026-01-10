@@ -9,10 +9,7 @@ from snn_research.cognitive_architecture.agency_engine import AgencyEngine
 import os
 import sys
 import torch
-import torch.nn as nn
 import logging
-import time
-import random
 
 # パス設定
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../"))

@@ -17,7 +17,8 @@ from typing import Dict, Any, cast, Optional
 from omegaconf import OmegaConf
 
 # プロジェクトルートの設定
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+project_root = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../"))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
@@ -33,13 +34,13 @@ logger = logging.getLogger("Benchmark")
 try:
     from snn_research.core.snn_core import SNNCore
 except ImportError:
-    SNNCore = None # type: ignore
+    SNNCore = None  # type: ignore
     print("⚠️ SNNCore not found. Using mock for structure verification.")
 
 try:
     from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
 except ImportError:
-    BitSpikeMamba = None # type: ignore
+    BitSpikeMamba = None  # type: ignore
     print("⚠️ BitSpikeMamba not found.")
 
 
@@ -74,7 +75,7 @@ class BenchmarkSuite:
             "time_steps": 16,
             "neuron_config": {"type": "lif", "base_threshold": 1.0}
         }
-        
+
         if architecture == "bit_spike_mamba":
             base_config.update({
                 "architecture_type": "bit_spike_mamba",
@@ -88,7 +89,7 @@ class BenchmarkSuite:
                 "nhead": 4,
                 "dim_feedforward": 256
             })
-            
+
         return base_config
 
     def _build_model(self, model_name: str, config_path: Optional[str] = None) -> nn.Module:
@@ -96,7 +97,8 @@ class BenchmarkSuite:
         # 1. Config準備
         if config_path and os.path.exists(config_path):
             conf = OmegaConf.load(config_path)
-            model_config = OmegaConf.to_container(conf.model if 'model' in conf else conf, resolve=True)
+            model_config = OmegaConf.to_container(
+                conf.model if 'model' in conf else conf, resolve=True)
         else:
             # マッピング
             if "Mamba" in model_name:
@@ -104,7 +106,7 @@ class BenchmarkSuite:
             elif "DSA" in model_name:
                 arch = "dsa_transformer"
             else:
-                arch = "sformer" # default
+                arch = "sformer"  # default
             model_config = self._get_dummy_config(arch)
 
         model_config = cast(Dict[str, Any], model_config)
@@ -124,11 +126,11 @@ class BenchmarkSuite:
                 time_steps=model_config.get("time_steps", 16),
                 neuron_config=model_config["neuron_config"]
             ).to(self.device)
-        
+
         # SNNCore経由
         if SNNCore is not None:
             return SNNCore(config=model_config, vocab_size=vocab_size).to(self.device)
-            
+
         raise ImportError("No suitable model class found.")
 
     def _measure_model_size(self, model: nn.Module) -> float:
@@ -139,7 +141,7 @@ class BenchmarkSuite:
         buffer_size = 0
         for buffer in model.buffers():
             buffer_size += buffer.nelement() * buffer.element_size()
-            
+
         size_all_mb = (param_size + buffer_size) / 1024**2
         return size_all_mb
 
@@ -150,22 +152,23 @@ class BenchmarkSuite:
         try:
             model = self._build_model(model_name, config_path)
             model.eval()
-            
+
             # Size Check
             size_mb = self._measure_model_size(model)
 
             # Input check
             vocab_size = getattr(model, 'vocab_size', 100)
-            if hasattr(model, 'config'): vocab_size = model.config.get('vocab_size', 100)
-                
+            if hasattr(model, 'config'):
+                vocab_size = model.config.get('vocab_size', 100)
+
             input_ids = torch.randint(0, vocab_size, (1, 16)).to(self.device)
-            
+
             with torch.no_grad():
                 _ = model(input_ids)
 
             print(f"✅ PASSED (Size: {size_mb:.2f} MB)")
             self.results["tests"][f"smoke_{model_name}"] = {
-                "status": "PASSED", 
+                "status": "PASSED",
                 "model_size_mb": size_mb
             }
 
@@ -185,11 +188,13 @@ class BenchmarkSuite:
             f"\n⚡ [Efficiency Test] {model_name} (T=1 Latency) ... ", end="", flush=True)
         try:
             model = self._build_model(model_name)
-            
+
             # T=1 強制 (モデルによって設定方法が異なるため属性セット)
-            if hasattr(model, 'time_steps'): model.time_steps = 1
-            if hasattr(model, 'config'): model.config['time_steps'] = 1
-                
+            if hasattr(model, 'time_steps'):
+                model.time_steps = 1
+            if hasattr(model, 'config'):
+                model.config['time_steps'] = 1
+
             model.eval()
 
             # 入力長: 1 (単一トークン/フレーム)
@@ -201,22 +206,28 @@ class BenchmarkSuite:
                 _ = model(input_ids)
 
             num_runs = 100
-            
+
             # 同期処理 (CUDA/MPS)
-            if self.device == "cuda": torch.cuda.synchronize()
-            elif self.device == "mps": torch.mps.synchronize()
+            if self.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.device == "mps":
+                torch.mps.synchronize()
 
             start_time = time.time()
             with torch.no_grad():
                 for _ in range(num_runs):
                     # SNN State Reset check
-                    if hasattr(model, 'reset_net'): model.reset_net() # Direct logic
-                    elif hasattr(model, 'model') and hasattr(model.model, 'reset_net'): model.model.reset_net()
+                    if hasattr(model, 'reset_net'):
+                        model.reset_net()  # Direct logic
+                    elif hasattr(model, 'model') and hasattr(model.model, 'reset_net'):
+                        model.model.reset_net()
 
                     _ = model(input_ids)
 
-            if self.device == "cuda": torch.cuda.synchronize()
-            elif self.device == "mps": torch.mps.synchronize()
+            if self.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.device == "mps":
+                torch.mps.synchronize()
 
             end_time = time.time()
             avg_latency = ((end_time - start_time) / num_runs) * 1000
@@ -251,17 +262,18 @@ class BenchmarkSuite:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", type=str, default="full", choices=["smoke", "full"])
+    parser.add_argument("--mode", type=str, default="full",
+                        choices=["smoke", "full"])
     args = parser.parse_args()
-    
+
     suite = BenchmarkSuite()
 
     # 比較対象のモデル定義
     # 1. Baseline: 従来のTransformer (Spikformer / SFormer)
     # 2. Target: 新アーキテクチャ (BitSpikeMamba)
     models = [
-        ("SFormer_Baseline", None), # Uses dummy config
-        ("BitSpikeMamba_New", None) # Uses dummy config
+        ("SFormer_Baseline", None),  # Uses dummy config
+        ("BitSpikeMamba_New", None)  # Uses dummy config
     ]
 
     print("==================================================")

@@ -10,8 +10,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import logging
-import random
-import numpy as np
 
 # パス設定
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../"))

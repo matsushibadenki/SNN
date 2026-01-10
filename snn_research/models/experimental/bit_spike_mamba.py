@@ -5,7 +5,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Any, Type, cast, Tuple, Optional
+from typing import Any, Type, cast, Tuple
 
 # 必要なモジュールが存在しない場合のダミー/モック対応は、
 # 実際に動作させる環境では不要な場合が多いが、importエラー回避のため残すか、

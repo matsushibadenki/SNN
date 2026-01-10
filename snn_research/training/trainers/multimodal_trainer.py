@@ -8,11 +8,9 @@
 
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from torch.utils.data import DataLoader
-from typing import Dict, Any, Optional, List, Tuple, Union
+from typing import Dict, Any, Optional
 import logging
-import time
 from tqdm import tqdm
 
 from snn_research.models.transformer.spiking_vlm import SpikingVLM

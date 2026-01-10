@@ -8,10 +8,8 @@ from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
 import os
 import sys
 import torch
-import torch.nn as nn
 import logging
 import time
-import random
 
 # パス設定
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../"))
@@ -81,13 +79,13 @@ def run_consciousness_demo():
         result = gwt(inputs)
 
         winner = result["winner"]
-        broadcast_vec = result["broadcast"]
-        salience = result["salience"]
+        # broadcast_vec = result["broadcast"]
+        # salience = result["salience"]
 
         # Visualize
         # 簡易バーチャートでAttentionを表示
-        attn_str = " | ".join(
-            [f"{k}: {salience[i]:.2f}" for i, k in enumerate(inputs.keys())])
+        # attn_str = " | ".join(
+        #     [f"{k}: {salience[i]:.2f}" for i, k in enumerate(inputs.keys())])
 
         icon = ""
         if "Vision" in winner:

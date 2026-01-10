@@ -2,7 +2,7 @@
 # Title: Neuro-Symbolic Bridge v1.0
 # Description: SNNの分散表現（アトラクタ）と知識グラフのシンボル表現を相互変換するブリッジ。
 
-from typing import Dict, Optional, List, Tuple, Any, Set
+from typing import Dict, Optional, List, Tuple, Any
 import numpy as np
 import logging
 import torch

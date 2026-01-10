@@ -8,10 +8,9 @@
 
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import logging
 import random
-from typing import List, Dict, Any, Tuple, Optional
+from typing import Dict
 from collections import deque
 
 logger = logging.getLogger(__name__)

@@ -1,6 +1,6 @@
 # snn_research/cognitive_architecture/adaptive_moe.py
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict
 import numpy as np
 import time
 import logging
@@ -72,8 +72,8 @@ class AdaptiveFrankenMoE:
         scores = {}
 
         query_lower = query.lower()
-        context_intensity = np.mean(
-            spike_context) if spike_context.size > 0 else 0.5
+        # context_intensity = np.mean(
+        #     spike_context) if spike_context.size > 0 else 0.5
 
         for expert in self.base_experts:
             # ベースパフォーマンス + ランダムな揺らぎ（探索用）

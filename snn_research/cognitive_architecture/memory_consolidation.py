@@ -2,7 +2,7 @@
 # Title: Hierarchical Memory System v1.0
 # Description: 睡眠サイクルと記憶の固定化（Consolidation）を管理する統合システム。
 
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional
 import numpy as np
 import time
 import json
