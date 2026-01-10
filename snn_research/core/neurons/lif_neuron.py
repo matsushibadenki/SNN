@@ -1,93 +1,150 @@
-# ファイルパス: snn_research/core/neurons/lif_neuron.py
-# Title: Standard LIF Neuron (Autograd Compatible)
+# snn_research/core/neurons/lif_neuron.py
+# Title: Advanced LIF Neuron (Spatiotemporal Ready)
 # Description:
-#   代理勾配(Surrogate Gradient)に対応した標準的なLIFニューロンモデル。
-#   core/neurons/bif_neuron.py とインターフェースを統一。
+#   Stepモード(RNN的利用)とMulti-stepモード(Transformer的利用)の両方をサポートするLIF。
+#   サロゲート勾配の選択が可能になり、入力形状 (T, B, C...) に対応。
 
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple, Callable
-
-# 代理勾配デフォルト
-
-
-class ATanSurrogate(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, input, alpha=2.0):
-        ctx.save_for_backward(input)
-        ctx.alpha = alpha
-        return (input > 0).float()
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        (input,) = ctx.saved_tensors
-        grad_input = grad_output.clone()
-        return grad_input / (1 + (ctx.alpha * input).pow(2)) * ctx.alpha, None
-
-
-def atan(alpha=2.0):
-    def func(x):
-        return ATanSurrogate.apply(x, alpha)
-    return func
-
+from typing import Optional, Tuple, Union
+from ..surrogates import surrogate_factory
 
 class LIFNeuron(nn.Module):
     """
-    Leaky Integrate-and-Fire Neuron
-    dU/dt = -(U - U_rest)/tau + I
+    Leaky Integrate-and-Fire Neuron with Spatiotemporal Support
+    
+    Args:
+        tau_mem (float): 膜電位の時定数
+        detatch_reset (bool): リセット時の勾配を切断するかどうか
+        step_mode (str): 's' (single-step) or 'm' (multi-step)
+        surrogate_name (str): サロゲート関数の種類 ('atan', 'sigmoid', 'piecewise')
+        surrogate_alpha (float): サロゲート関数の鋭さパラメータ
     """
 
     def __init__(self,
-                 features: int,
-                 tau_mem: float = 20.0,
+                 features: int = 0, # 互換性のため残すが、基本は動的に形状決定
+                 tau_mem: float = 2.0,
                  v_threshold: float = 1.0,
                  v_reset: float = 0.0,
                  v_rest: float = 0.0,
                  dt: float = 1.0,
-                 surrogate_function: Callable = atan()):
+                 detach_reset: bool = True,
+                 step_mode: str = 's', 
+                 surrogate_name: str = 'atan',
+                 surrogate_alpha: float = 2.0):
         super().__init__()
-        self.features = features
         self.tau_mem = tau_mem
         self.v_threshold = v_threshold
         self.v_reset = v_reset
         self.v_rest = v_rest
         self.dt = dt
-        self.surrogate_function = surrogate_function
+        self.detach_reset = detach_reset
+        self.step_mode = step_mode
+        
+        # サロゲート関数の生成
+        self.surrogate_function = surrogate_factory(surrogate_name, surrogate_alpha)
 
+        # 内部状態
         self.membrane_potential: Optional[torch.Tensor] = None
         self.spikes: Optional[torch.Tensor] = None
 
-        # Stateful compatible interface
-        self.stateful = False
-
     def reset(self):
+        """内部状態のリセット"""
         self.membrane_potential = None
         self.spikes = None
 
-    def set_stateful(self, stateful: bool):
-        self.stateful = stateful
-        if not stateful:
-            self.reset()
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward Pass
+        
+        Input:
+            step_mode='s': (Batch, Features...)
+            step_mode='m': (Time, Batch, Features...)
+        Output:
+            Same as Input
+        """
+        if self.step_mode == 's':
+            return self._forward_step(x)
+        elif self.step_mode == 'm':
+            return self._forward_multistep(x)
+        else:
+            raise ValueError(f"Invalid step_mode: {self.step_mode}")
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _forward_step(self, x: torch.Tensor) -> torch.Tensor:
+        """単一タイムステップの処理"""
         if self.membrane_potential is None or self.membrane_potential.shape != x.shape:
             self.membrane_potential = torch.full_like(x, self.v_rest)
 
-        # Dynamics
-        # V[t] = V[t-1] + dt/tau * (-(V[t-1] - V_rest) + x[t])
+        # 膜電位の更新 (Euler法)
+        # V[t] = V[t-1] + (1/tau) * (-(V[t-1] - V_rest) + X[t])
+        # Note: 入力を電流として扱うか電圧として扱うかで式は異なるが、ここでは一般的な減衰モデルを採用
+        
+        # Decay factor calculation: beta = exp(-dt/tau) or linear approx 1 - dt/tau
+        # ここではユーザー指定のtau_memを時定数(>1.0)として扱い、減衰率を計算
+        decay = 1.0 / self.tau_mem
+        
+        mem_prev = self.membrane_potential
+        
+        # 積分 (Integrate)
+        # I(t) = x
+        mem_next = mem_prev * (1.0 - decay) + x * self.dt
 
-        mem = self.membrane_potential
-        leak = (mem - self.v_rest) / self.tau_mem
-        mem_next = mem + self.dt * (-leak + x)
-
-        # Spike
+        # 発火 (Fire)
         spike = self.surrogate_function(mem_next - self.v_threshold)
 
-        # Reset (Hard Reset)
-        mem_next = torch.where(spike > 0.5, torch.full_like(
-            mem_next, self.v_reset), mem_next)
+        # リセット (Reset)
+        if self.detach_reset:
+            spike_for_reset = spike.detach()
+        else:
+            spike_for_reset = spike
+
+        # Hard Reset: 発火したら v_reset に戻す
+        # Soft Reset (減算) の場合は mem_next - v_threshold * spike
+        mem_next = mem_next * (1.0 - spike_for_reset) + self.v_reset * spike_for_reset
 
         self.membrane_potential = mem_next
         self.spikes = spike
+        return spike
 
-        return spike, self.membrane_potential
+    def _forward_multistep(self, x_seq: torch.Tensor) -> torch.Tensor:
+        """
+        複数タイムステップの一括処理 (Time, Batch, ...)
+        ループを展開するが、JITコンパイルに対応しやすい形式で記述。
+        """
+        T = x_seq.shape[0]
+        spike_seq = []
+        
+        # 初期状態 (バッチサイズ等に合わせて初期化)
+        # x_seq[0] と同じ形状の状態を作成
+        if self.membrane_potential is None:
+            mem = torch.full_like(x_seq[0], self.v_rest)
+        else:
+            mem = self.membrane_potential
+
+        decay = 1.0 / self.tau_mem
+
+        # 時間軸ループ
+        for t in range(T):
+            x = x_seq[t]
+            
+            # Integrate
+            mem = mem * (1.0 - decay) + x * self.dt
+            
+            # Fire
+            spike = self.surrogate_function(mem - self.v_threshold)
+            
+            # Reset
+            if self.detach_reset:
+                spike_reset = spike.detach()
+            else:
+                spike_reset = spike
+            
+            mem = mem * (1.0 - spike_reset) + self.v_reset * spike_reset
+            
+            spike_seq.append(spike)
+
+        # 最終状態を保存
+        self.membrane_potential = mem
+        
+        # Stackして返す (Time, Batch, ...)
+        return torch.stack(spike_seq, dim=0)
