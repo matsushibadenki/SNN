@@ -1,4 +1,10 @@
-# **SNN Research: Next-Generation Neuromorphic Computing & Artificial Brain Architecture**
+# **SNN Research: Next-Generation Neuromorphic Computing & Artificial Brain Architecture**. 
+  
+
+SNN Research is an open-source library designed to simulate Artificial Brains using Spiking Neural Networks (SNNs). Unlike traditional deep learning, this project focuses on biologically plausible mechanisms like STDP, Spiking Transformers, and Global Workspace Theory to achieve advanced cognitive functions including consciousness simulation, sleep consolidation, and embodied cognition.  
+  
+
+  
 
 ## **📖 Introduction & Philosophy**
 

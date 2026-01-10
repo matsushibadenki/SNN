@@ -5,9 +5,30 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "snn-research"
 version = "17.1.0"
-description = "SNN Research Project CLI and Library"
+description = "A Next-Generation Neuromorphic Computing framework simulating Artificial Brains with Spiking Neural Networks, Transformers, and Cognitive Architectures."
 readme = "README.md"
 requires-python = ">=3.10"
+keywords = [
+    "snn",
+    "neuromorphic-computing",
+    "spiking-neural-networks",
+    "artificial-brain",
+    "cognitive-architecture",
+    "pytorch",
+    "spikformer",
+    "artificial-intelligence",
+    "neuroscience"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: OS Independent",
+]
 dependencies = [
     "click",
     "torch",
@@ -46,6 +67,11 @@ dependencies = [
     "networkx",
     "pandas-stubs",
 ]
+
+[project.urls]
+Homepage = "https://github.com/matsushibadenki/snn"
+Documentation = "https://github.com/matsushibadenki/snn/blob/main/README.md"
+Repository = "https://github.com/matsushibadenki/snn.git"
 
 [project.scripts]
 snn-cli = "snn_research.cli.main:main"
