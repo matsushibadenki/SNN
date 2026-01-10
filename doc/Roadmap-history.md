@@ -4,7 +4,8 @@
 
 ## **目次**
 
-1. **v23.0: The Omega Point (Singularity) \- Final Phase**  
+1. **v2.1: Social & Ethical Autonomy (Implementation Update)**
+2. **v23.0: The Omega Point (Singularity) - Final Phase**  
 2. **v22.0: The Collective Mind**  
 3. **v21.0: The Spatio-Temporal Hybrid**  
 4. **v20.4: The Bit-Spike Convergence**  
@@ -17,6 +18,32 @@
 11. **v11.0: スケーリングと** $T=1$ **統合**  
 12. v10.0: 修正可能な適応的知能の実現  
     ... (以下、過去のバージョン)
+
+## **v2.1: Social & Ethical Autonomy (Implementation Update)**
+
+Date: 2026-01-11
+Status: Phase 2 & Phase 3.1/3.2 Completed
+
+### **概要**
+
+ROADMAP v2.1に基づき、「自律性・スケール（Phase 2）」および「社会性・倫理（Phase 3）」の主要機能を実装・検証した。
+ニューロモルフィックAIとしての自律サイクルと、人間社会に適応するための倫理的基盤が確立された。
+
+### **主な実装機能**
+
+#### **Phase 2: Autonomy & Scale**
+
+* **Sleep Consolidation**: 睡眠時の記憶再生（Replay）と長期記憶への転送機能。
+* **Curiosity & Knowledge Graph**: 好奇心による知識獲得とRAG/知識グラフへの統合。
+* **Edge IoT Demo**: 振動センサデータのオンチップ学習（RPi想定、非勾配学習）。
+* **Temporal Augmentation**: SNN特化型の時間方向データ拡張（Jitter, Drop, Mixup）。
+* **Distillation Optimization**: 動的温度スケジューリングによる知識蒸留。
+
+#### **Phase 3: Social & Ethical**
+
+* **Theory of Mind**: 他者エージェントの意図・信念を推論するモジュール。
+* **Explainability**: スパイク発火パターンを自然言語で説明する機能。
+* **Ethical Guardrails**: 危険な思考（「人類に害を」等）に対する物理的介入・エネルギー遮断。
 
 ## **v23.0: The Omega Point (Singularity) \- Final Phase**
 
