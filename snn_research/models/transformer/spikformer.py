@@ -8,7 +8,7 @@
 
 import torch
 import torch.nn as nn
-from typing import List
+from typing import List, Optional
 from spikingjelly.activation_based import functional as SJ_F
 from spikingjelly.activation_based import layer
 
@@ -56,12 +56,8 @@ class SpikingSelfAttention(nn.Module):
             tau_m_init=tau_m, detach_reset=True)
 
     def forward(self, x: torch.Tensor):
-        # x shape: (T, B, N, D) or (B, N, D) depending on usage.
-        # SpikingJelly standard is often (T, B, ...). Assume x is single step (B, N, D) for modularity,
-        # or handle time dimension externally.
-        # ここではループ内で呼ばれることを想定し、(B, N, D) を処理する形にするが、
-        # BN等のためにTime軸との整合性に注意が必要。
-        # BN1dは (B, C, L) を期待するため、Reshapeが必要。
+        # x shape: (B, N, D) assumed inside the time-loop of the parent model.
+        # Note: If time-step dimension is present, handle it externally or use MultiStep mode.
 
         B, N, D = x.shape
 
@@ -138,8 +134,7 @@ class SpikformerBlock(nn.Module):
         self.mlp = SpikingMLP(d_model, mlp_ratio)
 
     def forward(self, x: torch.Tensor):
-        # Residual Connection is handled inherently if spikes are additive,
-        # but typically in SNNs: x = x + block(x)
+        # Residual Connection is handled inherently if spikes are additive
         x = x + self.attn(x)
         x = x + self.mlp(x)
         return x
@@ -186,7 +181,7 @@ class Spikformer(BaseModel):
             embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
     def forward_features(self, x: torch.Tensor):
-        # x: (B, C, H, W)
+        # x: (B, C, H, W) -> Patches -> Encoder
         x = self.patch_embed(x)  # (B, D, H', W')
         x = self.bn_embed(x)
         x = self.lif_embed(x)
@@ -201,8 +196,7 @@ class Spikformer(BaseModel):
 
     def forward(self, x: torch.Tensor):
         # x: (B, C, H, W) or (B, T, C, H, W)
-        # If input is (B, C, H, W), we repeat it T times (static coding)
-        # If input is (B, T, C, H, W), we iterate over T
+        # Supports both static image repetition and temporal input
 
         if x.dim() == 4:
             x_seq = x.unsqueeze(1).repeat(1, self.T, 1, 1, 1)
@@ -219,35 +213,49 @@ class Spikformer(BaseModel):
 
         outputs = torch.stack(outputs_list, dim=1)  # (B, T, N, D)
 
-        # Classification: Mean over Time -> Mean over Patches (GAP) -> Head
-        # Rate coding: Mean spike rate
+        # Classification: Rate coding (Mean over Time) -> GAP -> Head
         x_mean = outputs.mean(dim=1)  # (B, N, D)
-        x_gap = x_mean.mean(dim=1)   # (B, D)
+        x_gap = x_mean.mean(dim=1)    # (B, D)
 
-        x_out = self.head(x_gap)     # (B, num_classes)
+        x_out = self.head(x_gap)      # (B, num_classes)
         return x_out
 
 
 class TransformerToMambaAdapter(nn.Module):
     """
     Adapter to connect Spikformer (Vision/Space) to BitSpikeMamba (Reasoning/Time).
-    Spikformerの出力 (B, T, N_patches, D_vis) を Mambaの入力 (B, L, D_model) に変換する。
+    Connects Visual Cortex (SNN) to Prefrontal Cortex (SSM).
+
+    Objective Phase 2: "Multimodal: Visual(CNN/ViT) + Language(SFormer) complete integration."
     """
 
-    def __init__(self, vis_dim: int, model_dim: int, seq_len: int):
+    def __init__(self, vis_dim: int, model_dim: int, seq_len: Optional[int] = None):
         super().__init__()
+        self.vis_dim = vis_dim
+        self.model_dim = model_dim
+
+        # Projection layer: Visual Features -> Mamba Embedding Dimension
         self.proj = nn.Linear(vis_dim, model_dim)
         self.ln = nn.LayerNorm(model_dim)
-        # N_patches を維持するか、Global Average Poolingするかはタスク依存。
-        # ここではパッチ系列をそのまま時系列の「初期文脈」として扱うケースを想定。
+
+        # Optional: Learnable positional encoding if sequence length matters here
+        self.seq_len = seq_len
 
     def forward(self, x_vis: torch.Tensor) -> torch.Tensor:
-        # x_vis: (B, T, N, D)
-        # 平均レートに変換してMambaに渡す（System 1 -> System 2 へのハンドオーバー）
-        # または、T次元をBatchに畳み込むなど。ここでは時間平均をとって静的なEmbeddingにする。
+        """
+        Args:
+            x_vis: Output from Spikformer. Shape can be (B, T, N, D) or (B, N, D).
+        Returns:
+            x_out: Input for Mamba. Shape (B, N, D_model).
+        """
+        # If input has time dimension (B, T, N, D), compress it (Rate coding assumption)
+        if x_vis.dim() == 4:
+            x_mean = x_vis.mean(dim=1)  # (B, N, D)
+        else:
+            x_mean = x_vis
 
-        x_mean = x_vis.mean(dim=1)  # (B, N, D) - Rate coding interpretation
+        # Project dimensions
         x_proj = self.proj(x_mean)
         x_out = self.ln(x_proj)
 
-        return x_out  # (B, N, D_model) -> Mamba input
+        return x_out  # Ready for BitSpikeMamba

@@ -64,19 +64,38 @@ def run_demo():
         # 脳に入力 (文字列をそのまま入力としているが、本来はエンコードされたTensor)
         brain.process_step(sensory_input=exp)
 
-        # エネルギー消費シミュレーション
-        brain.energy_level -= 15.0
+        # エネルギー消費シミュレーション (修正: AstrocyteNetwork経由でエネルギーを消費)
+        # ArtificialBrain v2.4では max_energy=1000.0 がデフォルト
+        brain.astrocyte_network.consume_energy("daytime_activity", 15.0)
 
         time.sleep(0.5)
 
     # 現在の短期記憶を確認
     print(
         f"\n🧠 Hippocampus Buffer: {len(brain.hippocampus.episodic_buffer)} items")
-    print(f"⚡ Current Energy: {brain.energy_level:.1f}/100")
+
+    # エネルギー状態の確認 (修正: 正しいAPIを使用)
+    current_energy = brain.astrocyte_network.get_energy_level() * \
+        1000.0  # Ratio to Absolute
+    print(f"⚡ Current Energy: {current_energy:.1f}/1000")
 
     # 3. 強制的にさらに疲れさせる (Trigger Sleep)
-    brain.energy_level = 10.0
     print("\n😫 Energy dropped critically low. Needing sleep...")
+
+    # 強制的にエネルギーを下げる (AstrocyteNetworkの属性を操作、または大量消費)
+    # ここでは疲労物質(fatigue_toxin)を蓄積させ、エネルギーを枯渇させる
+    if hasattr(brain.astrocyte_network, 'fatigue_toxin'):
+        brain.astrocyte_network.fatigue_toxin = 90.0  # 疲労困憊
+
+    # エネルギーを強制的に下げる（消費メソッドを使用）
+    drain_amount = current_energy - 10.0
+    if drain_amount > 0:
+        brain.astrocyte_network.consume_energy(
+            "forced_exhaustion", drain_amount)
+
+    # 確認
+    low_energy = brain.astrocyte_network.get_energy_level() * 1000.0
+    print(f"   (Energy forced down to: {low_energy:.1f})")
 
     # 4. 次のステップで自動的に睡眠に入るはず
     print("\n🌙 Processing next step (Should trigger sleep)...")
@@ -94,6 +113,7 @@ def run_demo():
         print("✅ Sleep cycle completed successfully.")
     else:
         print("❌ Sleep was not triggered. Check logic.")
+        print(f"Debug Result: {result}")
 
     # 6. 長期記憶の確認
     print("\n📚 Checking Cortex (Long-term Memory)...")
