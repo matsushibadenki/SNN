@@ -1,40 +1,30 @@
-# ファイルパス: snn_research/models/transformer/spikformer.py
-# Title: Spikformer (Spiking Transformer with Softmax-less SSA)
+# snn_research/models/transformer/spikformer.py
+# Title: Spikformer (Phase 2 Optimized)
 # Description:
-#   ROADMAP Phase 3 Step 3 実装。
-#   - Spiking Self-Attention (SSA): Softmaxを使用せず、Q, K, V のスパイク積でAttentionを計算。
-#   - Spiking MLP Block: 活性化関数としてLIFニューロンを使用。
-#   - TransformerToMambaAdapter: 視覚野(Spikformer)と前頭前野(Mamba)を接続するアダプター。
+#   T=1 高速推論パスの実装と、SpikingJelly依存度の低減による高速化。
 
 import torch
 import torch.nn as nn
-from typing import List, Optional
+from typing import List, Optional, Union
 from spikingjelly.activation_based import functional as SJ_F
 from spikingjelly.activation_based import layer
 
-# 既存モジュールからインポート (パスはプロジェクト構造に準拠)
 from snn_research.core.neurons.da_lif_node import DualAdaptiveLIFNode
 from snn_research.core.base import BaseModel
 
 
 class SpikingSelfAttention(nn.Module):
     """
-    Softmax-less Spiking Self-Attention (SSA).
-    論文 "Spikformer: A Spiking Transformer" に基づく実装。
-    Q, K, V をスパイク化し、Attention Map = (Q @ K^T) * scale で計算する。
-    Softmaxを使わないため、ハードウェア効率が高く、スパイクの疎性を維持できる。
+    Softmax-less SSA. T=1 対応版。
     """
-
     def __init__(self, d_model: int, num_heads: int, tau_m: float = 2.0):
         super().__init__()
-        assert d_model % num_heads == 0, f"d_model {d_model} must be divisible by num_heads {num_heads}"
+        assert d_model % num_heads == 0
         self.d_model = d_model
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
-        # Scaling factor suggested in some SNN papers or standard -0.5
         self.scale = self.head_dim ** -0.125
 
-        # 線形層 (BN付きを使用することでスパイク発火を安定させる)
         self.q_linear = layer.Linear(d_model, d_model)
         self.q_bn = nn.BatchNorm1d(d_model)
         self.q_lif = DualAdaptiveLIFNode(tau_m_init=tau_m, detach_reset=True)
@@ -47,55 +37,34 @@ class SpikingSelfAttention(nn.Module):
         self.v_bn = nn.BatchNorm1d(d_model)
         self.v_lif = DualAdaptiveLIFNode(tau_m_init=tau_m, detach_reset=True)
 
-        self.attn_lif = DualAdaptiveLIFNode(
-            tau_m_init=tau_m, v_threshold=0.5, detach_reset=True)
+        self.attn_lif = DualAdaptiveLIFNode(tau_m_init=tau_m, v_threshold=0.5, detach_reset=True)
 
         self.proj_linear = layer.Linear(d_model, d_model)
         self.proj_bn = nn.BatchNorm1d(d_model)
-        self.proj_lif = DualAdaptiveLIFNode(
-            tau_m_init=tau_m, detach_reset=True)
+        self.proj_lif = DualAdaptiveLIFNode(tau_m_init=tau_m, detach_reset=True)
 
     def forward(self, x: torch.Tensor):
-        # x shape: (B, N, D) assumed inside the time-loop of the parent model.
-        # Note: If time-step dimension is present, handle it externally or use MultiStep mode.
-
         B, N, D = x.shape
+        
+        # Q, K, V
+        q = self.q_lif(self.q_bn(self.q_linear(x).transpose(1, 2)).transpose(1, 2))
+        k = self.k_lif(self.k_bn(self.k_linear(x).transpose(1, 2)).transpose(1, 2))
+        v = self.v_lif(self.v_bn(self.v_linear(x).transpose(1, 2)).transpose(1, 2))
 
-        # Q, K, V Generation
-        # Linear -> BN -> LIF
-        q = self.q_linear(x)  # (B, N, D)
-        q = self.q_bn(q.transpose(1, 2)).transpose(1, 2)
-        q = self.q_lif(q)
-
-        k = self.k_linear(x)
-        k = self.k_bn(k.transpose(1, 2)).transpose(1, 2)
-        k = self.k_lif(k)
-
-        v = self.v_linear(x)
-        v = self.v_bn(v.transpose(1, 2)).transpose(1, 2)
-        v = self.v_lif(v)
-
-        # Multi-head Split
-        # (B, N, H, D_h) -> (B, H, N, D_h)
+        # Split Heads
         q = q.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         k = k.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         v = v.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
 
-        # Softmax-less Attention Calculation
-        # Attn = (Q @ K^T) * scale
+        # Attention (SSA)
         attn = (q @ k.transpose(-2, -1)) * self.scale
-
-        # Attn @ V
-        x_attn = attn @ v  # (B, H, N, D_h)
-
-        # Combine Heads
+        x_attn = attn @ v
+        
         x_attn = x_attn.transpose(1, 2).reshape(B, N, D)
-
-        # Output Projection -> LIF
+        
+        # Output
         x_attn = self.attn_lif(x_attn)
-        x_attn = self.proj_linear(x_attn)
-        x_attn = self.proj_bn(x_attn.transpose(1, 2)).transpose(1, 2)
-        x_attn = self.proj_lif(x_attn)
+        x_attn = self.proj_lif(self.proj_bn(self.proj_linear(x_attn).transpose(1, 2)).transpose(1, 2))
 
         return x_attn
 
@@ -104,26 +73,17 @@ class SpikingMLP(nn.Module):
     def __init__(self, d_model: int, mlp_ratio: int = 4, tau_m: float = 2.0):
         super().__init__()
         hidden_dim = d_model * mlp_ratio
-
         self.fc1 = layer.Linear(d_model, hidden_dim)
         self.bn1 = nn.BatchNorm1d(hidden_dim)
         self.lif1 = DualAdaptiveLIFNode(tau_m_init=tau_m, detach_reset=True)
-
+        
         self.fc2 = layer.Linear(hidden_dim, d_model)
         self.bn2 = nn.BatchNorm1d(d_model)
         self.lif2 = DualAdaptiveLIFNode(tau_m_init=tau_m, detach_reset=True)
 
     def forward(self, x: torch.Tensor):
-        B, N, D = x.shape
-
-        x = self.fc1(x)
-        x = self.bn1(x.transpose(1, 2)).transpose(1, 2)
-        x = self.lif1(x)
-
-        x = self.fc2(x)
-        x = self.bn2(x.transpose(1, 2)).transpose(1, 2)
-        x = self.lif2(x)
-
+        x = self.lif1(self.bn1(self.fc1(x).transpose(1, 2)).transpose(1, 2))
+        x = self.lif2(self.bn2(self.fc2(x).transpose(1, 2)).transpose(1, 2))
         return x
 
 
@@ -134,7 +94,6 @@ class SpikformerBlock(nn.Module):
         self.mlp = SpikingMLP(d_model, mlp_ratio)
 
     def forward(self, x: torch.Tensor):
-        # Residual Connection is handled inherently if spikes are additive
         x = x + self.attn(x)
         x = x + self.mlp(x)
         return x
@@ -156,106 +115,72 @@ class Spikformer(BaseModel):
     ):
         super().__init__()
         self.T = T
-        self.patch_size = patch_size
         self.embed_dim = embed_dim
         self.num_classes = num_classes
-
-        # Patch Embedding (Conv2d)
-        self.patch_embed = layer.Conv2d(
-            in_channels, embed_dim, kernel_size=patch_size, stride=patch_size, bias=False
-        )
+        
+        # Components
+        self.patch_embed = layer.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size, bias=False)
         self.bn_embed = nn.BatchNorm2d(embed_dim)
         self.lif_embed = DualAdaptiveLIFNode(detach_reset=True)
-
+        
         num_patches = (img_size_h // patch_size) * (img_size_w // patch_size)
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
-
-        # Encoder Blocks
+        
         self.blocks = nn.ModuleList([
-            SpikformerBlock(embed_dim, num_heads, mlp_ratio)
-            for _ in range(num_layers)
+            SpikformerBlock(embed_dim, num_heads, mlp_ratio) for _ in range(num_layers)
         ])
-
-        # Classification Head
-        self.head = layer.Linear(
-            embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+        
+        self.head = layer.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
     def forward_features(self, x: torch.Tensor):
-        # x: (B, C, H, W) -> Patches -> Encoder
-        x = self.patch_embed(x)  # (B, D, H', W')
-        x = self.bn_embed(x)
-        x = self.lif_embed(x)
-
-        x = x.flatten(2).transpose(1, 2)  # (B, N, D)
+        # x: (B, C, H, W)
+        x = self.lif_embed(self.bn_embed(self.patch_embed(x)))
+        x = x.flatten(2).transpose(1, 2)
         x = x + self.pos_embed
-
         for block in self.blocks:
             x = block(x)
-
         return x
 
     def forward(self, x: torch.Tensor):
-        # x: (B, C, H, W) or (B, T, C, H, W)
-        # Supports both static image repetition and temporal input
+        # Optimized forward pass
+        # T=1 の場合は高速パスを使用
+        
+        if self.T == 1:
+            # Reset only if stateful (Single step inference usually resets before or doesn't keep state)
+            # SJ_F.reset_net(self) # Avoid heavy reset for T=1 if managed externally
+            
+            if x.dim() == 5: # (B, T, C, H, W)
+                x = x.squeeze(1)
+            
+            feat = self.forward_features(x) # (B, N, D)
+            x_gap = feat.mean(dim=1)
+            return self.head(x_gap)
 
-        if x.dim() == 4:
-            x_seq = x.unsqueeze(1).repeat(1, self.T, 1, 1, 1)
         else:
-            x_seq = x
-
-        SJ_F.reset_net(self)
-
-        outputs_list: List[torch.Tensor] = []
-        for t in range(self.T):
-            x_t = x_seq[:, t]
-            feat = self.forward_features(x_t)  # (B, N, D)
-            outputs_list.append(feat)
-
-        outputs = torch.stack(outputs_list, dim=1)  # (B, T, N, D)
-
-        # Classification: Rate coding (Mean over Time) -> GAP -> Head
-        x_mean = outputs.mean(dim=1)  # (B, N, D)
-        x_gap = x_mean.mean(dim=1)    # (B, D)
-
-        x_out = self.head(x_gap)      # (B, num_classes)
-        return x_out
-
+            # Temporal Processing
+            if x.dim() == 4:
+                x_seq = x.unsqueeze(1).repeat(1, self.T, 1, 1, 1)
+            else:
+                x_seq = x
+            
+            SJ_F.reset_net(self) # Necessary for multi-step
+            
+            outputs_list = []
+            for t in range(self.T):
+                outputs_list.append(self.forward_features(x_seq[:, t]))
+            
+            outputs = torch.stack(outputs_list, dim=1)
+            x_mean = outputs.mean(dim=1)
+            x_gap = x_mean.mean(dim=1)
+            return self.head(x_gap)
 
 class TransformerToMambaAdapter(nn.Module):
-    """
-    Adapter to connect Spikformer (Vision/Space) to BitSpikeMamba (Reasoning/Time).
-    Connects Visual Cortex (SNN) to Prefrontal Cortex (SSM).
-
-    Objective Phase 2: "Multimodal: Visual(CNN/ViT) + Language(SFormer) complete integration."
-    """
-
     def __init__(self, vis_dim: int, model_dim: int, seq_len: Optional[int] = None):
         super().__init__()
-        self.vis_dim = vis_dim
-        self.model_dim = model_dim
-
-        # Projection layer: Visual Features -> Mamba Embedding Dimension
         self.proj = nn.Linear(vis_dim, model_dim)
         self.ln = nn.LayerNorm(model_dim)
 
-        # Optional: Learnable positional encoding if sequence length matters here
-        self.seq_len = seq_len
-
     def forward(self, x_vis: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x_vis: Output from Spikformer. Shape can be (B, T, N, D) or (B, N, D).
-        Returns:
-            x_out: Input for Mamba. Shape (B, N, D_model).
-        """
-        # If input has time dimension (B, T, N, D), compress it (Rate coding assumption)
         if x_vis.dim() == 4:
-            x_mean = x_vis.mean(dim=1)  # (B, N, D)
-        else:
-            x_mean = x_vis
-
-        # Project dimensions
-        x_proj = self.proj(x_mean)
-        x_out = self.ln(x_proj)
-
-        return x_out  # Ready for BitSpikeMamba
+            x_vis = x_vis.mean(dim=1)
+        return self.ln(self.proj(x_vis))

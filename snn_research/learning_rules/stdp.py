@@ -1,127 +1,106 @@
-# ファイルパス: snn_research/learning_rules/stdp.py
-# 日本語タイトル: 高精度 STDP & TripletSTDP 学習則 (State Reset Supported)
-# 目的: エピソード間での学習干渉を防ぐため、resetメソッドを追加。
+# snn_research/learning_rules/stdp.py
+# Title: Vectorized STDP Learning Rule (Type Safe)
+# Description: BioLearningRuleを継承し、共通インターフェースに準拠。
 
 import torch
-import math
-from typing import Dict, Any, Optional, Tuple, cast
+import torch.nn as nn
+from typing import Optional, Tuple, Union, Dict, Any
 from .base_rule import BioLearningRule
 
-
-class STDP(BioLearningRule):
+class STDP(nn.Module, BioLearningRule):
     """
-    標準的なペアベースSTDP（Spike-Timing-Dependent Plasticity）。
-    プレとポストのスパイク時間差に基づき重みを更新する。
+    Vectorized Spike-Timing Dependent Plasticity (STDP).
     """
 
-    def __init__(self, learning_rate: float, a_plus: float, a_minus: float, tau_trace: float, dt: float = 1.0):
+    def __init__(
+        self,
+        learning_rate: Union[float, Tuple[float, float]] = (1e-4, -1e-4),
+        tau_pre: float = 20.0,
+        tau_post: float = 20.0,
+        dt: float = 1.0,
+        w_min: float = 0.0,
+        w_max: float = 1.0,
+        **kwargs: Any
+    ):
         super().__init__()
-        self.learning_rate = learning_rate
-        self.a_plus = a_plus    # LTP（長期増強）強度
-        self.a_minus = a_minus  # LTD（長期抑圧）強度
-        self.tau_trace = tau_trace
+        if isinstance(learning_rate, float):
+            self.lr_ltp = learning_rate
+            self.lr_ltd = -learning_rate
+        else:
+            self.lr_ltp = learning_rate[0]
+            self.lr_ltd = learning_rate[1]
+
+        self.tau_pre = tau_pre
+        self.tau_post = tau_post
         self.dt = dt
+        self.w_min = w_min
+        self.w_max = w_max
 
-        self.pre_trace: Optional[torch.Tensor] = None
-        self.post_trace: Optional[torch.Tensor] = None
-
-    def reset(self):
-        """内部状態（トレース）のリセット"""
-        self.pre_trace = None
-        self.post_trace = None
-
-    def update(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, weights: torch.Tensor,
-               optional_params: Optional[Dict[str, Any]] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        # 次元の正規化 [Batch, Neurons]
-        if pre_spikes.dim() == 1:
+    def forward(
+        self,
+        weight: torch.Tensor,
+        pre_spikes: torch.Tensor,
+        post_spikes: torch.Tensor,
+        pre_trace: Optional[torch.Tensor] = None,
+        post_trace: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        
+        if pre_spikes.dim() == 2:
             pre_spikes = pre_spikes.unsqueeze(0)
-        if post_spikes.dim() == 1:
             post_spikes = post_spikes.unsqueeze(0)
 
-        # トレースの初期化
-        if self.pre_trace is None or self.pre_trace.shape != pre_spikes.shape:
-            self.pre_trace = torch.zeros_like(pre_spikes)
-            self.post_trace = torch.zeros_like(post_spikes)
+        T, B, N_in = pre_spikes.shape
+        _, _, N_out = post_spikes.shape
+        device = weight.device
 
-        assert self.pre_trace is not None and self.post_trace is not None
+        if pre_trace is None:
+            pre_trace = torch.zeros(B, N_in, device=device)
+        if post_trace is None:
+            post_trace = torch.zeros(B, N_out, device=device)
 
-        # 1. トレースの更新（時間的減衰 + 新規スパイク）
-        decay = math.exp(-self.dt / self.tau_trace)
-        with torch.no_grad():
-            self.pre_trace = self.pre_trace * decay + pre_spikes
-            self.post_trace = self.post_trace * decay + post_spikes
+        decay_pre = torch.exp(torch.tensor(-self.dt / self.tau_pre, device=device))
+        decay_post = torch.exp(torch.tensor(-self.dt / self.tau_post, device=device))
 
-        # 2. 重み更新量の計算 (dw)
-        # 標準的な計算: LTP = Post @ Pre.T -> (Post, Pre)
-        ltp = torch.matmul(post_spikes.t(), self.pre_trace)
-        ltd = torch.matmul(self.post_trace.t(), pre_spikes)
+        delta_w = torch.zeros_like(weight)
+        
+        curr_pre_trace = pre_trace
+        curr_post_trace = post_trace
 
-        batch_size = pre_spikes.size(0)
-        dw = (self.learning_rate / batch_size) * \
-            (self.a_plus * ltp - self.a_minus * ltd)
+        for t in range(T):
+            pre_s = pre_spikes[t]
+            post_s = post_spikes[t]
 
-        # 重み行列の形状に合わせて転置を行う
-        if weights is not None:
-            if weights.shape[0] == pre_spikes.shape[1] and weights.shape[1] == post_spikes.shape[1]:
-                dw = dw.t()
+            curr_pre_trace = curr_pre_trace * decay_pre + pre_s
+            curr_post_trace = curr_post_trace * decay_post + post_s
 
-        return dw, None
+            ltp = torch.bmm(post_s.unsqueeze(2), curr_pre_trace.unsqueeze(1)).mean(dim=0)
+            ltd = torch.bmm(curr_post_trace.unsqueeze(2), pre_s.unsqueeze(1)).mean(dim=0)
+
+            delta_w += (self.lr_ltp * ltp + self.lr_ltd * ltd)
+
+        return delta_w, curr_pre_trace, curr_post_trace
+
+    def update(
+        self,
+        pre_spikes: torch.Tensor,
+        post_spikes: torch.Tensor,
+        weights: torch.Tensor,
+        optional_params: Optional[Dict[str, Any]] = None
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        BioLearningRule インターフェースの実装。
+        forward を呼び出し、インターフェース形式 (dw, credit) に合わせる。
+        """
+        # トレースの維持が必要な場合は optional_params から取得/保存する設計も可能だが
+        # ここではシンプルに毎回リセットするか、外部管理を想定
+        delta_w, _, _ = self.forward(weights, pre_spikes, post_spikes)
+        return delta_w, None
+
+    def update_weight(self, weight: torch.Tensor, delta_w: torch.Tensor) -> torch.Tensor:
+        new_weight = weight + delta_w
+        return torch.clamp(new_weight, self.w_min, self.w_max)
 
 
-class TripletSTDP(BioLearningRule):
-    """
-    高精度トリプレットSTDP。
-    """
-
-    def __init__(self, learning_rate: float = 0.01, target_rate: float = 0.05, dt: float = 1.0):
-        super().__init__()
-        self.learning_rate = learning_rate
-        self.target_rate = target_rate
-        self.dt = dt
-        self.tau_plus = torch.tensor(16.8)
-
-        self.pre_trace: Optional[torch.Tensor] = None
-        self.avg_firing_rate: Optional[torch.Tensor] = None
-
-    def reset(self):
-        """内部状態のリセット"""
-        self.pre_trace = None
-        # avg_firing_rate は長期統計なのでリセットするか検討が必要だが、
-        # 完全なエピソード独立性を保つならリセットすべき
-        self.avg_firing_rate = None
-
-    def update(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, weights: torch.Tensor,
-               optional_params: Optional[Dict[str, Any]] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        if pre_spikes.dim() == 1:
-            pre_spikes = pre_spikes.unsqueeze(0)
-        if post_spikes.dim() == 1:
-            post_spikes = post_spikes.unsqueeze(0)
-
-        if self.pre_trace is None or self.pre_trace.shape != pre_spikes.shape:
-            self.pre_trace = torch.zeros_like(pre_spikes)
-            self.avg_firing_rate = torch.full(
-                (post_spikes.shape[-1],), self.target_rate, device=pre_spikes.device)
-
-        # ホメオスタシス
-        firing_scale = torch.clamp(
-            cast(torch.Tensor, self.avg_firing_rate) / self.target_rate, 0.5, 2.0)
-        adj_tau = self.tau_plus / firing_scale.mean()
-
-        with torch.no_grad():
-            self.pre_trace = self.pre_trace * \
-                (1.0 - self.dt / adj_tau) + pre_spikes
-            self.avg_firing_rate = 0.99 * \
-                cast(torch.Tensor, self.avg_firing_rate) + \
-                0.01 * post_spikes.mean(dim=0)
-
-        reward = (optional_params or {}).get("reward", 1.0)
-
-        batch_size = pre_spikes.size(0)
-        dw = (self.learning_rate * reward / batch_size) * \
-            torch.matmul(post_spikes.t(), self.pre_trace)
-
-        if weights is not None:
-            if weights.shape[0] == pre_spikes.shape[1] and weights.shape[1] == post_spikes.shape[1]:
-                dw = dw.t()
-
-        return dw, None
+class TripletSTDP(STDP):
+    """Placeholder for Triplet STDP."""
+    pass
