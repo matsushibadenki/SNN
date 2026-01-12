@@ -1,180 +1,263 @@
 # ファイルパス: scripts/experiments/systems/run_phase7_civilization.py
-# 日本語タイトル: Phase 7 Civilization Simulation - Multi-Agent Consensus
-# 目的: 複数のArtificialBrainエージェントによる社会形成、合意形成、知識継承のシミュレーション。
+# 日本語タイトル: Phase 7 デジタル文明シミュレーション "Eden" v1.2 (Loss Fix)
+# 目的: 複数のAGIプロトタイプ(Genesis)が相互作用し、知識を共有・継承する社会システムの構築。
+# 修正履歴:
+#   v1.2: CrossEntropyLossの入力型エラーを修正 (Logitsを返すように変更)。
 
-from snn_research.io.spike_encoder import SpikeEncoder
-from snn_research.social.culture_repository import CultureRepository
-from snn_research.social.consensus_engine import ConsensusEngine
-from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
-from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
-import asyncio
-import logging
-import torch
 import sys
 import os
+import time
+import logging
 import random
-from typing import Optional, cast
+import torch
+import torch.nn as nn
+import numpy as np
+from typing import Dict, Any, List, Optional
 
-# パス設定
-sys.path.append(os.getcwd())
-
+# プロジェクトルートの設定
+project_root = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../../"))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 # ロギング設定
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("Phase7_Civ")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)],
+    force=True
+)
+# 外部ライブラリのログ抑制
+logging.getLogger("spikingjelly").setLevel(logging.ERROR)
+
+# 必要なモジュールのインポート
+try:
+    from snn_research.core.snn_core import SNNCore
+    from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
+    from snn_research.cognitive_architecture.sleep_consolidation import SleepConsolidator
+except ImportError as e:
+    print(f"❌ Import Error: {e}")
+    sys.exit(1)
 
 
-class SocialAgent:
+class CivilizationBrain(nn.Module):
     """
-    社会シミュレーションに参加するエージェントのラッパー。
-    ArtificialBrainを持ち、社会的な対話インターフェースを提供する。
+    文明用ハイブリッド脳。他者との通信機能を持つ。
     """
-
-    def __init__(self, id: int, device: str):
-        self.id = id
-        self.name = f"Agent_{id:02d}"
-
-        # エージェントごとの個性を出すため、シードを少しずらすなどの工夫が可能
-        # ここでは軽量化のため最小構成のBrainを使用
-        self.brain = ArtificialBrain(
-            global_workspace=GlobalWorkspace(),
-            spike_encoder=SpikeEncoder(device=device),
-            device=device
-        )
-
-        self.confidence = 0.5
-        # mypyエラー修正: 型ヒントを追加し、TensorまたはNoneであることを明示
-        self.proposal: Optional[torch.Tensor] = None
+    def __init__(self, device: str, vocab_size: int = 128):
+        super().__init__()
         self.device = device
+        
+        # System 1: SFormer
+        self.system1 = SNNCore(config={
+            "architecture_type": "sformer",
+            "d_model": 64,
+            "num_layers": 2,
+            "nhead": 2,
+            "time_steps": 2,
+            "neuron_config": {"type": "lif", "v_threshold": 1.0}
+        }, vocab_size=vocab_size).to(device)
+        
+        # System 2: BitSpikeMamba
+        self.system2 = BitSpikeMamba(
+            vocab_size=vocab_size,
+            d_model=64,
+            d_state=16,
+            d_conv=4,
+            expand=2,
+            num_layers=2,
+            time_steps=4,
+            neuron_config={"type": "lif", "base_threshold": 1.0}
+        ).to(device)
+        
+        # 意思決定層
+        self.decision_layer = nn.Linear(vocab_size, 3).to(device)
+        
+        # 知識エンコーダ
+        self.speech_layer = nn.Linear(vocab_size, vocab_size).to(device)
 
-    async def think(self, topic: str):
-        """トピックについて思考し、提案ベクトルと自信度を生成する"""
-        logger.info(f"🤖 {self.name} is thinking about '{topic}'...")
-
-        # 1. 思考シミュレーション (Brainを実行)
-        # キャストしてメソッド呼び出し
-        brain_instance = cast(ArtificialBrain, self.brain)
-        _ = brain_instance.run_cognitive_cycle(topic)
-
-        # 2. 提案ベクトルの生成 (Simulation)
-        # 本来はBrainの内部状態（SNNの隠れ層など）からベクトルを抽出するが、
-        # ここではシミュレーションとして、IDに基づくバイアスを加えたベクトルを生成する。
-
-        # 簡易的なトピックベクトル（正解のようなもの）
-        topic_hash = abs(hash(topic)) % 1000 / 1000.0
-        target_vec = torch.ones(16, device=self.device) * topic_hash
-
-        # 個体のバイアス (Noise)
-        bias = torch.randn(16, device=self.device) * 0.2
-        # エージェントIDによる特有の傾向 (Personality)
-        personality = torch.tensor([self.id * 0.05] * 16, device=self.device)
-
-        self.proposal = target_vec + bias + personality
-
-        # 3. 自信度の生成
-        # 提案ベクトルがどれだけ強固か（ここではランダム要素 + 経験値）
-        self.confidence = max(0.1, min(0.9, 0.5 + random.uniform(-0.2, 0.2)))
-
-        return self.proposal, self.confidence
+    def forward(self, x: torch.Tensor, context: Optional[torch.Tensor] = None) -> Dict[str, Any]:
+        if not x.is_contiguous(): x = x.contiguous()
+        
+        # System 1
+        out1 = self.system1(x)
+        if isinstance(out1, tuple): out1 = out1[0]
+        features = out1.mean(dim=1) # (Batch, Vocab)
+        
+        # System 2
+        if context is not None:
+            out2 = self.system2(x) 
+            if isinstance(out2, tuple): out2 = out2[0]
+            features = (features + out2.mean(dim=1)) / 2.0
+            
+        action_logits = self.decision_layer(features)
+        speech_logits = self.speech_layer(features)
+        
+        return {
+            "action": torch.argmax(action_logits, dim=-1),
+            "speech": torch.argmax(speech_logits, dim=-1),
+            "speech_logits": speech_logits, # [Fix] Logitsを返す
+            "features": features
+        }
 
 
-async def main():
-    logger.info("==================================================")
-    logger.info("   🌍 Phase 7 Civilization Simulation Start")
-    logger.info("==================================================")
+class Citizen:
+    """
+    デジタル文明の市民エージェント。
+    """
+    def __init__(self, name: str, device: str, generation: int = 1):
+        self.name = name
+        self.device = device
+        self.generation = generation
+        
+        self.brain = CivilizationBrain(device).to(device)
+        self.sleep_system = SleepConsolidator(target_brain_model=self.brain.system2)
+        self.optimizer = torch.optim.AdamW(self.brain.parameters(), lr=0.002)
+        
+        self.knowledge_score = 0
+        self.fatigue = 0.0
+        self.social_bond = 0
+        
+    def act(self, env_input: torch.Tensor, peer_input: Optional[torch.Tensor] = None) -> Dict[str, Any]:
+        self.brain.eval()
+        with torch.no_grad():
+            result = self.brain(env_input, context=peer_input)
+        return result
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    logger.info(f"Running on device: {device}")
+    def learn_from_peer(self, peer_speech: torch.Tensor):
+        """他者の発話から学ぶ (模倣学習/知識伝達)"""
+        self.brain.train()
+        self.optimizer.zero_grad()
+        
+        # 相手の言葉を聞いて、自分も同じ概念を想起できるか (Autoencoder的)
+        # peer_speechは (1,) のスカラーテンソル(トークンID)
+        
+        # 入力: (Batch=1, Seq=1) に整形
+        dummy_input = peer_speech.unsqueeze(0) 
+        if dummy_input.dim() == 1:
+             dummy_input = dummy_input.unsqueeze(0)
 
-    # 1. 社会インフラの構築
-    num_agents = 3
-    # 合意形成エンジン
-    consensus_engine = ConsensusEngine(
-        num_agents=num_agents, proposal_dim=16, device=device)
-    # 文化リポジトリ
-    culture_repo = CultureRepository()
+        result = self.brain(dummy_input)
+        
+        # [Fix] CrossEntropyLossには (Batch, Class) のLogitsと (Batch) のTargetを渡す
+        logits = result["speech_logits"] # (1, Vocab)
+        target = peer_speech             # (1)
+        
+        loss = nn.CrossEntropyLoss()(logits, target)
+        loss.backward()
+        self.optimizer.step()
+        
+        self.knowledge_score += 1
+        self.fatigue += 0.1
+        return loss.item()
 
-    # エージェントの生成
-    agents = [SocialAgent(i, device) for i in range(num_agents)]
-    logger.info(f"Population: {len(agents)} agents created.")
+    def rest(self):
+        """休息と記憶の整理"""
+        if self.fatigue > 0.5:
+            summary = self.sleep_system.perform_sleep_cycle(duration_cycles=1)
+            self.fatigue = 0.0
+            return True
+        return False
 
-    # 2. シミュレーション: 問題解決と合意形成
-    topic = "Optimal resource allocation strategy for sustainability"
-    logger.info(f"\n--- 🗣️ Debate Topic: {topic} ---")
 
-    # 全エージェントが思考し、提案を提出
-    proposals = []
-    confidences = []
+class EdenSimulation:
+    def __init__(self, population_size: int = 4):
+        self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+        print(f"🚀 Initializing Phase 7 Civilization 'Eden' on {self.device}...")
+        
+        names = ["Adam", "Eve", "Cain", "Abel", "Seth", "Mary", "Noah", "Lilith"]
+        self.population = [
+            Citizen(names[i % len(names)], self.device) for i in range(population_size)
+        ]
+        self.year = 0
 
-    for agent in agents:
-        p, c = await agent.think(topic)
-        proposals.append(p)
-        confidences.append(c)
-        logger.info(f"   - {agent.name}: Confidence={c:.2f}")
+    def run_year(self):
+        self.year += 1
+        print(f"\n🌍 Year {self.year}: The sun rises on Eden.")
+        
+        # 環境からの刺激 (日替わりの「謎」)
+        daily_mystery = torch.randint(0, 128, (1, 8)).to(self.device)
+        
+        # 全市民の行動
+        interactions = []
+        
+        for citizen in self.population:
+            # 1. 休息チェック
+            if citizen.rest():
+                print(f"   💤 {citizen.name} is sleeping. Dreaming of electric sheep...")
+                continue
+                
+            # 2. 行動選択
+            result = citizen.act(daily_mystery)
+            action = result["action"].item() # 0:Explore, 1:Talk, 2:Rest
+            speech = result["speech"] # 発話内容(トークン)
+            
+            # アクション実行
+            if action == 0: # 探索
+                citizen.knowledge_score += 1
+                citizen.fatigue += 0.1
+                # 独り言をつぶやく (思考)
+                pass 
+                
+            elif action == 1: # 対話 (他者を探す)
+                # ランダムに相手を選ぶ
+                partner = random.choice([c for c in self.population if c != citizen])
+                interactions.append((citizen, partner, speech))
+                
+            elif action == 2: # 休息
+                citizen.fatigue += 0.05 # 待機疲れ
+        
+        # 3. 社会的相互作用の解決
+        for actor, partner, speech in interactions:
+            # パートナーが起きているか確認
+            if partner.fatigue < 0.8:
+                loss = partner.learn_from_peer(speech)
+                actor.social_bond += 1
+                partner.social_bond += 1
+                print(f"   🗣️ {actor.name} shared wisdom with {partner.name}. (Loss: {loss:.4f})")
+            else:
+                print(f"   🚫 {actor.name} tried to talk, but {partner.name} was too tired.")
 
-    # Tensor化 (Batch化)
-    proposals_tensor = torch.stack(proposals)  # [Num_Agents, 16]
-    confidences_tensor = torch.tensor(
-        confidences, device=device).unsqueeze(1)  # [Num_Agents, 1]
+        # 4. 統計表示
+        avg_knowledge = sum(c.knowledge_score for c in self.population) / len(self.population)
+        print(f"   📊 Avg Knowledge: {avg_knowledge:.1f} | Active Interactions: {len(interactions)}")
 
-    # 3. 合意形成エンジンの実行 (リキッドデモクラシー)
-    logger.info("\n⚖️ Running Consensus Engine (Liquid Democracy)...")
-    consensus_result = consensus_engine(proposals_tensor, confidences_tensor)
+    def evolve(self):
+        """世代交代: 知識の少ない個体は淘汰され、優秀な個体が増える"""
+        if self.year % 10 == 0:
+            print("\n⚡ Evolution Event triggered!")
+            # 知識スコアでソート
+            sorted_pop = sorted(self.population, key=lambda x: x.knowledge_score, reverse=True)
+            
+            # 上位半分が生き残り、複製される
+            survivors = sorted_pop[:len(sorted_pop)//2]
+            new_generation = []
+            
+            for parent in survivors:
+                # 親
+                new_generation.append(parent)
+                # 子 (親の脳パラメータを継承 + 変異は今回はなし)
+                child_name = f"{parent.name}_Jr"
+                child = Citizen(child_name, self.device, generation=parent.generation + 1)
+                child.brain.load_state_dict(parent.brain.state_dict()) # 知識継承
+                new_generation.append(child)
+                print(f"   👶 {parent.name} passed knowledge to {child_name} (Gen {child.generation})")
+                
+            self.population = new_generation
 
-    status = consensus_result['status']
-    coherence = consensus_result['coherence']
-    effective_power = consensus_result['effective_power']
-
-    logger.info(f"Consensus Status: {status}")
-    logger.info(f"Coherence Score: {coherence:.4f}")
-    logger.info("Effective Power Distribution (Voting Influence):")
-    for i, power in enumerate(effective_power):
-        logger.info(f"  - {agents[i].name}: {power:.4f}")
-
-    # 4. 文化の継承と報酬
-    if status == "AGREED":
-        logger.info(
-            "\n--- 📜 Consensus Reached: Recording to Culture Repository ---")
-
-        # 最も影響力のあった（貢献した）エージェントを特定
-        best_agent_idx = effective_power.argmax().item()
-        best_agent = agents[best_agent_idx]
-
-        # 合意ベクトルを文化として保存
-        culture_repo.contribute_meme(
-            concept_name="Sustainability_Strategy_v1",
-            vector=consensus_result['consensus_vector'],
-            description=f"Consensus reached on {topic} by {num_agents} agents.",
-            utility_score=coherence
-        )
-
-        # 社会的報酬の付与 (信頼度マトリクスの更新)
-        # 貢献者には大きな報酬、他者にも参加報酬
-        rewards = [0.1] * num_agents
-        rewards[best_agent_idx] = 1.0  # Winner takes more trust
-
-        consensus_engine.update_trust(list(range(num_agents)), rewards)
-        logger.info(
-            f"Trust updated. {best_agent.name} gained significant reputation.")
-
-    else:
-        logger.warning(
-            "\n❌ Consensus failed (DISPUTED). No culture recorded. Further debate needed.")
-
-    # 5. 知識の検索テスト (次世代への継承シミュレーション)
-    logger.info("\n--- 🔍 Future Generation Learning ---")
-    knowledge = culture_repo.retrieve_meme("Sustainability_Strategy_v1")
-
-    if knowledge:
-        logger.info("New Agent retrieved knowledge from history:")
-        logger.info(f"   Name: {knowledge['name']}")
-        logger.info(f"   Generation: {knowledge['generation']}")
-        logger.info(f"   Utility: {knowledge['utility']:.4f}")
-        logger.info(
-            "   -> This meme is now part of the collective unconscious.")
-
-    logger.info("\n✅ Civilization Simulation Completed.")
+    def run_simulation(self, years: int = 50):
+        try:
+            for _ in range(years):
+                self.run_year()
+                self.evolve()
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("\n🛑 Simulation stopped by user.")
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    eden = EdenSimulation(population_size=6)
+    eden.run_simulation(years=50)

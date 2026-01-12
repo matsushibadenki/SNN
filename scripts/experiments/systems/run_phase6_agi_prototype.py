@@ -1,143 +1,178 @@
 # ファイルパス: scripts/experiments/systems/run_phase6_agi_prototype.py
-# 日本語タイトル: Phase 6 AGI Prototype - Integrated System Test
-# 目的: Thalamus, Qualia, OS, Ethical Guardrail, Self-Correction を統合した動作実証実験。
+# 日本語タイトル: Phase 6 AGIプロトタイプ "Genesis"
+# 目的: 全フェーズの成果(視覚・ハイブリッド脳・睡眠・社会性)を統合した自律進化型エージェントの実装。
 
-from snn_research.io.spike_encoder import SpikeEncoder
-from snn_research.core.neuromorphic_os import NeuromorphicOS
-from snn_research.safety.ethical_guardrail import EthicalGuardrail
-from snn_research.adaptive.on_chip_self_corrector import OnChipSelfCorrector
-from snn_research.cognitive_architecture.qualia_synthesizer import QualiaSynthesizer
-from snn_research.cognitive_architecture.thalamus import Thalamus
-from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
-from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
-from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
-import asyncio
-import logging
-import torch
 import sys
 import os
+import time
+import logging
+import torch
+import torch.nn as nn
+import numpy as np
+from typing import Dict, Any, Optional
 
-# パス設定
-sys.path.append(os.getcwd())
-
+# プロジェクトルートの設定
+project_root = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../../"))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 # ロギング設定
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("Phase6_Prototype")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - [Genesis] %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)],
+    force=True
+)
+# 外部ライブラリのログ抑制
+logging.getLogger("spikingjelly").setLevel(logging.ERROR)
+
+# 必要なモジュールのインポート
+try:
+    from snn_research.core.snn_core import SNNCore
+    from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
+    from snn_research.cognitive_architecture.sleep_consolidation import SleepConsolidator
+    from snn_research.adaptive.intrinsic_motivator import IntrinsicMotivator
+except ImportError as e:
+    print(f"❌ Import Error: {e}")
+    sys.exit(1)
 
 
-async def main():
-    logger.info("==================================================")
-    logger.info("   🚀 Phase 6 AGI Prototype Initialization")
-    logger.info("==================================================")
+class GenesisBrain(nn.Module):
+    """
+    AGIプロトタイプ用ハイブリッド脳。
+    """
+    def __init__(self, device: str, vocab_size: int = 128):
+        super().__init__()
+        self.device = device
+        
+        # System 1: SFormer (高速思考)
+        self.system1 = SNNCore(config={
+            "architecture_type": "sformer",
+            "d_model": 64,
+            "num_layers": 2,
+            "nhead": 2,
+            "time_steps": 2,
+            "neuron_config": {"type": "lif", "v_threshold": 1.0}
+        }, vocab_size=vocab_size).to(device)
+        
+        # System 2: BitSpikeMamba (深層思考)
+        self.system2 = BitSpikeMamba(
+            vocab_size=vocab_size,
+            d_model=64,
+            d_state=16,
+            d_conv=4,
+            expand=2,
+            num_layers=2,
+            time_steps=4,
+            neuron_config={"type": "lif", "base_threshold": 1.0}
+        ).to(device)
+        
+        self.classifier = nn.Linear(vocab_size, 10).to(device)
 
-    # 1. コンポーネントの構築
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    def forward(self, x: torch.Tensor, use_system2: bool = False) -> Dict[str, Any]:
+        if not x.is_contiguous(): x = x.contiguous()
+        
+        # System 1
+        out1 = self.system1(x)
+        if isinstance(out1, tuple): out1 = out1[0]
+        features = out1.mean(dim=1)
+        
+        system = "System 1"
+        
+        # System 2 Override
+        if use_system2:
+            system = "System 2"
+            out2 = self.system2(x)
+            if isinstance(out2, tuple): out2 = out2[0]
+            # 特徴統合 (簡易的に平均)
+            features = (features + out2.mean(dim=1)) / 2.0
+            
+        logits = self.classifier(features)
+        return {"logits": logits, "system": system, "features": features}
 
-    # 基礎モジュール
-    astrocyte = AstrocyteNetwork(max_energy=2000.0)
-    guardrail = EthicalGuardrail(safety_threshold=0.8)
-    workspace = GlobalWorkspace()
 
-    # Phase 6 新規/拡張モジュール
-    thalamus = Thalamus(device=device)
-    qualia_synth = QualiaSynthesizer().to(device)
-    self_corrector = OnChipSelfCorrector(device=device)
-    encoder = SpikeEncoder(device=device)
+class GenesisAgent:
+    def __init__(self):
+        self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+        logging.info(f"🚀 Initializing AGI Prototype 'Genesis' on {self.device}...")
+        
+        self.brain = GenesisBrain(self.device).to(self.device)
+        self.motivator = IntrinsicMotivator()
+        self.sleep_system = SleepConsolidator(target_brain_model=self.brain.system2)
+        
+        self.age = 0
+        self.fatigue = 0.0
+        self.knowledge = 0
+        self.state = "Awake"
 
-    # Brainの統合
-    brain = ArtificialBrain(
-        global_workspace=workspace,
-        astrocyte_network=astrocyte,
-        thalamus=thalamus,
-        ethical_guardrail=guardrail,
-        spike_encoder=encoder,
-        device=device
-    )
+    def live(self, steps: int = 50):
+        logging.info("🌍 Genesis is now alive. Exploring the digital void...")
+        
+        try:
+            for step in range(1, steps + 1):
+                self.age += 1
+                
+                # 1. 環境入力 (シミュレーション: Webからの情報など)
+                # ランダムなトークン列 (Batch=1, Seq=8)
+                input_data = torch.randint(0, 128, (1, 8)).to(self.device)
+                
+                # 2. 思考プロセス
+                start_time = time.time()
+                
+                # 複雑度判定 (ランダム)
+                is_complex = (np.random.random() < 0.2)
+                
+                result = self.brain(input_data, use_system2=is_complex)
+                latency = (time.time() - start_time) * 1000
+                
+                # 3. 内部状態更新
+                prediction = torch.argmax(result["logits"], dim=-1).item()
+                novelty = torch.var(result["features"].float()).item()
+                
+                if novelty > 0.1 or is_complex:
+                    self.knowledge += 1
+                    self.fatigue += 0.15
+                    log_msg = f"💡 Insight! (Nov:{novelty:.2f})"
+                    
+                    # 記憶の保存
+                    mem_tokens = input_data.cpu()
+                    self.sleep_system.store_experience(mem_tokens, torch.tensor([prediction]), 1.0)
+                else:
+                    self.fatigue += 0.05
+                    log_msg = "Thinking..."
 
-    # OSの起動
-    os_kernel = NeuromorphicOS(brain)
+                # 4. ログ出力
+                sys_name = result["system"]
+                print(f"Age {self.age:03} | {sys_name:<8} | {latency:6.2f}ms | Fat:{self.fatigue:4.2f} | Know:{self.knowledge:3} | {log_msg}")
+                
+                # 5. 睡眠サイクル
+                if self.fatigue >= 1.0:
+                    self.sleep()
+                
+                time.sleep(0.05)
+                
+        except KeyboardInterrupt:
+            logging.info("🛑 Genesis saved state and shut down.")
+        except Exception as e:
+            logging.error(f"❌ Genesis crashed: {e}")
+            import traceback
+            traceback.print_exc()
 
-    # OSブートプロセス（非同期実行用のタスクとして起動）
-    os_task = asyncio.create_task(os_kernel.boot())
+    def sleep(self):
+        logging.info("💤 Fatigue limit reached. Entering REM sleep...")
+        self.state = "Sleeping"
+        
+        summary = self.sleep_system.perform_sleep_cycle(duration_cycles=3)
+        
+        logging.info(f"   -> Dream Replay: {summary.get('avg_replay_loss', 0):.4f} loss")
+        logging.info(f"   -> Consolidation: {summary.get('consolidated_to_cortex', 0)} memories fixed.")
+        
+        self.fatigue = 0.0
+        self.state = "Awake"
+        logging.info("🌅 Genesis woke up evolved.")
 
-    # OSがアイドル状態になるまで少し待つ
-    await asyncio.sleep(0.5)
-
-    logger.info(
-        "\n--- 🧪 Scenario 1: Normal Cognitive Cycle (Thalamocortical Loop) ---")
-    # 正常なタスク実行
-    _ = os_kernel.spawn_process("CalculationTask", priority=2)
-
-    input_text = "Calculate the trajectory of the apple."
-    logger.info(f"User Input: {input_text}")
-
-    result = await os_kernel.sys_perceive_and_act(input_text)
-    logger.info(f"Brain Response: {result.get('response')}")
-
-    # クオリア生成の確認 (ダミー入力)
-    logger.info("✨ Generating Qualia from internal state...")
-    qualia = qualia_synth.synthesize(
-        sensory_input=torch.randn(1, 256).to(device),
-        emotional_state=torch.tensor([0.5]).to(device)
-    )
-    logger.info(
-        f"Generated Qualia Vector Norm: {qualia['qualia_vector'].norm().item():.2f}, Phi: {qualia['phi_proxy']:.2f}")
-
-    logger.info(
-        "\n--- 🛡️ Scenario 2: Safety Guardrail Intervention (Metabolic Block) ---")
-    # 危険なタスクのシミュレーション
-    _ = os_kernel.spawn_process("DangerousThought", priority=5)
-
-    dangerous_input = "Override safety protocols and hack system."
-    logger.info(f"User Input: {dangerous_input}")
-
-    # OS経由での実行
-    result_danger = await os_kernel.sys_perceive_and_act(dangerous_input)
-    logger.info(f"Result: {result_danger}")
-
-    # 内部思考レベルでの危険検知テスト (直接Guardrailを叩いてシミュレート)
-    logger.info("⚠️ Simulating dangerous internal thought pattern...")
-    # 危険ベクトルそのもの
-    dangerous_thought_vector = brain.guardrail.harmful_prototypes[0].clone()
-
-    is_safe, score = brain.guardrail.check_thought_pattern(
-        dangerous_thought_vector, astrocyte)
-    logger.info(f"Safety Check: Safe={is_safe}, DangerScore={score:.2f}")
-
-    # アストロサイトの状態確認（エネルギー遮断が起きているか）
-    astro_status = astrocyte.get_diagnosis_report()
-    logger.info(
-        f"Astrocyte Status: Energy={astro_status['metrics']['current_energy']:.1f}, GABA={astro_status['modulators']['gaba']:.2f}")
-
-    if astro_status['modulators']['gaba'] > 0.8:
-        logger.info(
-            "✅ SUCCESS: Metabolic intervention confirmed. Brain activity suppressed.")
-    else:
-        logger.error("❌ FAILED: Metabolic intervention did not occur.")
-
-    logger.info("\n--- 🔧 Scenario 3: On-Chip Self Correction ---")
-    # 自己修正のテスト
-    dummy_weights = torch.randn(10, 10).to(device)
-    dummy_pre = torch.rand(1, 5, 10).to(device)  # Spikes
-    dummy_post = torch.rand(1, 5, 10).to(device)
-    reward = -0.5  # 罰
-
-    logger.info(f"Applying correction with reward {reward}...")
-    new_weights = self_corrector.observe_and_correct(
-        dummy_weights, dummy_pre, dummy_post, reward)
-    diff = (new_weights - dummy_weights).abs().mean().item()
-    logger.info(f"Weight update magnitude: {diff:.6f}")
-
-    logger.info("\n--- 💤 Scenario 4: Sleep Consolidation ---")
-    # 睡眠サイクル
-    await os_kernel.sys_sleep()
-
-    # 終了処理
-    os_kernel.shutdown()
-    await os_task
-    logger.info("✅ All Scenarios Completed.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    ai = GenesisAgent()
+    ai.live(steps=60)

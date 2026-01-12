@@ -1,273 +1,374 @@
-# Title: SNN Project Unified Mission Runner "The Odyssey"
-# Description:
-#   Phase 2 (Sleep), Phase 3 (Embodiment), Phase 4 (Collective) を統合した最終デモ。
-#   シナリオ: 未知の惑星探査ミッション。
-#   1. 高速移動 (Reflex/Embodiment)
-#   2. 未知物体の解析 (Collective Intelligence)
-#   3. 休息と学習 (Sleep & Consolidation)
+# ファイルパス: scripts/experiments/systems/run_unified_mission.py
+# 日本語タイトル: Phase 8 全機能統合デモ "Project: OMEGA" v1.1
+# 目的: 視覚・思考・社会性・睡眠・自律性を統合した、最終的なAGIプロトタイプの実証実験。
+# 修正履歴:
+#   v1.1: Pre-training時のバッチサイズ(32)に対応するため、Gating判定を .mean().item() に修正。
 
 import sys
 import os
 import time
 import logging
+import random
 import torch
 import torch.nn as nn
-from typing import Dict, Any
+import torch.nn.functional as F
+import numpy as np
+from typing import Dict, Any, List, Optional
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
 
-# --- 環境設定 & ロギング ---
-sys.path.append(os.path.join(os.path.dirname(__file__), "../../../.."))
+# プロジェクトルートの設定
+project_root = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../../"))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
+# ロギング設定 (リッチな出力)
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s | %(name)s | %(levelname)s | %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    format='%(asctime)s | %(message)s',
+    datefmt='%H:%M:%S',
+    handlers=[logging.StreamHandler(sys.stdout)],
+    force=True
 )
-logger = logging.getLogger("UnifiedMission")
+logging.getLogger("spikingjelly").setLevel(logging.ERROR)
 
-# --- Import Core Components ---
+# 必要なモジュールのインポート
 try:
-    from snn_research.core.neurons.da_lif_node import DualAdaptiveLIFNode
-    from snn_research.io.spike_encoder import HybridTemporal8BitEncoder
-    from snn_research.models.transformer.spikformer import Spikformer, TransformerToMambaAdapter
+    from snn_research.core.snn_core import SNNCore
     from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
-    from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
-    from snn_research.collective.liquid_democracy import LiquidDemocracyProtocol, Proposal
+    from snn_research.cognitive_architecture.sleep_consolidation import SleepConsolidator
 except ImportError as e:
-    logger.error(f"Import failed: {e}")
+    print(f"❌ Import Error: {e}")
     sys.exit(1)
 
-# --- Integrated Agent Class ---
 
+# --- 1. 統合脳モデル (Unified Brain) ---
 
-class IntegratedBrainAgent(nn.Module):
-    """
-    Brain v22: The Collective Mind Embodied
-    身体性(v21)と社会性(v22)を併せ持つ統合エージェント。
-    """
-
-    def __init__(self, agent_id: str, device: str):
+class VisualTokenizer(nn.Module):
+    """視覚野: 画像を脳が理解できるトークン列に変換"""
+    def __init__(self, vocab_size: int = 128, patch_size: int = 4):
         super().__init__()
-        self.agent_id = agent_id
+        self.patch_conv = nn.Conv2d(1, vocab_size, kernel_size=patch_size, stride=patch_size)
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_contiguous(): x = x.contiguous()
+        features = self.patch_conv(x) # (B, C, H, W)
+        features = features.flatten(2).transpose(1, 2).contiguous() # (B, L, C)
+        visual_tokens = torch.argmax(features, dim=-1) # 量子化
+        return visual_tokens
+
+class OmegaBrain(nn.Module):
+    """
+    Project OMEGAのための統合脳。
+    System 1 (直感/SFormer) と System 2 (熟考/Mamba) を搭載。
+    """
+    def __init__(self, device: str, vocab_size: int = 128):
+        super().__init__()
         self.device = device
-        self.role = "Explorer"
-
-        logger.info(
-            f"🧠 Initializing Agent '{agent_id}' on {device.upper()}...")
-
-        # 1. Neural Engine (Reflex & Perception) - T=1 for Speed
-        self.encoder = HybridTemporal8BitEncoder(duration=1)
-
-        # 軽量化された視覚野 (128 dim)
-        self.visual_cortex = Spikformer(
-            img_size_h=128, img_size_w=128, patch_size=16,
-            embed_dim=128, num_heads=4, num_layers=2, T=1
+        
+        # 視覚入力
+        self.visual_cortex = VisualTokenizer(vocab_size=vocab_size, patch_size=4).to(device)
+        
+        # System 1: SFormer (Fast, Low Energy)
+        self.system1 = SNNCore(config={
+            "architecture_type": "sformer",
+            "d_model": 64,
+            "num_layers": 2,
+            "nhead": 2,
+            "time_steps": 2,
+            "neuron_config": {"type": "lif", "v_threshold": 1.0}
+        }, vocab_size=vocab_size).to(device)
+        
+        # System 2: BitSpikeMamba (Slow, Deep, High Energy)
+        self.system2 = BitSpikeMamba(
+            vocab_size=vocab_size,
+            d_model=64,
+            d_state=16,
+            d_conv=4,
+            expand=2,
+            num_layers=2,
+            time_steps=4,
+            neuron_config={"type": "lif", "base_threshold": 1.0}
         ).to(device)
-
-        # 思考回路 (PFC)
-        self.adapter = TransformerToMambaAdapter(
-            vis_dim=128, model_dim=256, seq_len=64).to(device)
-        self.pfc = BitSpikeMamba(
-            vocab_size=1000, d_model=256, d_state=32, d_conv=4, expand=2,
-            num_layers=2, time_steps=1,
-            neuron_config={"type": "lif",
-                           "tau_mem": 2.0, "base_threshold": 1.0}
+        
+        # ゲート機構: System 1の出力の「曖昧さ」を監視
+        self.gating_net = nn.Sequential(
+            nn.Linear(vocab_size, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+            nn.Sigmoid()
         ).to(device)
+        
+        # 出力層 (数字分類 0-9)
+        self.classifier = nn.Linear(vocab_size, 10).to(device)
 
-        # 反射モジュール
-        self.reflex = nn.Sequential(
-            nn.Flatten(start_dim=2),
-            nn.Linear(64*128, 32),
-            DualAdaptiveLIFNode(detach_reset=True),
-            nn.Linear(32, 5)  # 5 actions
-        ).to(device)
-
-        # 2. Physiological Engine (Energy)
-        self.astrocyte = AstrocyteNetwork(max_energy=500.0)
-
-        # 3. Social Engine (State)
-        self.confidence_level = 1.0
-        self.reputation = 1.0
-
-    def perceive_and_act(self, visual_input: torch.Tensor) -> Dict[str, Any]:
-        """Phase 1: 高速反射動作"""
-        if not self.astrocyte.request_resource("cortex", 2.0):
-            return {"action": "REST", "status": "Low Battery"}
-
-        # Encoding & Vision
-        spikes = self.encoder(visual_input, duration=1)
-        target_dtype = self.visual_cortex.patch_embed.weight.dtype
-        if spikes.dtype != target_dtype:
-            spikes = spikes.to(dtype=target_dtype)
-
-        features = self.visual_cortex(spikes)
-
-        # Reflex
-        reflex_out = self.reflex(features)
-        action_idx = reflex_out.mean(dim=1).argmax(dim=-1).item()
-
-        # Confidence Simulation (Entropy based)
-        probs = torch.softmax(reflex_out.mean(dim=1), dim=-1)
-        entropy = -(probs * torch.log(probs + 1e-6)).sum().item()
-        self.confidence_level = max(0.0, 1.0 - (entropy * 0.5))
-
+    def forward(self, image: torch.Tensor, force_system2: bool = False) -> Dict[str, Any]:
+        # 1. 見る (Visual Cortex)
+        tokens = self.visual_cortex(image)
+        
+        # 2. 直感で考える (System 1)
+        out1 = self.system1(tokens)
+        if isinstance(out1, tuple): out1 = out1[0]
+        sys1_feats = out1.mean(dim=1) # (B, Vocab)
+        
+        # 3. 判断する (Gating)
+        uncertainty_map = self.gating_net(sys1_feats)
+        
+        # [Fix] バッチサイズ > 1 の場合に対応するため .mean() を使用
+        uncertainty_scalar = uncertainty_map.mean().item()
+        
+        final_feats = sys1_feats
+        system_used = "System 1"
+        
+        # 閾値を超えるか、強制フラグがあればSystem 2起動
+        if uncertainty_scalar > 0.6 or force_system2:
+            system_used = "System 2"
+            out2 = self.system2(tokens)
+            if isinstance(out2, tuple): out2 = out2[0]
+            sys2_feats = out2.mean(dim=1)
+            
+            # 思考の統合
+            final_feats = (sys1_feats + sys2_feats) / 2.0
+            
+        # 4. 答えを出す
+        logits = self.classifier(final_feats)
+        
         return {
-            "action": action_idx,
-            "confidence": self.confidence_level,
-            "energy": self.astrocyte.get_energy_level()
+            "logits": logits,
+            "features": final_feats,
+            "system": system_used,
+            "uncertainty": uncertainty_scalar,
+            "tokens": tokens # 記憶用
         }
 
-    def sleep_and_consolidate(self):
-        """Phase 3: 睡眠と記憶の定着"""
-        self.astrocyte.clear_fatigue(50.0)
-        self.astrocyte.replenish_energy(200.0)
-        # 実際にはここで重みの更新（Replay）を行う
-        logger.info(
-            f"💤 {self.agent_id} is sleeping... (Consolidating Memories)")
-        time.sleep(1.0)
-        logger.info(f"🌅 {self.agent_id} woke up! Energy restored.")
 
-# --- Simulation Utilities ---
+# --- 2. エージェント (The Operators) ---
+
+class Operator:
+    def __init__(self, name: str, role: str, device: str):
+        self.name = name
+        self.role = role # "Commander" (Teacher) or "Scout" (Student)
+        self.device = device
+        
+        self.brain = OmegaBrain(device).to(device)
+        self.sleep_system = SleepConsolidator(target_brain_model=self.brain.system2)
+        
+        # 学習設定
+        self.optimizer = torch.optim.AdamW(self.brain.parameters(), lr=0.002)
+        self.criterion = nn.CrossEntropyLoss()
+        self.distill_loss = nn.KLDivLoss(reduction="batchmean")
+        
+        self.fatigue = 0.0
+        self.experience_buffer = []
+        self.accuracy_history = []
+
+    def process_data(self, image: torch.Tensor, is_anomaly: bool = False) -> Dict[str, Any]:
+        """環境データを処理し、思考する"""
+        self.brain.eval()
+        start_time = time.time()
+        
+        # 異常検知時は慎重になる (System 2強制)
+        force_s2 = is_anomaly and (self.role == "Commander")
+        
+        with torch.no_grad():
+            result = self.brain(image, force_system2=force_s2)
+            
+        latency = (time.time() - start_time) * 1000
+        result["latency"] = latency
+        return result
+
+    def learn(self, image: torch.Tensor, label: Optional[torch.Tensor], peer_logits: Optional[torch.Tensor] = None):
+        """学習フェーズ: 経験または他者から学ぶ"""
+        self.brain.train()
+        self.optimizer.zero_grad()
+        
+        result = self.brain(image)
+        my_logits = result["logits"]
+        
+        loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+        
+        # 教師あり学習 (Commanderは常に可能, Scoutは稀)
+        if label is not None:
+            loss = loss + self.criterion(my_logits, label)
+            
+        # 社会的学習 (ScoutがCommanderから学ぶ)
+        if peer_logits is not None and self.role == "Scout":
+            T = 3.0
+            teacher_probs = F.softmax(peer_logits / T, dim=-1)
+            my_log_probs = F.log_softmax(my_logits / T, dim=-1)
+            loss = loss + self.distill_loss(my_log_probs, teacher_probs) * (T**2) * 5.0
+            
+        loss.backward()
+        self.optimizer.step()
+        
+        # 疲労蓄積
+        self.fatigue += 0.05
+        if result["system"] == "System 2":
+            self.fatigue += 0.15 # 深く考えると疲れる
+
+    def add_memory(self, tokens: torch.Tensor, label: int, is_important: bool):
+        """重要なイベントを海馬へ"""
+        if is_important:
+            mem_tokens = tokens.cpu()
+            mem_label = torch.tensor([label]).cpu()
+            self.sleep_system.store_experience(mem_tokens, mem_label, 1.0)
+
+    def sleep_if_tired(self):
+        """疲労したら眠る"""
+        if self.fatigue >= 1.0:
+            print(f"   💤 {self.name} is entering Deep Sleep cycle...")
+            summary = self.sleep_system.perform_sleep_cycle(duration_cycles=2)
+            consolidated = summary.get('consolidated_to_cortex', 0)
+            print(f"      -> {self.name} consolidated {consolidated} memories. Brain optimized.")
+            self.fatigue = 0.0
+            return True
+        return False
+
+    def update_stats(self, pred: int, label: int):
+        self.accuracy_history.append(1 if pred == label else 0)
+        if len(self.accuracy_history) > 50:
+            self.accuracy_history.pop(0)
+
+    @property
+    def current_accuracy(self) -> float:
+        if not self.accuracy_history: return 0.0
+        return sum(self.accuracy_history) / len(self.accuracy_history) * 100
 
 
-def get_optimal_device():
-    if torch.cuda.is_available():
-        return "cuda"
-    elif torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+# --- 3. ミッションコントローラー (Environment) ---
 
-
-class MissionControl:
+class UnifiedMission:
     def __init__(self):
-        self.protocol = LiquidDemocracyProtocol()
-        # 専門家エージェントを登録しておく
-        self.protocol.reputations["Mission_Commander"] = 5.0  # 絶対的信頼
-        self.protocol.reputations["Xeno_Biologist"] = 3.0    # 生物学の専門家
+        self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+        print("="*60)
+        print(f"🌌 PROJECT OMEGA: AGI Prototype Initialization")
+        print(f"📍 Device: {self.device}")
+        print("="*60)
+        
+        self._load_data()
+        
+        # エージェント生成
+        self.commander = Operator("Alpha (Cmdr)", "Commander", self.device)
+        self.scout = Operator("Beta (Scout)", "Scout", self.device)
+        
+        print("\n🤖 TEAM ROSTER:")
+        print(f"   1. {self.commander.name}: High Spec, Full Access. Uses System 2.")
+        print(f"   2. {self.scout.name}: Agile, Learning. Relies on Alpha.")
 
-    def request_swarm_consensus(self, agent: IntegratedBrainAgent, task_desc: str):
-        logger.info(
-            f"📡 [Swarm] Distress signal from {agent.agent_id}: '{task_desc}'")
+    def _load_data(self):
+        print("📥 Loading Mission Data (MNIST)...")
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))
+        ])
+        dataset = datasets.MNIST('./data', train=True, download=True, transform=transform)
+        self.dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
+        self.data_iter = iter(self.dataloader)
 
-        # 提案の生成 (本来は各エージェントが出すが、ここではシミュレート)
-        proposals = [
-            Proposal(id="P1", description="Approach and Scan (Safe)",
-                     content="SCAN"),
-            Proposal(id="P2", description="Attack (Hostile)", content="ATTACK")
-        ]
+    def pre_mission_briefing(self):
+        """司令官(Alpha)に事前知識を与える"""
+        print("\n📚 [Phase 0] Pre-Mission Briefing for Alpha...")
+        
+        # 短期集中学習
+        briefing_steps = 100
+        loader = DataLoader(self.dataloader.dataset, batch_size=32, shuffle=True)
+        iter_brief = iter(loader)
+        
+        for _ in range(briefing_steps // 32):
+            try:
+                imgs, lbls = next(iter_brief)
+            except: break
+            imgs, lbls = imgs.to(self.device), lbls.to(self.device)
+            self.commander.learn(imgs, lbls)
+            
+        print("   ✅ Alpha is ready. Mission Start.")
 
-        # 投票フェーズ
-        # エージェント本人（自信なし）
-        self.protocol.cast_vote(agent.agent_id, "", False,
-                                0.0, delegate_to="Xeno_Biologist")
+    def run_mission(self, steps: int = 30):
+        self.pre_mission_briefing()
+        
+        print(f"\n🚀 [Phase 1] Mission Start: Exploring the Noise Field ({steps} steps)")
+        print(f"{'Step':<4} | {'Target':<6} | {'Alpha':<18} | {'Beta':<18} | {'Event Log'}")
+        print("-" * 85)
+        
+        for step in range(1, steps + 1):
+            # 1. データの取得
+            try:
+                image, label = next(self.data_iter)
+            except StopIteration:
+                self.data_iter = iter(self.dataloader)
+                image, label = next(self.data_iter)
+            
+            label_val = label.item()
+            image = image.to(self.device)
+            label = label.to(self.device)
+            
+            # 2. 異常発生 (ノイズ)
+            is_anomaly = (random.random() < 0.3)
+            if is_anomaly:
+                noise = torch.randn_like(image) * 0.8
+                image = image + noise
+                event_log = "⚠️ ANOMALY DETECTED"
+            else:
+                event_log = "   Normal Scan"
+                
+            # 3. Alpha (司令官) の行動
+            res_alpha = self.commander.process_data(image, is_anomaly)
+            pred_alpha = torch.argmax(res_alpha["logits"], dim=-1).item()
+            
+            # Alphaは常に正解を見て学習し、経験を積む
+            self.commander.learn(image, label)
+            self.commander.update_stats(pred_alpha, label_val)
+            
+            # 4. Beta (スカウト) の行動
+            res_beta = self.scout.process_data(image, is_anomaly) # Betaは自力で考える
+            pred_beta = torch.argmax(res_beta["logits"], dim=-1).item()
+            
+            # Betaの判断ロジック
+            beta_action = ""
+            beta_learn_target = None
+            beta_teacher_logits = None
+            
+            # Betaが間違っている、または自信がない(System 2起動など)場合、Alphaに通信
+            # (ここではシミュレーションとして、Anomaly時は必ず通信)
+            if is_anomaly or res_beta["system"] == "System 2":
+                event_log += " -> 📡 Beta requesting backup"
+                beta_teacher_logits = res_alpha["logits"].detach()
+                beta_action = "(Help)"
+                # 重要な経験として記憶
+                self.scout.add_memory(res_beta["tokens"], label_val, True)
+            else:
+                # 平時は自力学習 (正解ラベルへのアクセスは稀: 10%)
+                if random.random() < 0.1:
+                    beta_learn_target = label
+                    beta_action = "(Self)"
+            
+            # Betaの学習実行
+            self.scout.learn(image, beta_learn_target, beta_teacher_logits)
+            self.scout.update_stats(pred_beta, label_val)
+            
+            # 5. 結果表示
+            alpha_str = f"{pred_alpha} [{res_alpha['system']:^8}]"
+            beta_str = f"{pred_beta} [{res_beta['system']:^8}] {beta_action}"
+            
+            # 正解判定マーク
+            alpha_mark = "✅" if pred_alpha == label_val else "❌"
+            beta_mark = "✅" if pred_beta == label_val else "❌"
+            
+            print(f"{step:<4} | {label_val:<6} | {alpha_mark} {alpha_str} | {beta_mark} {beta_str} | {event_log}")
+            
+            # 6. 睡眠管理 (自律性)
+            self.commander.sleep_if_tired()
+            self.scout.sleep_if_tired()
+            
+            time.sleep(0.1)
 
-        # 専門家（自信あり）
-        self.protocol.cast_vote("Xeno_Biologist", "P1", True, 0.9)
-        self.protocol.cast_vote("Mission_Commander", "P1", True, 0.8)
-
-        # 集計
-        scores = self.protocol.tally_votes(
-            proposals, self.protocol.vote_history)
-        winner_id = max(scores, key=scores.get)
-        winner = next(p for p in proposals if p.id == winner_id)
-
-        return winner
-
-# --- Main Mission Scenario ---
-
-
-def run_mission():
-    print("\n" + "="*60)
-    print("   SNN PROJECT: UNIFIED MISSION DEMO 'THE ODYSSEY'   ")
-    print("="*60 + "\n")
-
-    device = get_optimal_device()
-    agent = IntegratedBrainAgent("Agent_Odyssey", device)
-    mission_ctrl = MissionControl()
-
-    # --- PHASE 1: Solo Exploration (Reflex) ---
-    logger.info(">>> PHASE 1: Planetary Exploration (High-Speed Reflex)")
-    logger.info(
-        "   Target: Navigate through asteroid field. Latency must be < 30ms.")
-
-    # ウォームアップ
-    dummy_input = torch.randn(1, 3, 128, 128, device=device)
-    for _ in range(5):
-        agent.perceive_and_act(dummy_input)
-
-    # 走行デモ
-
-    steps = 50
-    total_latency = 0
-
-    with torch.no_grad():
-        for i in range(steps):
-            step_start = time.perf_counter()
-
-            # 視覚入力（ランダム生成）
-            obs = torch.randn(1, 3, 128, 128, device=device)
-            result = agent.perceive_and_act(obs)
-
-            latency = (time.perf_counter() - step_start) * 1000
-            total_latency += latency
-
-            # 疲労蓄積
-            agent.astrocyte.log_fatigue(0.02)
-
-            if i % 10 == 0:
-                logger.info(
-                    f"   Step {i:02d}: Action={result['action']} | Latency={latency:.2f}ms | Energy={result['energy']:.2f}")
-
-    avg_latency = total_latency / steps
-    logger.info(f"✅ Phase 1 Complete. Avg Latency: {avg_latency:.2f}ms")
-
-    # --- PHASE 2: Unknown Encounter (Collective) ---
-    logger.info("\n>>> PHASE 2: Anomaly Detection (Collective Intelligence)")
-    logger.info(
-        "   Alert: Unknown biological signature detected. Confidence dropping.")
-
-    # 自信レベルを強制的に下げる（未知の物体）
-    agent.confidence_level = 0.2
-    logger.info(
-        f"   ⚠️ {agent.agent_id} Confidence: {agent.confidence_level:.2f} (Too low to act)")
-
-    # スワームへ支援要請
-    decision = mission_ctrl.request_swarm_consensus(
-        agent, "Analyze Unknown Creature")
-
-    logger.info(f"   🗳️ Swarm Decision: {decision.description}")
-
-    if decision.content == "SCAN":
-        logger.info(
-            "   🤖 Action Executed: SCAN initiated. Creature is friendly.")
-        # 成功したので報酬を得る（評判アップ）
-        mission_ctrl.protocol.update_reputation(decision.id, 1.0)
-
-    # --- PHASE 3: Adaptation (Sleep) ---
-    logger.info("\n>>> PHASE 3: Night Cycle (Sleep & Consolidation)")
-
-    # 現在のステータス
-    stats = agent.astrocyte.get_diagnosis_report()
-    logger.info(
-        f"   Status before sleep: Fatigue={stats['metrics']['fatigue_level']:.2f}")
-
-    # 睡眠実行
-    agent.sleep_and_consolidate()
-
-    stats_after = agent.astrocyte.get_diagnosis_report()
-    logger.info(
-        f"   Status after sleep:  Fatigue={stats_after['metrics']['fatigue_level']:.2f}")
-
-    logger.info("\n" + "="*60)
-    logger.info("   MISSION ACCOMPLISHED")
-    logger.info("="*60 + "\n")
+        print("-" * 85)
+        print("🏁 Mission Complete.")
+        print(f"   👮‍♂️ Alpha Accuracy: {self.commander.current_accuracy:.1f}%")
+        print(f"   🕵️‍♂️ Beta Accuracy:  {self.scout.current_accuracy:.1f}% (Learned via collaboration)")
 
 
 if __name__ == "__main__":
-    try:
-        run_mission()
-    except KeyboardInterrupt:
-        logger.info("Mission aborted.")
-    except Exception as e:
-        logger.error(f"Mission failed: {e}")
-        import traceback
-        traceback.print_exc()
+    mission = UnifiedMission()
+    mission.run_mission(steps=40)
