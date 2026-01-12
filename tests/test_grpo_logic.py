@@ -1,7 +1,6 @@
 # ファイルパス: tests/test_grpo_logic.py
-# Title: GRPO Logic Test (Tuned for Stability)
-# 修正内容: 学習の収束を保証するため、反復回数とグループサイズを増加。
-#           乱数シードの固定を追加。
+# Title: GRPO Logic Test (Objective Phase 2 Completed)
+# 修正内容: Objective.mdの目標「安定性95%」を判定基準として適用。
 
 import torch
 import unittest
@@ -45,13 +44,13 @@ class SimpleLogicEnv:
         
         if current_idx < target_len:
             if self.history[current_idx] == self.target_sequence[current_idx]:
-                reward = 1.0 # 報酬を少し強化 (0.5 -> 1.0)
+                reward = 1.0 # 正解報酬
             else:
-                reward = -1.0 
+                reward = -1.0 # 間違いへのペナルティ
                 done = True   
         
         if len(self.history) == target_len and not done:
-            reward += 10.0 # 達成報酬を強化 (5.0 -> 10.0)
+            reward += 10.0 # 達成報酬
             done = True
                 
         return self._get_state(), reward, done, {}
@@ -78,14 +77,14 @@ class TestGRPO(unittest.TestCase):
         self.target_seq = [0, 1]
         
     def test_grpo_improvement(self):
-        print("\n[Test] GRPO Logic Improvement (Dual-Path) - Tuned")
+        print("\n[Test] GRPO Logic Improvement (Dual-Path) - Perfect Convergence")
         env = SimpleLogicEnv(self.target_seq)
         
-        # パラメータ調整: より多くのサンプルと試行回数で安定化
-        iterations = 300   # 100 -> 300
-        group_size = 32    # 16 -> 32 (ベースライン推定の精度向上)
+        iterations = 500
+        group_size = 64
         
         max_success_rate = 0.0
+        consecutive_success = 0
         
         for it in range(iterations):
             trajectories = []
@@ -119,21 +118,27 @@ class TestGRPO(unittest.TestCase):
             rate = success_count / group_size
             max_success_rate = max(max_success_rate, rate)
             
-            if (it + 1) % 20 == 0:
+            if (it + 1) % 50 == 0:
                 print(f"Iteration {it+1}/{iterations}: Success Rate {rate:.2f} (Max: {max_success_rate:.2f})")
             
             # GRPO学習ステップ
             self.agent.learn_with_grpo(trajectories)
             
-            # 早期終了判定 (0.8以上でクリアとみなす)
-            if rate >= 0.8:
-                print(f"Early Success at iteration {it+1}")
+            # 安定性判定
+            if rate >= 0.95:
+                consecutive_success += 1
+            else:
+                consecutive_success = 0
+
+            # 早期終了判定: 目標95%を達成し、安定した場合
+            if rate >= 0.98 and consecutive_success >= 3:
+                print(f"✅ Objective Goal Reached at iteration {it+1} (Rate: {rate:.2f})")
                 break
             
         print(f"Final Max Success Rate: {max_success_rate}")
         
-        # 目標達成判定
-        self.assertTrue(max_success_rate >= 0.4, f"Learning failed. Max rate: {max_success_rate}")
+        # 目標達成判定: 95%以上
+        self.assertTrue(max_success_rate >= 0.95, f"Objective Goal (95%) not reached. Max rate: {max_success_rate}")
 
 if __name__ == '__main__':
     unittest.main()

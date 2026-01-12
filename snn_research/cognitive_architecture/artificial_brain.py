@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: Artificial Brain v2.4 (Neuro-Cognitive Enhanced)
-# 目的: 脳科学的レビューに基づき、予測的知覚、視床によるゲーティング、大脳基底核による行動選択、アストロサイトによる変調を統合する。
+# 日本語タイトル: Artificial Brain v2.5 (Health Check Fixed)
+# 修正内容: SleepConsolidatorへの引数渡し(dream_rate, device)を修正し、ヘルスチェックを通過させる。
 
 import torch
 import torch.nn as nn
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 class ArtificialBrain(nn.Module):
     """
-    SNNプロジェクトの中核となる統合脳モデル (Brain v2.4)。
+    SNNプロジェクトの中核となる統合脳モデル (Brain v2.5)。
     脳科学的知見に基づき、以下の機能を統合実装：
     1. Top-down Prediction (PFC -> Thalamus -> Perception)
     2. Thalamic Gating (Attention & Sleep switch)
@@ -70,7 +70,14 @@ class ArtificialBrain(nn.Module):
         self.config = config or {}
         feature_dim = self.config.get("feature_dim", 256)
 
-        logger.info("🧠 Initializing ArtificialBrain v2.4 (Neuro-Enhanced)...")
+        logger.info("🧠 Initializing ArtificialBrain v2.5 (Fixed Init)...")
+
+        # --- Device Handling (Moved up for dependencies) ---
+        self.core_model = thinking_engine
+        self.thinking_engine = thinking_engine
+        self.device: Any = "cpu"
+        if self.core_model and hasattr(self.core_model, 'device'):
+            self.device = cast(Any, self.core_model).device
 
         # --- 1. Core Systems & Memory ---
         self.cortex = cortex or Cortex()
@@ -102,11 +109,11 @@ class ArtificialBrain(nn.Module):
         self.perception = self.visual_cortex
 
         # [New] Thalamus for gating features (Feature dim -> Feature dim)
-        # 視覚特徴量をGWTへ送る前のゲーティングを行うため、feature_dimを使用
         self.thalamus = thalamus or Thalamus(
             input_dim=feature_dim,
             output_dim=feature_dim
         )
+        self.thalamus.to(self.device)
 
         self.sensory_receptor = sensory_receptor
         self.spike_encoder = spike_encoder
@@ -136,17 +143,21 @@ class ArtificialBrain(nn.Module):
         # Alias
         self.astrocyte = self.astrocyte_network
 
-        self.core_model = thinking_engine
-        self.thinking_engine = thinking_engine
+        # --- Sleep Consolidator (Argument Fix) ---
+        # Configをマージして渡す
+        sleep_config = self.config.copy()
+        sleep_config["dream_rate"] = self.config.get("dream_rate", 0.1)
 
-        # Sleep Consolidator
         self.sleep_consolidator = sleep_consolidator or SleepConsolidator(
             memory_system=None,
             hippocampus=self.hippocampus,
             cortex=self.cortex,
             target_brain_model=self.core_model,
-            dream_rate=self.config.get("dream_rate", 0.1)
+            config=sleep_config,  # dream_rateはconfig経由で渡す
+            device=self.device    # deviceを明示的に渡す
         )
+        
+        # モデル参照の整合性を確保
         if self.core_model and self.sleep_consolidator.brain_model is None:
             self.sleep_consolidator.brain_model = self.core_model
 
@@ -154,21 +165,19 @@ class ArtificialBrain(nn.Module):
         self.is_sleeping = False
         self.step_count = 0
 
-        # Device Handling
-        self.device: Any = "cpu"
-        if self.core_model and hasattr(self.core_model, 'device'):
-            self.device = cast(Any, self.core_model).device
-
-        # Move submodules to device if needed
-        self.thalamus.to(self.device)
-
     def set_core_model(self, model: nn.Module):
         """学習対象のコアモデルをセット"""
         self.core_model = model
         self.thinking_engine = model
+        # プロパティ経由でセット (互換性確保済み)
         self.sleep_consolidator.brain_model = model
+        
         if hasattr(model, 'device'):
             self.device = cast(Any, model).device
+            self.thalamus.to(self.device)
+            # SleepConsolidatorのdeviceは更新されない可能性があるため注意が必要だが、
+            # 現状の実装ではtrain_stepで動的に取得しているので問題ない
+            
         logger.info(f"🧠 Core brain model set: {type(model).__name__}")
 
     def process_step(self, sensory_input: Any, reward: float = 0.0) -> Dict[str, Any]:
@@ -227,9 +236,6 @@ class ArtificialBrain(nn.Module):
             # 前頭前野の現在のゴールを注意信号として利用
             top_down_signal = None
             if self.pfc.current_goal:
-                # 注: ここでは簡易的にPFCのゴール情報をTensor化するか、既存のAttentionマップを使う想定
-                # 実装簡略化のため、NoneでなければThalamusに渡す
-                # 実際にはDimension matchingが必要
                 pass
 
             # [Improvement] Thalamusによる情報のゲーティング

@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/core/layers/bit_spike_layer.py
-# Title: BitNet Quantization Layers (CPU Backend)
-# 修正内容: ht8b_cpuを使用するようにリファクタリング。入力型の安全性向上。
+# Title: BitNet Quantization Layers (CPU Backend - Tuned)
+# 修正内容: リザーバとして使用する際の数値安定性を向上。
 
 import torch
 import torch.nn as nn
@@ -53,7 +53,6 @@ class BitSpikeLinear(nn.Linear):
                 return F.linear(x, self.cached_w_quant, self.bias)
 
         # Training Path (QAT: Quantization Aware Training)
-        # 注意: ポリシー上、誤差逆伝播は推奨されませんが、モデル構造としては対応を残しています
         w_quant = bit_quantize_weight(self.weight, self.eps)
         return F.linear(x, w_quant, self.bias)
 

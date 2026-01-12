@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
-# Title: RL Agent
-# 修正: __init__にsynaptic_rule, homeostatic_ruleを追加
+# Title: RL Agent (Mypy Fix)
+# 修正: experience_bufferへのappend時の型エラーを修正 (Optional型の除外)。
 
 import torch
 import torch.nn as nn
@@ -27,7 +27,6 @@ class ReinforcementLearnerAgent:
         output_size: int,
         device: str,
         model_config: Optional[Dict[str, Any]] = None,
-        # [Fix] 追加: BioRLTrainer互換のための引数
         synaptic_rule: Optional[Any] = None,
         homeostatic_rule: Optional[Any] = None
     ):
@@ -35,7 +34,6 @@ class ReinforcementLearnerAgent:
         self.input_size = input_size
         self.output_size = output_size
 
-        # Bio-RL用のルール保持
         self.synaptic_rule = synaptic_rule
         self.homeostatic_rule = homeostatic_rule
 
@@ -73,9 +71,9 @@ class ReinforcementLearnerAgent:
 
         self.experience_buffer: List[Dict[str, torch.Tensor]] = []
 
-        self.base_lr = 0.008
+        self.base_lr = 0.05
         self.min_lr = 0.001
-        self.lr_decay = 0.999
+        self.lr_decay = 0.998
         self.current_lr = self.base_lr
 
         self.best_model_state: Optional[Dict[str, Any]] = None
@@ -88,6 +86,8 @@ class ReinforcementLearnerAgent:
         self.model.eval()
         if record_experience:
             self.model.train()
+
+        pre_activity: Optional[torch.Tensor] = None
 
         with torch.no_grad():
             if state.dim() == 1:
@@ -106,11 +106,13 @@ class ReinforcementLearnerAgent:
                 out_result = hybrid_model.output_gate(r)
                 logits = out_result['output'] if isinstance(
                     out_result, dict) else out_result
+                
+                pre_activity = r.clone()
 
             if self.model.training:
                 decay_progress = max(
                     0.0, (self.current_lr - self.min_lr) / (self.base_lr - self.min_lr))
-                temperature = 0.3 + 1.2 * decay_progress
+                temperature = 0.1 + 1.5 * (decay_progress ** 2)
             else:
                 temperature = 0.1
 
@@ -123,24 +125,29 @@ class ReinforcementLearnerAgent:
             action_idx = int(action.item())
 
             if record_experience:
-                step_data = {
+                # [Mypy Fix] pre_activityがNoneの場合のデフォルト値を設定するか、
+                # 辞書構築時に条件分岐して型安全にする
+                step_data: Dict[str, torch.Tensor] = {
                     'state': state_input.clone(),
                     'action': torch.tensor(action_idx),
-                    'probs': probs.clone()
+                    'probs': probs.clone(),
                 }
+                
+                if pre_activity is not None:
+                    step_data['pre_spikes'] = pre_activity
+                else:
+                    # Hybridでない場合など、ダミーを入れるかキーを含めない
+                    # ここでは型合わせのためダミーを入れる
+                    step_data['pre_spikes'] = torch.empty(0) 
+
                 self.experience_buffer.append(step_data)
 
             return action_idx
 
     def learn(self, reward: float) -> None:
-        """
-        単一ステップまたは蓄積された経験に対する即時学習（BioRLTrainer互換用）。
-        """
         if not self.experience_buffer:
             return
 
-        # 簡易的に直近の経験をTrajectoryとして構築してGRPO学習を適用
-        # 本来はエピソード完了まで待つが、BioRLTrainerがstep毎に呼ぶ場合はここで処理
         current_step = self.experience_buffer[-1]
         trajectory = {
             'spikes_history': [current_step],
@@ -148,8 +155,6 @@ class ReinforcementLearnerAgent:
         }
 
         self.learn_with_grpo([trajectory])
-
-        # 即時学習の場合はバッファをクリア（またはポリシーに応じて保持）
         self.experience_buffer.clear()
 
     def _save_checkpoint(self, current_avg: float):
@@ -234,7 +239,6 @@ class ReinforcementLearnerAgent:
             self.optimizer.step()
 
         else:
-            # Hybrid mode
             hybrid_model = cast(HybridNeuromorphicCore, self.model)
 
             for i, trajectory in enumerate(trajectories):
@@ -248,7 +252,8 @@ class ReinforcementLearnerAgent:
                 episode_history = trajectory.get('spikes_history', [])
                 for step_data in episode_history:
                     pre_spikes = step_data.get('pre_spikes')
-                    if pre_spikes is None:
+                    
+                    if pre_spikes is None or pre_spikes.numel() == 0:
                         continue
 
                     action_idx = step_data['action']

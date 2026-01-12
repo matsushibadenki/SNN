@@ -153,3 +153,16 @@ class SNNCore(BaseModel):
                         except Exception:
                             # 一部の層（量子化層など）は初期化できない場合がある
                             pass
+
+    def update_plasticity(self, x_input: torch.Tensor, target: torch.Tensor, learning_rate: float = 0.01) -> None:
+        """
+        [Mypy Fix] 可塑性更新メソッド。内部モデルに委譲する。
+        """
+        update_method = getattr(self.model, 'update_plasticity', None)
+        if update_method is not None and callable(update_method):
+            try:
+                update_method(x_input, target, learning_rate)
+            except Exception as e:
+                logger.warning(f"Plasticity update failed: {e}")
+        else:
+            logger.debug(f"Model {type(self.model).__name__} does not support update_plasticity.")

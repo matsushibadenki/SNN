@@ -1,14 +1,17 @@
 # ファイルパス: snn_research/social/emergent_language.py
-# Title: Emergent Language Game (Naming Game) v1.0
+# Title: Emergent Language Game (Naming Game) v1.2
 # Description:
 #   2つのエージェント（Speaker, Listener）がオブジェクトに対して名前を付け合い、
 #   共通の語彙を形成するシミュレーション。
+#   [Fix] SymbolGroundingの初期化に必要なRAGSystem引数を追加。
 
 import torch
 import random
 import logging
-from typing import Dict
+from typing import Dict, Optional, Any
 from snn_research.cognitive_architecture.symbol_grounding import SymbolGrounding
+# [Fix] RAGSystemのインポートを追加
+from snn_research.cognitive_architecture.rag_snn import RAGSystem
 
 logger = logging.getLogger(__name__)
 
@@ -105,3 +108,21 @@ class NamingGameSimulation:
             logger.debug("❌ Communication Failed.")
 
         return success
+
+class EmergentLanguageProtocol:
+    """
+    Agentクラスをラップして、社会的学習実験スクリプトから利用しやすくするためのプロトコルクラス。
+    """
+    def __init__(self, vocab_size: int = 50):
+        self.vocab_size = vocab_size
+        
+        # [Fix] RAGSystemのインスタンスを作成して渡す
+        # 簡易的なRAGSystemを作成（embedding_dimは適当に設定）
+        self.rag = RAGSystem(embedding_dim=64)
+        self.grounding = SymbolGrounding(rag_system=self.rag)
+        
+        self.agent = Agent("protocol_agent", self.grounding)
+
+    def process_message(self, message: str) -> None:
+        """メッセージを処理する（ダミー）"""
+        pass
