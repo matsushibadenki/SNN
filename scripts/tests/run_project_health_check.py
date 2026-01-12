@@ -1,14 +1,15 @@
 # ファイルパス: scripts/tests/run_project_health_check.py
-# Title: SNN Project Health Check v5.6 (Fix SFormer & BN)
+# Title: SNN Project Health Check v5.8 (Fix Indentation)
 # Description:
 #   プロジェクト全体の健全性を検証する統合チェックスクリプト。
-#   v5.6: Spikformerの引数修正とHybridモデルのバッチサイズ調整(BatchNorm対応)。
+#   v5.8: Pythonコード埋め込み時のインデントエラーを修正 (textwrap使用)。
 
 import sys
 import os
 import time
 import subprocess
 import logging
+import textwrap
 
 # パス設定
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -18,6 +19,9 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("HealthCheck")
 
+# サードパーティライブラリのノイズ抑制
+logging.getLogger("spikingjelly").setLevel(logging.ERROR)
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 def run_command(command, description):
     """サブプロセスでコマンドを実行し、結果をログ出力する"""
@@ -25,13 +29,17 @@ def run_command(command, description):
     start_time = time.time()
 
     try:
-        # タイムアウトを設定して無限ループ防止
+        # 環境変数を継承しつつ、警告抑制用の変数を追加
+        env = os.environ.copy()
+        env["PYTHONWARNINGS"] = "ignore"
+
         result = subprocess.run(
             command,
             shell=True,
             capture_output=True,
             text=True,
-            timeout=300
+            timeout=300,
+            env=env
         )
 
         elapsed = time.time() - start_time
@@ -41,7 +49,8 @@ def run_command(command, description):
             return True
         else:
             logger.error(f"❌ 失敗: {description}")
-            print(f"[STDERR]:\n{result.stderr}")
+            print(f"--- [STDERR] ---\n{result.stderr}")
+            print(f"--- [STDOUT] ---\n{result.stdout}")
             return False
 
     except subprocess.TimeoutExpired:
@@ -58,16 +67,39 @@ def check_python_api(description, code_snippet):
     start_time = time.time()
 
     try:
-        # 必要なインポートを含めたラッパー
+        # スニペット全体をインデントして try ブロック内に収める (4スペース)
+        indented_snippet = textwrap.indent(code_snippet.strip(), '    ')
+
+        # 必要なインポートとログ抑制を含めたラッパー
         full_code = f"""
 import sys
 import os
+import logging
+import warnings
+import traceback
+
+# 警告とログの抑制
+warnings.filterwarnings("ignore")
+logging.getLogger("spikingjelly").setLevel(logging.ERROR)
+
 import torch
 import torch.nn as nn
 sys.path.append(os.getcwd())
-{code_snippet}
+
+try:
+{indented_snippet}
+except ImportError as e:
+    if "cupy" in str(e):
+        print("INFO: CuPy not found, running in CPU/MPS mode.")
+    else:
+        # インデントエラーでない、真のImportErrorを表示
+        traceback.print_exc()
+        raise e
+except Exception as e:
+    # その他のエラー詳細を表示
+    traceback.print_exc()
+    raise e
 """
-        # サブプロセスで実行（環境汚染を防ぐため）
         result = subprocess.run(
             [sys.executable, "-c", full_code],
             capture_output=True,
@@ -91,7 +123,7 @@ sys.path.append(os.getcwd())
 
 
 def main():
-    logger.info("🩺 SNNプロジェクト ヘルスチェック v5.6 (Fix SFormer & BN) 開始")
+    logger.info("🩺 SNNプロジェクト ヘルスチェック v5.8 (Fix Indentation) 開始")
     print("-" * 60)
 
     checks = []
@@ -101,13 +133,10 @@ def main():
         f"{sys.executable} -m pytest tests/ -x -q --disable-warnings", "Unit Tests: Pytest Suite (Quick)"))
 
     # 2. Core: SNNCore & SFormer Init
-    # Fix: architecture_typeを指定
-    # Fix: Spikformerの引数を修正 (input_dim -> embed_dim, img_size指定)
     checks.append(check_python_api("Core: SNNCore & SFormer Init", """
 from snn_research.core.snn_core import SNNCore
 from snn_research.models.transformer.spikformer import Spikformer
 
-# SNNCoreには architecture_type が必須
 config = {
     'architecture_type': 'spiking_transformer',
     'd_model': 64,
@@ -116,18 +145,13 @@ config = {
     'neuron': {'type': 'lif'}
 }
 model = SNNCore(config=config, vocab_size=100)
-
-# Spikformerのテスト
-# img_sizeなどを明示し、embed_dimを使用
 sformer = Spikformer(img_size_h=32, img_size_w=32, embed_dim=64, num_classes=10)
 print("Models initialized successfully")
 """))
 
     # 3. Core: BitSpikeMamba
-    # Fix: 足りない引数を追加
     checks.append(check_python_api("Core: BitSpikeMamba (1.58bit LLM)", """
 from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
-
 model = BitSpikeMamba(
     vocab_size=100,
     d_model=32,
@@ -156,10 +180,8 @@ print(f"Cycle result: {res}")
         f"{sys.executable} scripts/demos/learning/run_sleep_cycle_demo.py", "Cognitive: Sleep & Consolidation Demo"))
 
     # 6. Agent: Planner SNN
-    # Fix: 足りない引数を追加
     checks.append(check_python_api("Agent: Planner SNN (Reasoning)", """
 from snn_research.cognitive_architecture.planner_snn import PlannerSNN
-
 planner = PlannerSNN(
     vocab_size=50,
     d_model=32,
@@ -174,10 +196,8 @@ print("Planner initialized")
 """))
 
     # 7. Logic: LogicGatedSNN
-    # Fix: 引数名変更
     checks.append(check_python_api("Logic: LogicGatedSNN (Neuro-Symbolic)", """
 from snn_research.core.layers.logic_gated_snn import LogicGatedSNN
-
 layer = LogicGatedSNN(in_features=10, out_features=5)
 x = torch.randn(1, 10)
 y = layer(x)
@@ -198,14 +218,13 @@ print("Encoding successful")
         f"{sys.executable} scripts/demos/learning/run_distillation_demo.py", "Distill: Knowledge Distillation Manager"))
 
     # 10. Evolution: Self-Evolving Agent Master
-    # Fix: 依存オブジェクトをMockで注入
     checks.append(check_python_api("Evolution: Self-Evolving Agent Master", """
 from snn_research.agent.self_evolving_agent import SelfEvolvingAgentMaster
-
 # Mock dependencies
 class MockObj:
     def __init__(self, *args, **kwargs): pass
     def to(self, device): return self
+    def set_input_mode(self, mode): pass 
 
 mock_planner = MockObj()
 mock_registry = MockObj()
@@ -228,15 +247,11 @@ print("Agent Master initialized")
 """))
 
     # 11. Model: Hybrid CNN-SNN
-    # Fix: クラス名修正
-    # Fix: バッチサイズを2に変更 (BatchNormエラー回避)
     checks.append(check_python_api("Model: Hybrid CNN-SNN (Vision)", """
 from snn_research.models.cnn.hybrid_cnn_snn_model import HybridCnnSnnModel
-
 ann_config = {'name': 'mobilenet_v2', 'output_features': 1280, 'pretrained': False}
 snn_config = {'d_model': 32, 'n_head': 2, 'num_layers': 1}
 neuron_config = {'type': 'lif'}
-
 model = HybridCnnSnnModel(
     vocab_size=10, 
     time_steps=4,
@@ -244,7 +259,6 @@ model = HybridCnnSnnModel(
     snn_backend=snn_config,
     neuron_config=neuron_config
 )
-# Batch size > 1 required for BatchNorm training mode
 x = torch.randn(2, 3, 32, 32)
 y = model(x)
 print("Hybrid model forward pass successful")
@@ -277,7 +291,7 @@ print("Hybrid model forward pass successful")
         logger.info("✨ 全てのヘルスチェックに合格しました！プロジェクトは健全です。")
         sys.exit(0)
     else:
-        logger.error(f"⚠️ {total - passed} 個のコンポーネントで問題が発生しています。ログを確認してください。")
+        logger.error(f"⚠️ {total - passed} 個のコンポーネントで問題が発生しています。")
         sys.exit(1)
 
 

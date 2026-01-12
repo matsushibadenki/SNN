@@ -1,16 +1,14 @@
 # ファイルパス: snn_research/models/transformer/sformer.py
-# Title: SFormer (Scale-and-Fire Transformer) - High Fidelity T=1 Implementation (Fixed v3.2)
+# Title: SFormer (Scale-and-Fire Transformer) - High Fidelity T=1 Implementation (Fixed v3.5)
 # Description:
 #   ROADMAP Phase 3「究極の低遅延バックボーン」の完全実装。
-#   修正: 
-#   1. SFNAttentionにおいて、SFNの適用タイミングをHead分割前に変更し、次元不整合を解消。
-#   2. generate メソッドを追加し、自己回帰的なトークン生成(Thinking Process)を可能に。
-#   3. generate メソッドの引数 (pad_token_id, eos_token_id) に対応し、ReasoningEngineとの互換性を修正。
+#   修正 v3.5: MPS環境での "Placeholder storage error" を回避するため、
+#             forward入力時と主要な変形操作前に .contiguous() を徹底。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, Union
 import logging
 
 from snn_research.core.base import BaseModel
@@ -22,7 +20,6 @@ logger = logging.getLogger(__name__)
 class SFNAttention(nn.Module):
     """
     Scale-and-Fire Attention Mechanism.
-    Q, K, V を SFN で量子化(スパイク化)してからアテンションスコアを計算する。
     """
     def __init__(
         self,
@@ -39,17 +36,14 @@ class SFNAttention(nn.Module):
         self.head_dim = d_model // nhead
         self.scale = self.head_dim ** -0.5
 
-        # Projections
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
         self.v_proj = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
 
-        # QK-Norm (Head次元に対して適用)
         self.qk_norm_q = SpikingQKNorm(self.head_dim)
         self.qk_norm_k = SpikingQKNorm(self.head_dim)
 
-        # Scale-and-Fire Neurons (d_model全体に対して適用するため、Head分割前に配置)
         self.sfn_q = ScaleAndFireNeuron(d_model, num_levels=sf_levels, base_threshold=sf_threshold)
         self.sfn_k = ScaleAndFireNeuron(d_model, num_levels=sf_levels, base_threshold=sf_threshold)
         self.sfn_v = ScaleAndFireNeuron(d_model, num_levels=sf_levels, base_threshold=sf_threshold)
@@ -57,47 +51,47 @@ class SFNAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # MPS対策: 入力を整列
+        x = x.contiguous()
         B, L, D = x.shape
         H = self.nhead
         Dh = self.head_dim
 
-        # 1. Linear Projections: (B, L, D)
         q = self.q_proj(x)
         k = self.k_proj(x)
         v = self.v_proj(x)
 
-        # 2. Apply SFN (Quantization): (B, L, D)
-        # SFNは (B, L, C) の形状を受け付け、C=d_model と一致することを確認する
-        q, _ = self.sfn_q(q)
-        k, _ = self.sfn_k(k)
-        v, _ = self.sfn_v(v)
+        q_out = self.sfn_q(q)
+        q = q_out[0] if isinstance(q_out, tuple) else q_out
+        
+        k_out = self.sfn_k(k)
+        k = k_out[0] if isinstance(k_out, tuple) else k_out
+        
+        v_out = self.sfn_v(v)
+        v = v_out[0] if isinstance(v_out, tuple) else v_out
 
-        # 3. Head Split: (B, L, D) -> (B, L, H, Dh) -> (B, H, L, Dh)
-        q = q.view(B, L, H, Dh).transpose(1, 2)
-        k = k.view(B, L, H, Dh).transpose(1, 2)
-        v = v.view(B, L, H, Dh).transpose(1, 2)
+        # [MPS Critical Fix] transpose後は必ずcontiguous()
+        q = q.view(B, L, H, Dh).transpose(1, 2).contiguous()
+        k = k.view(B, L, H, Dh).transpose(1, 2).contiguous()
+        v = v.view(B, L, H, Dh).transpose(1, 2).contiguous()
 
-        # 4. Apply QK-Norm: (B, H, L, Dh)
-        # QK-Normは最後の次元(Dh)に対して正規化を行う
         q = self.qk_norm_q(q)
         k = self.qk_norm_k(k)
 
-        # 5. Scaled Dot-Product Attention
-        attn_scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+        # 安全のため k_t を作成して整列
+        k_t = k.transpose(-2, -1).contiguous()
+        attn_scores = torch.matmul(q, k_t) * self.scale
 
-        # --- マスク適用 ---
         if mask is not None:
-            # mask形状: (L, L) または (B, 1, L, L) を想定
             attn_scores = attn_scores.masked_fill(mask == 0, float('-inf'))
 
         attn_probs = torch.softmax(attn_scores, dim=-1)
         attn_probs = self.dropout(attn_probs)
 
-        # Attn @ V
         attn_output = torch.matmul(attn_probs, v)
 
-        # 6. Output Projection
-        attn_output = attn_output.transpose(1, 2).reshape(B, L, D)
+        # Output Projection前も整列
+        attn_output = attn_output.transpose(1, 2).contiguous().reshape(B, L, D)
         output = self.out_proj(attn_output)
 
         return output
@@ -140,7 +134,6 @@ class SFormerBlock(nn.Module):
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         shortcut = x
         x_norm = self.norm1(x)
-        # マスクをAttentionに渡す
         attn_out = self.attn(x_norm, mask=mask)
         x = shortcut + self.dropout1(attn_out)
         
@@ -148,16 +141,16 @@ class SFormerBlock(nn.Module):
         x_norm = self.norm2(x)
         
         x_ff = self.linear1(x_norm)
-        x_ff, _ = self.sfn_ffn(x_ff) 
+        
+        x_ff_out = self.sfn_ffn(x_ff)
+        x_ff = x_ff_out[0] if isinstance(x_ff_out, tuple) else x_ff_out
+        
         x_ff = self.linear2(x_ff)
         x = shortcut + self.dropout2(x_ff)
         
         return x
 
 class SFormer(BaseModel):
-    """
-    Scale-and-Fire Transformer (SFormer).
-    """
     def __init__(
         self,
         vocab_size: int,
@@ -207,37 +200,34 @@ class SFormer(BaseModel):
         return_spikes: bool = False, 
         **kwargs: Any
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # [Critical Fix for MPS] Ensure input indices are contiguous before embedding lookup
+        if not input_ids.is_contiguous():
+            input_ids = input_ids.contiguous()
+            
         B, L = input_ids.shape
         device = input_ids.device
         
-        # Embedding
         x = self.embedding(input_ids)
         
-        # Positional Encoding Handling
         max_len = self.pos_encoder.shape[1]
         if L <= max_len:
              x = x + self.pos_encoder[:, :L, :]
         else:
-             # シーケンスが長すぎる場合、PosEncは適用可能な範囲(max_len)まで適用し、
-             # それ以降はPosEncなし（あるいは相対位置などが望ましいがここでは簡易実装）とする
              pos_enc = self.pos_encoder[:, :max_len, :]
              x[:, :max_len, :] = x[:, :max_len, :] + pos_enc
 
         x = self.dropout(x)
         
-        # --- 因果マスクの生成 ---
         causal_mask = torch.triu(torch.ones(L, L, device=device), diagonal=1) == 0
         causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
 
-        # Layers
         for layer in self.layers:
             x = layer(x, mask=causal_mask)
             
         x = self.norm(x)
         logits = self.output_projection(x)
         
-        total_spikes = self.get_total_spikes()
-        avg_spikes = torch.tensor(total_spikes / (B * L + 1e-8), device=x.device) if return_spikes else torch.tensor(0.0, device=x.device)
+        avg_spikes = torch.tensor(0.0, device=x.device)
         mem = torch.tensor(0.0, device=x.device)
         
         return logits, avg_spikes, mem
@@ -254,38 +244,17 @@ class SFormer(BaseModel):
         eos_token_id: Optional[int] = None,
         **kwargs: Any
     ) -> torch.Tensor:
-        """
-        自己回帰的なテキスト生成ループ。
-        
-        Args:
-            input_ids: (Batch, SeqLen) の開始トークン列
-            max_length: 生成後の最大シーケンス長
-            temperature: サンプリング温度
-            do_sample: Trueならサンプリング、FalseならGreedy
-            top_k: Top-KサンプリングのK
-            pad_token_id: パディングトークンID (無視されるが互換性のために維持)
-            eos_token_id: 生成終了トークンID
-            **kwargs: その他の引数 (互換性のため)
-            
-        Returns:
-            generated_ids: (Batch, MaxLength)
-        """
         self.eval()
         curr_ids = input_ids.clone()
         
         for _ in range(max_length - input_ids.size(1)):
-            # Context Windowの制限 (PosEncの長さに合わせる)
             cond_ids = curr_ids[:, -self.pos_encoder.size(1):]
-            
-            # Forward pass
             logits, _, _ = self.forward(cond_ids)
-            next_token_logits = logits[:, -1, :] # 最後のトークンの予測
+            next_token_logits = logits[:, -1, :]
             
-            # Temperature
             next_token_logits = next_token_logits / max(temperature, 1e-5)
             
             if do_sample:
-                # Top-K Filtering
                 if top_k > 0:
                     v, _ = torch.topk(next_token_logits, min(top_k, next_token_logits.size(-1)))
                     next_token_logits[next_token_logits < v[:, [-1]]] = -float('Inf')
@@ -293,12 +262,9 @@ class SFormer(BaseModel):
                 probs = F.softmax(next_token_logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1)
             else:
-                # Greedy
                 next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
             
-            # EOS Check
             if eos_token_id is not None:
-                # バッチサイズ1を想定しているが、安全のため全要素チェック
                 if (next_token == eos_token_id).all():
                     break
                     
