@@ -1,3 +1,10 @@
+"""
+matsushibadenki/snn/SNN-122020968b889dca130bffecfd4164ec2223a98b/scripts/experiments/systems/run_unified_mission.py
+統合ミッション実行スクリプト (Improved V2)
+目的: 統合脳モデル(System 1+2)を用いたエージェントによる、ノイズ環境下での自律ミッション遂行。
+      CNNの深化、ノイズ注入学習、LRスケジューラ導入により、精度とエネルギー効率を向上。
+"""
+
 import sys
 import os
 import time
@@ -44,33 +51,44 @@ except ImportError as e:
 
 class VisualCortex(nn.Module):
     """
-    視覚野: CNNベースの特徴抽出器。
-    画像から高次元の特徴ベクトルを生成し、System 1 (直感) と System 2 (熟考) の両方に供給する。
+    視覚野: CNNベースの特徴抽出器 (Enhanced V2)。
+    より深い層構造とSiLU活性化関数を採用し、特徴抽出能力を向上させることで
+    System 1の精度を高め、System 2への依存度(エネルギー消費)を下げる。
     """
     def __init__(self, feature_dim: int = 64):
         super().__init__()
+        # Layer 1: 28x28 -> 14x14
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
         self.bn1 = nn.BatchNorm2d(32)
-        self.pool = nn.MaxPool2d(2, 2)
+        
+        # Layer 2: 14x14 -> 7x7
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
         self.bn2 = nn.BatchNorm2d(64)
+
+        # Layer 3: 7x7 -> 3x3 (New)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
+        self.bn3 = nn.BatchNorm2d(128)
+        
+        self.pool = nn.MaxPool2d(2, 2)
+        self.act = nn.SiLU()  # Swish activation for better gradient flow
         
         # 最終的な特徴次元への射影
-        # MNIST 28x28 -> pool -> 14x14 -> pool -> 7x7
-        self.fc = nn.Linear(64 * 7 * 7, feature_dim)
-        
-        self.dropout = nn.Dropout(0.25)
+        # 128 * 3 * 3 = 1152
+        self.fc = nn.Linear(128 * 3 * 3, feature_dim)
+        self.dropout = nn.Dropout(0.2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Layer 1
-        x = self.pool(F.relu(self.bn1(self.conv1(x))))
+        x = self.pool(self.act(self.bn1(self.conv1(x))))
         # Layer 2
-        x = self.pool(F.relu(self.bn2(self.conv2(x))))
+        x = self.pool(self.act(self.bn2(self.conv2(x))))
+        # Layer 3
+        x = self.pool(self.act(self.bn3(self.conv3(x))))
         
         # Flatten & Project
         x = x.flatten(1)
         x = self.dropout(x)
-        features = F.relu(self.fc(x))  # (B, feature_dim)
+        features = self.act(self.fc(x))  # (B, feature_dim)
         return features
 
 
@@ -85,7 +103,6 @@ class OmegaBrain(nn.Module):
         self.visual_cortex = VisualCortex(feature_dim=self.feature_dim).to(device)
         
         # System 1: 直感パス (Linear Readout)
-        # 高速で、勾配を直接視覚野に伝える役割を持つ
         self.system1 = nn.Linear(self.feature_dim, 10).to(device)
         
         # System 2: 熟考パス (SNN/Mamba)
@@ -101,15 +118,13 @@ class OmegaBrain(nn.Module):
             neuron_config={"type": "lif", "base_threshold": 1.0}
         ).to(device)
         
-        # System 2の分類ヘッドは、forward時に次元を確認して初期化する(安全策)
         self.s2_head: Optional[nn.Linear] = None 
         
         # ゲート機構 (Uncertainty Estimation)
-        # 特徴量から予測の不確実性(0.0-1.0)を出力する
         self.gating_net = nn.Sequential(
-            nn.Linear(self.feature_dim, 32),
-            nn.ReLU(),
-            nn.Linear(32, 1),
+            nn.Linear(self.feature_dim, 64),
+            nn.SiLU(),
+            nn.Linear(64, 1),
             nn.Sigmoid()
         ).to(device)
 
@@ -121,38 +136,35 @@ class OmegaBrain(nn.Module):
         logits1 = self.system1(features)
         
         # 3. 判断 (Gating)
-        # 不確実性マップを取得 (0.0: 確信 - 1.0: 不確実)
         uncertainty_map = self.gating_net(features)
         uncertainty_scalar = uncertainty_map.mean().item()
         
         final_logits = logits1
         system_used = "S1"
         
+        # System 2 起動閾値 (VisualCortex強化に伴い、少し厳しめに設定して省エネ化)
+        threshold = 0.65
+        
         # 4. 熟考 (System 2)
-        # 不確実性が高い(> 0.6)場合、System 2を起動して慎重に推論する
-        if uncertainty_scalar > 0.6 or force_system2:
+        if uncertainty_scalar > threshold or force_system2:
             system_used = "S2"
             
-            # 特徴量をトークンIDに変換
-            token_logits = self.feature_to_token(features)  # (B, vocab)
-            token_ids = torch.argmax(token_logits, dim=-1).unsqueeze(1)  # (B, 1) sequence
+            token_logits = self.feature_to_token(features)
+            token_ids = torch.argmax(token_logits, dim=-1).unsqueeze(1)
             
-            # Mamba実行
             out2 = self.system2(token_ids)
             if isinstance(out2, tuple):
                 out2 = out2[0]
-            # (B, L, D) -> mean -> (B, D)
             sys2_feats = out2.mean(dim=1)
             
-            # System 2 Headの動的初期化
             if self.s2_head is None:
                 feat_dim = sys2_feats.shape[-1]
                 self.s2_head = nn.Linear(feat_dim, 10).to(self.device)
             
             logits2 = self.s2_head(sys2_feats)
             
-            # 思考の統合
-            final_logits = (logits1 + logits2 * 1.5) / 2.5
+            # アンサンブル: System 2が動いたなら、その意見を尊重する
+            final_logits = (logits1 + logits2 * 2.0) / 3.0
             
         return {
             "logits": final_logits,
@@ -176,7 +188,12 @@ class Operator:
         self.sleep_system = SleepConsolidator(target_brain_model=self.brain.system2)
         
         self.lr = 0.001
-        self.optimizer = torch.optim.AdamW(self.brain.parameters(), lr=self.lr)
+        self.optimizer = torch.optim.AdamW(self.brain.parameters(), lr=self.lr, weight_decay=1e-4)
+        # Cosine Annealing Scheduler for better convergence
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=1000, eta_min=1e-5
+        )
+        
         self.criterion = nn.CrossEntropyLoss()
         self.distill_loss = nn.KLDivLoss(reduction="batchmean")
         self.gating_loss_fn = nn.MSELoss()
@@ -188,11 +205,12 @@ class Operator:
         self.lr = lr
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = lr
+        # Schedulerのリセット (新しいフェーズ用)
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=100, eta_min=lr * 0.1
+        )
 
     def process_data(self, image: torch.Tensor) -> Dict[str, Any]:
-        """
-        推論実行。エージェントは自身の能力のみで判断する。
-        """
         self.brain.eval()
         start_time = time.time()
         with torch.no_grad():
@@ -206,18 +224,24 @@ class Operator:
         self.brain.train()
         self.optimizer.zero_grad()
         
-        # 1. 通常データの学習
-        result = self.brain(image)
+        # Robustness Training: 確率的にノイズを注入して学習する
+        # これにより、Mission Phaseのノイズ環境下でのSystem 1精度が向上し、
+        # 結果としてSystem 2の起動回数(エネルギー)が減る
+        if random.random() < 0.2:
+            noise = torch.randn_like(image) * 0.3
+            train_image = image + noise
+        else:
+            train_image = image
+
+        result = self.brain(train_image)
         my_logits = result["logits"]
         uncertainty_map = result["uncertainty_map"]
         
         loss = torch.tensor(0.0, device=self.device, requires_grad=True)
         
         if label is not None:
-            # 分類誤差
             loss = loss + self.criterion(my_logits, label)
             
-            # Gating Networkの学習
             with torch.no_grad():
                 probs = F.softmax(my_logits, dim=-1)
                 p_true = probs.gather(1, label.view(-1, 1))
@@ -225,26 +249,26 @@ class Operator:
             
             loss = loss + self.gating_loss_fn(uncertainty_map, gating_target)
 
-        # 2. OOD (Out-of-Distribution) Training
-        noise = torch.randn_like(image)
-        noise_res = self.brain(noise)
+        # 2. OOD Training (Stronger noise)
+        noise_input = torch.randn_like(image)
+        noise_res = self.brain(noise_input)
         noise_unc = noise_res["uncertainty_map"]
         ood_loss = self.gating_loss_fn(noise_unc, torch.ones_like(noise_unc))
         
         loss = loss + 0.5 * ood_loss
             
-        # 3. Knowledge Distillation Loss
         if peer_logits is not None:
             T = 2.0 
             teacher_probs = F.softmax(peer_logits / T, dim=-1)
             my_log_probs = F.log_softmax(my_logits / T, dim=-1)
-            
             distill_scale = 5.0 * confidence_weight
             loss = loss + self.distill_loss(my_log_probs, teacher_probs) * (T**2) * distill_scale
             
         loss.backward()
         self.optimizer.step()
+        self.scheduler.step()
         
+        # 疲労蓄積ロジック
         self.fatigue += 0.05
         if result["system"] == "S2":
             self.fatigue += 0.15
@@ -276,7 +300,7 @@ class UnifiedMission:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
         print("=" * 60)
-        print(f"🌌 PROJECT OMEGA: AGI Prototype Initialization")
+        print(f"🌌 PROJECT OMEGA: AGI Prototype Initialization (High-Efficiency Mod)")
         print(f"📍 Device: {self.device}")
         print("=" * 60)
         
@@ -303,6 +327,12 @@ class UnifiedMission:
         print(f"   👉 {description} ({batches} batches)...")
         loader = DataLoader(self.dataset, batch_size=batch_size, shuffle=True)
         iter_loader = iter(loader)
+        
+        # 学習前にスケジューラをセット
+        agent.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            agent.optimizer, T_max=batches, eta_min=1e-6
+        )
+        
         agent.brain.train()
         for i in range(batches):
             try:
@@ -317,7 +347,7 @@ class UnifiedMission:
         print(f"      -> Accuracy: {agent.current_accuracy:.1f}%")
 
     def pre_mission_briefing(self):
-        print("\n📚 [Phase 0] Academy Training Phase (w/ OOD Awareness)...")
+        print("\n📚 [Phase 0] Academy Training Phase (w/ Noise Robustness)...")
         self._train_agent(self.commander, 800, "Training Alpha (Commander)")
         self._train_agent(self.scout, 300, "Training Beta (Scout)")
         print("   ✅ Team is ready. Mission Start.")
@@ -391,13 +421,10 @@ class UnifiedMission:
             alpha_is_better = (unc_alpha < 0.2) and (unc_alpha < unc_beta)
             alpha_can_teach = (alpha_is_expert or alpha_is_better) and (not alpha_is_confused)
             
-            # Commanderの緊急指令 (Safety Protocol)
-            # Alphaが強い異常を検知し、Betaがまだ迷っている(Observe)なら、強制的に防御させる
             if alpha_is_confused and not beta_is_confused and (unc_beta > 0.4):
                 beta_action = "🛡️ (Cmdr Hold)"
                 event_log += " -> Safety Override"
             
-            # Betaの行動決定
             elif not beta_is_confused:
                 disagreement = (pred_alpha != pred_beta)
                 beta_needs_help = (unc_beta > 0.4)
@@ -414,7 +441,6 @@ class UnifiedMission:
                         beta_action = "👨‍🏫 (Teach)"
                         event_log += " -> Correction"
                 else:
-                    # 自律学習
                     if unc_beta < 0.3:
                         if not is_anomaly_truth: 
                             self.scout.learn(image_input, label, None)
