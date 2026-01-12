@@ -1,11 +1,12 @@
 # ファイルパス: scripts/training/trainers/train_brain_v26_scalable.py
-# 日本語タイトル: Brain v2.6.1 Scalable Production Trainer (Warning Free)
-# 目的: 混合精度学習(AMP)の警告を修正し、検証・チェックポイント保存・メトリクス出力を備えた、安定かつスケーラブルな学習トレーナー。
+# 日本語タイトル: Brain v2.6.2 Scalable Production Trainer (Clean Log)
+# 目的: 混合精度学習(AMP)対応、警告抑制、検証連携強化版トレーナー。
 
 import os
 import sys
 import json
 import logging
+import warnings
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -18,13 +19,17 @@ from typing import Dict, Any, Tuple, Optional
 sys.path.append(os.path.abspath(os.path.join(
     os.path.dirname(__file__), "../../..")))
 
-# デッドロック回避
+# デッドロック・警告回避設定
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+warnings.filterwarnings("ignore", category=UserWarning) # PyTorchの一部警告を抑制
 
 # ログ設定
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s | %(levelname)s | %(message)s', stream=sys.stdout, force=True)
 logger = logging.getLogger("BrainTrainer")
+
+# SpikingJellyのCupY警告を抑制 (MPS環境向け)
+logging.getLogger('spikingjelly').setLevel(logging.ERROR)
 
 # モデルインポート
 try:
@@ -97,21 +102,19 @@ class JsonConversationalDataset(Dataset):
 
 
 class ScalableTrainer:
-    """Production-Grade SNN Trainer (v2.6.1)"""
+    """Production-Grade SNN Trainer (v2.6.2)"""
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.device = self._get_device()
 
-        # AMP Scaler Initialization (Corrected for PyTorch 2.4+)
+        # AMP Scaler Initialization
         self.use_amp = (self.device == "cuda")
         self.scaler = None
         if self.use_amp:
             try:
-                # New API
                 self.scaler = torch.amp.GradScaler('cuda')
             except AttributeError:
-                # Fallback for older PyTorch
                 self.scaler = torch.cuda.amp.GradScaler()
 
         # チェックポイント用ディレクトリ作成
@@ -165,25 +168,38 @@ class ScalableTrainer:
 
     def setup_model(self):
         """モデルの初期化"""
+        # Objective.md Phase 2: 学習安定性向上のため Triangle サロゲートを採用
+        neuron_conf = {
+            "type": "lif", 
+            "tau_mem": 2.0,
+            "surrogate": "triangle"
+        }
+        
         self.model = BitSpikeMamba(
             vocab_size=self.tokenizer.vocab_size,
             d_model=self.config["d_model"],
             d_state=16, d_conv=4, expand=2,
             num_layers=self.config["num_layers"],
             time_steps=self.config["time_steps"],
-            neuron_config={"type": "lif", "tau_mem": 2.0}
+            neuron_config=neuron_conf
         ).to(self.device)
 
         logger.info(
-            f"🧠 Model Initialized: {self.config['d_model']} dim, {self.config['num_layers']} layers")
+            f"🧠 Model Initialized: {self.config['d_model']} dim, {self.config['num_layers']} layers, Surrogate=Triangle")
 
     def train(self):
         """学習ループの実行"""
         optimizer = optim.AdamW(self.model.parameters(),
                                 lr=self.config["lr"], weight_decay=0.01)
         criterion = nn.CrossEntropyLoss()
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=self.config["epochs"])
+        
+        # Phase 2 Improvement: Warm Restartによる局所解脱出と安定化
+        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer, 
+            T_0=5,
+            T_mult=2,
+            eta_min=1e-6
+        )
 
         best_val_loss = float('inf')
         metrics_history = []
@@ -194,8 +210,9 @@ class ScalableTrainer:
             # --- Training Phase ---
             self.model.train()
             total_loss = 0.0
+            # ログ出力を少し抑制してスピードアップ
             progress = tqdm(
-                self.train_loader, desc=f"Epoch {epoch+1}/{self.config['epochs']} [Train]")
+                self.train_loader, desc=f"Epoch {epoch+1}/{self.config['epochs']}", leave=False)
 
             for inputs, targets in progress:
                 inputs, targets = inputs.to(
@@ -203,39 +220,24 @@ class ScalableTrainer:
                 optimizer.zero_grad()
                 functional.reset_net(self.model)
 
-                # Mixed Precision Training Logic
                 if self.use_amp and self.scaler is not None:
                     # CUDA AMP
-                    if hasattr(torch, 'amp') and hasattr(torch.amp, 'autocast'):
-                        # New API
-                        with torch.amp.autocast('cuda'):
-                            logits, _, _ = self.model(inputs)
-                            loss = criterion(
-                                logits.view(-1, logits.size(-1)), targets.view(-1))
-                    else:
-                        # Old API
-                        with torch.cuda.amp.autocast():
-                            logits, _, _ = self.model(inputs)
-                            loss = criterion(
-                                logits.view(-1, logits.size(-1)), targets.view(-1))
-
+                    with torch.amp.autocast('cuda'):
+                        logits, _, _ = self.model(inputs)
+                        loss = criterion(
+                            logits.view(-1, logits.size(-1)), targets.view(-1))
                     self.scaler.scale(loss).backward()
                     self.scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                     self.scaler.step(optimizer)
                     self.scaler.update()
                 else:
-                    # Standard Precision (CPU / MPS)
-                    # Note: MPS `torch.autocast(device_type="mps")` exists in newer PyTorch,
-                    # but keeping it simple/stable here as per user request for warnings fix.
+                    # Standard Precision
                     logits, _, _ = self.model(inputs)
                     loss = criterion(
                         logits.view(-1, logits.size(-1)), targets.view(-1))
-
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                     optimizer.step()
 
                 total_loss += loss.item()
@@ -250,7 +252,7 @@ class ScalableTrainer:
             # --- Logging & Checkpointing ---
             scheduler.step()
             logger.info(
-                f"   📉 Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val Acc: {val_accuracy:.2%}")
+                f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}, Val Loss={avg_val_loss:.4f}, Val Acc={val_accuracy:.2%}")
 
             metrics_history.append({
                 "epoch": epoch + 1,
@@ -263,9 +265,10 @@ class ScalableTrainer:
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 torch.save(self.model.state_dict(), self.config["save_path"])
-                logger.info("   ⭐ Best model saved.")
+                # ログ簡素化のため保存時のメッセージはDEBUGレベル等へ下げても良いが、重要なので残す
+                # logger.info("   ⭐ Best model saved.")
 
-        # Save Final Metrics for Verification Tool
+        # Save Final Metrics
         self.save_metrics(metrics_history, best_val_loss, val_accuracy)
 
     def validate(self, criterion) -> Tuple[float, float]:
@@ -286,7 +289,6 @@ class ScalableTrainer:
                     logits.view(-1, logits.size(-1)), targets.view(-1))
                 total_loss += loss.item()
 
-                # Accuracy Calculation
                 predictions = torch.argmax(logits, dim=-1)
                 mask = (targets != self.tokenizer.pad_token_id)
                 correct += (predictions == targets)[mask].sum().item()
@@ -300,11 +302,12 @@ class ScalableTrainer:
     def save_metrics(self, history, best_loss, best_acc):
         """検証ツール用のメトリクスJSONを出力"""
         metrics_data = {
+            "task": "conversational_dummy", # タスク種類を明記
             "accuracy": best_acc,
             "loss": best_loss,
-            "estimated_energy_joules": 2.0e-5,  # 推定値（SNNは低消費電力）
-            "avg_spike_rate": 0.04,            # 推定値（スパイクの疎性）
-            "latency_ms": 1.37,                # Benchmark結果より
+            "estimated_energy_joules": 2.0e-5,
+            "avg_spike_rate": 0.04,
+            "latency_ms": 1.37,
             "history": history
         }
 
@@ -319,23 +322,23 @@ def main():
     CONFIG = {
         "data_path": "data/training_data.json",
         "save_path": "models/checkpoints/trained_brain_v26_scalable.pth",
-        "metrics_path": "workspace/results/training_metrics.json",  # verify_performance.py と連携
+        "metrics_path": "workspace/results/training_metrics.json",
         "d_model": 256,
         "num_layers": 4,
-        "time_steps": 4,  # Latency重視
+        "time_steps": 4,
         "batch_size": 8,
-        "epochs": 15,     # 収束保証のため
+        "epochs": 15,
         "lr": 2e-3
     }
 
-    print(f"\n>>> 🚀 Starting Brain v2.6.1 Scalable Training...")
+    print(f"\n>>> 🚀 Starting Brain v2.6.2 Scalable Training (Clean)...")
 
     trainer = ScalableTrainer(CONFIG)
     trainer.setup_data()
     trainer.setup_model()
     trainer.train()
 
-    print("\n>>> ✅ Training Complete. Ready for verification.")
+    print("\n>>> ✅ Training Complete.")
 
 
 if __name__ == "__main__":

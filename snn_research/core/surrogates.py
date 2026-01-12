@@ -2,8 +2,8 @@
 # Title: Surrogate Gradient Library (Optimized for Phase 2)
 # Description:
 #   様々な形状のサロゲート勾配関数を提供するモジュール。
-#   Sigmoid, ATan, PiecewiseLeakyReLUに加え、高速なFastSigmoidを追加。
-#   学習の安定性と推論速度の向上を目的とする。
+#   Sigmoid, ATan, PiecewiseLeakyReLU, FastSigmoidに加え、
+#   学習安定性の高い Triangle (三角波) サロゲートを追加。
 
 import torch
 import torch.nn as nn
@@ -56,7 +56,7 @@ class PiecewiseLeakyReLU(SurrogateFunctionBase):
         alpha = ctx.alpha # ここではwidthの逆数として扱う
         grad_input = grad_output.clone()
         
-        # |x| < 1/alpha の範囲で勾配 1.0 (あるいはalpha倍などを定義可能だが、ここではシンプルにマスク)
+        # |x| < 1/alpha の範囲で勾配 1.0
         mask = (input.abs() < (1.0 / alpha)).float()
         return grad_input * mask, None
 
@@ -77,12 +77,30 @@ class FastSigmoid(SurrogateFunctionBase):
         grad = alpha / (denom.pow(2))
         return grad_input * grad, None
 
+class Triangle(SurrogateFunctionBase):
+    """
+    Triangle (三角波) 近似に基づくサロゲート勾配
+    Phase 2 推奨: 深層SNNにおいて勾配消失しにくく、矩形近似より情報の伝達効率が良い。
+    導関数は 1 - |alpha * x| (ただし |alpha * x| < 1)
+    """
+    @staticmethod
+    def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None]:
+        (input,) = ctx.saved_tensors
+        alpha = ctx.alpha
+        grad_input = grad_output.clone()
+
+        # grad = max(0, 1 - |alpha * x|) * alpha
+        # ReLUを利用して max(0, ...) を表現
+        grad = (1.0 - (input * alpha).abs()).relu() * alpha
+        
+        return grad_input * grad, None
+
 def surrogate_factory(name: str = 'atan', alpha: float = 2.0) -> nn.Module:
     """
     名前からサロゲート関数を生成して返すファクトリ
     
     Args:
-        name (str): 'atan', 'sigmoid', 'piecewise', 'fast_sigmoid'
+        name (str): 'atan', 'sigmoid', 'piecewise', 'fast_sigmoid', 'triangle'
         alpha (float): 勾配の鋭さ (scale factor)
         
     Returns:
@@ -111,6 +129,12 @@ def surrogate_factory(name: str = 'atan', alpha: float = 2.0) -> nn.Module:
             def __init__(self, alpha): super().__init__(); self.alpha = alpha
             def forward(self, x): return FastSigmoid.apply(x, self.alpha)
         return FastSigmoidModule(alpha)
+
+    elif name == 'triangle':
+        class TriangleModule(nn.Module):
+            def __init__(self, alpha): super().__init__(); self.alpha = alpha
+            def forward(self, x): return Triangle.apply(x, self.alpha)
+        return TriangleModule(alpha)
     
     else:
         raise ValueError(f"Unknown surrogate function: {name}")
