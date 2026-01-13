@@ -1,8 +1,9 @@
-# ファイルパス: snn_research/core/architecture_registry.py
-# Title: モデルアーキテクチャレジストリ (Bugfix: SpikingWorldModel Argument)
+# snn_research/core/architecture_registry.py
+# Title: モデルアーキテクチャレジストリ (Bugfix: Added 'hybrid' registration)
 # Description:
 #   SpikingWorldModel のビルダ関数に sensory_configs 引数の生成ロジックを追加し、
 #   mypy エラー (Missing positional argument) を修正。
+#   また、ベンチマークスイートで使用される 'hybrid' アーキテクチャを登録。
 
 import torch.nn as nn
 from typing import Dict, Any, Callable, List, Optional, cast
@@ -330,7 +331,27 @@ def build_spiking_world_model(config: Dict[str, Any], vocab_size: int) -> nn.Mod
         d_state=config.get('d_state', 128),
         num_layers=config.get('num_layers', 4),
         time_steps=config.get('time_steps', 16),
-        sensory_configs=sensory_configs,  # ★ ここを修正
+        sensory_configs=sensory_configs,
         neuron_config=config.get('neuron', {}),
         use_bitnet=config.get('use_bitnet', False)
+    )
+
+
+@ArchitectureRegistry.register("hybrid")
+def build_hybrid_core(config: Dict[str, Any], vocab_size: int) -> nn.Module:
+    """
+    Benchmarks用: HybridNeuromorphicCore (PhaseCriticalHybridCore Wrapper) を構築。
+    """
+    from snn_research.core.hybrid_core import HybridNeuromorphicCore
+    # ベンチマークスイート側の config キーに合わせてパラメータを抽出
+    # config = {"in_features": 64, "hidden_features": 128, "out_features": 10}
+
+    in_features = config.get('in_features', 64)
+    hidden_features = config.get('hidden_features', 128)
+    out_features = config.get('out_features', vocab_size)
+
+    return HybridNeuromorphicCore(
+        in_features=in_features,
+        hidden_features=hidden_features,
+        out_features=out_features
     )
