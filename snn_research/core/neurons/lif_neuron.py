@@ -6,6 +6,7 @@
 #   1. 減衰計算を指数関数的減衰 (exp(-dt/tau)) に変更し、学習安定性を向上。
 #   2. メモリ割り当てを最適化し、推論レイテンシを削減。
 #   3. 学習可能な時定数 (Parametric LIF) への拡張性を確保。
+#   4. Soft Resetモードの追加による情報損失の低減 (Phase 2 Accuracy対策)。
 
 import torch
 import torch.nn as nn
@@ -18,20 +19,22 @@ class LIFNeuron(nn.Module):
     Leaky Integrate-and-Fire Neuron with Spatiotemporal Support
 
     Args:
+        features (int): 特徴量次元数 (互換性用)
         tau_mem (float): 膜電位の時定数 (初期値)
         v_threshold (float): 発火閾値
-        v_reset (float): リセット電位
+        v_reset (float): リセット電位 (Hard Reset時のみ使用)
         v_rest (float): 静止膜電位
         dt (float): シミュレーション時間刻み
         detach_reset (bool): リセット時の勾配を切断するかどうか (Surrogate Gradientに必須)
         step_mode (str): 's' (single-step) or 'm' (multi-step)
-        surrogate_name (str): サロゲート関数の種類 ('atan', 'sigmoid', 'piecewise', 'fast_sigmoid')
+        reset_mode (str): 'hard' (v_resetに強制リセット) or 'soft' (閾値を減算、情報保存重視)
+        surrogate_name (str): サロゲート関数の種類 ('atan', 'sigmoid', 'piecewise', 'fast_sigmoid', 'gaussian')
         surrogate_alpha (float): サロゲート関数の鋭さパラメータ
         trainable (bool): tau_mem を学習可能にするか (PLIF化, 学習安定性向上に寄与)
     """
 
     def __init__(self,
-                 features: int = 0,  # 互換性維持のための引数
+                 features: int = 0,
                  tau_mem: float = 2.0,
                  v_threshold: float = 1.0,
                  v_reset: float = 0.0,
@@ -39,6 +42,7 @@ class LIFNeuron(nn.Module):
                  dt: float = 1.0,
                  detach_reset: bool = True,
                  step_mode: str = 's',
+                 reset_mode: str = 'hard',
                  surrogate_name: str = 'atan',
                  surrogate_alpha: float = 2.0,
                  trainable: bool = False):
@@ -51,15 +55,13 @@ class LIFNeuron(nn.Module):
         self.dt = dt
         self.detach_reset = detach_reset
         self.step_mode = step_mode
+        self.reset_mode = reset_mode
         self.is_stateful = True
 
         # 時定数の設定 (学習安定性向上のため exp(-dt/tau) を使用)
-        # tau_mem < dt の場合の発散を防ぐため、clampなどで保護することを推奨するが、
-        # ここでは初期値に対して安全な変換を行う。
         self.trainable = trainable
         if self.trainable:
-            # log空間で学習させることで tau > 0 を保証する実装も一般的だが、
-            # ここではシンプルに Parameter 化する
+            # 学習可能パラメータとして定義
             self.tau_mem = nn.Parameter(torch.tensor(float(tau_mem)))
         else:
             self.register_buffer('tau_mem', torch.tensor(float(tau_mem)))
@@ -77,9 +79,13 @@ class LIFNeuron(nn.Module):
         """
         減衰係数 beta = exp(-dt / tau) を計算して返す。
         tau が学習可能な場合、Forward ごとに計算グラフに組み込まれる。
+        
+        Stability Fix (Phase 2):
+        学習中に tau が負または0になると発散するため、abs() + epsilon で保護する。
         """
-        # ゼロ除算防止のための微小値加算
-        return torch.exp(-self.dt / (self.tau_mem + 1e-6))
+        # ゼロ除算・負値防止のための保護
+        safe_tau = self.tau_mem.abs() + 1e-6
+        return torch.exp(-self.dt / safe_tau)
 
     def set_stateful(self, stateful: bool = True):
         """
@@ -109,6 +115,24 @@ class LIFNeuron(nn.Module):
         else:
             raise ValueError(f"Invalid step_mode: {self.step_mode}")
 
+    def _apply_reset(self, mem: torch.Tensor, spike: torch.Tensor) -> torch.Tensor:
+        """
+        リセットメカニズムの適用 (Hard vs Soft)
+        """
+        if self.detach_reset:
+            spike_for_reset = spike.detach()
+        else:
+            spike_for_reset = spike
+
+        if self.reset_mode == 'soft':
+            # Soft Reset: 閾値を引く (情報の損失を防ぐ、Deep SNN推奨)
+            # V[t] = V[t] - V_th * S[t]
+            return mem - self.v_threshold * spike_for_reset
+        else:
+            # Hard Reset: リセット電位に戻す (生物学的、標準的)
+            # V[t] = V[t] * (1 - S[t]) + V_reset * S[t]
+            return mem * (1.0 - spike_for_reset) + self.v_reset * spike_for_reset
+
     def _forward_step(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         単一タイムステップの処理 (高速化)
@@ -116,7 +140,6 @@ class LIFNeuron(nn.Module):
         """
         # 状態の初期化
         if self.membrane_potential is None:
-            # torch.full_like はコストがかかるため、初回のみ実行し形状チェックを行う
             self.membrane_potential = torch.full_like(x, self.v_rest)
         elif self.membrane_potential.shape != x.shape:
             # バッチサイズ変更時などの対応
@@ -129,8 +152,6 @@ class LIFNeuron(nn.Module):
 
         # 積分 (Integrate)
         # V[t] = V[t-1] * beta + X[t]
-        # (入力 x は電流*抵抗*係数などを含む前提、あるいは x * (1-beta) などのスケーリングは層構成に依存)
-        # ここでは標準的な LIF: V = V * beta + input とする
         mem_next = mem_prev * beta + x
 
         # 発火 (Fire)
@@ -138,15 +159,7 @@ class LIFNeuron(nn.Module):
         spike = self.surrogate_function(mem_next - self.v_threshold)
 
         # リセット (Reset)
-        if self.detach_reset:
-            spike_for_reset = spike.detach()
-        else:
-            spike_for_reset = spike
-
-        # Hard Reset: 発火したら v_reset に戻す
-        # V[t] = V[t] * (1 - S[t]) + V_reset * S[t]
-        mem_next = mem_next * (1.0 - spike_for_reset) + \
-            self.v_reset * spike_for_reset
+        mem_next = self._apply_reset(mem_next, spike)
 
         # 状態更新
         self.membrane_potential = mem_next
@@ -165,7 +178,6 @@ class LIFNeuron(nn.Module):
 
         # 初期状態
         if self.membrane_potential is None:
-            # x_seq[0] と同じデバイス・型で初期化
             mem = torch.zeros_like(x_seq[0]) + self.v_rest
         else:
             mem = self.membrane_potential
@@ -183,12 +195,7 @@ class LIFNeuron(nn.Module):
             spike = self.surrogate_function(mem - self.v_threshold)
 
             # Reset
-            if self.detach_reset:
-                spike_reset = spike.detach()
-            else:
-                spike_reset = spike
-
-            mem = mem * (1.0 - spike_reset) + self.v_reset * spike_reset
+            mem = self._apply_reset(mem, spike)
 
             spike_seq.append(spike)
             mem_seq.append(mem)

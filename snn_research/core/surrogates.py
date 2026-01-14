@@ -3,7 +3,7 @@
 # Description:
 #   様々な形状のサロゲート勾配関数を提供するモジュール。
 #   Sigmoid, ATan, PiecewiseLeakyReLU, FastSigmoidに加え、
-#   学習安定性の高い Triangle (三角波) サロゲートを追加。
+#   学習安定性の高い Triangle (三角波) と Gaussian (ガウス) サロゲートを実装。
 
 import torch
 import torch.nn as nn
@@ -64,7 +64,7 @@ class FastSigmoid(SurrogateFunctionBase):
     """
     Fast Sigmoid (Hard Sigmoid近似) に基づくサロゲート勾配
     Phase 2 目標: レイテンシ削減のため、exp/atanを使わず代数演算のみで計算。
-    f(x) = x / (1 + |x|) の導関数を使用。
+    f(x) = x / (1 + |x|) の導関数を使用 (スケール調整済み)。
     """
     @staticmethod
     def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None]:
@@ -72,7 +72,9 @@ class FastSigmoid(SurrogateFunctionBase):
         alpha = ctx.alpha
         grad_input = grad_output.clone()
         
-        # derivative of Fast Sigmoid: alpha / (1 + |alpha * x|)^2
+        # derivative of Fast Sigmoid with scale alpha:
+        # f(x) = (alpha * x) / (1 + |alpha * x|)
+        # f'(x) = alpha / (1 + |alpha * x|)^2
         denom = 1.0 + (alpha * input).abs()
         grad = alpha / (denom.pow(2))
         return grad_input * grad, None
@@ -81,7 +83,7 @@ class Triangle(SurrogateFunctionBase):
     """
     Triangle (三角波) 近似に基づくサロゲート勾配
     Phase 2 推奨: 深層SNNにおいて勾配消失しにくく、矩形近似より情報の伝達効率が良い。
-    導関数は 1 - |alpha * x| (ただし |alpha * x| < 1)
+    導関数は max(0, 1 - |alpha * x|) * alpha
     """
     @staticmethod
     def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None]:
@@ -95,46 +97,56 @@ class Triangle(SurrogateFunctionBase):
         
         return grad_input * grad, None
 
+class Gaussian(SurrogateFunctionBase):
+    """
+    Gaussian (ガウス分布) 近似に基づくサロゲート勾配
+    Phase 2 追加: 非常に滑らかな勾配特性を持ち、学習の安定化に寄与。
+    grad = alpha * exp(-(alpha * x)^2)
+    """
+    @staticmethod
+    def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None]:
+        (input,) = ctx.saved_tensors
+        alpha = ctx.alpha
+        grad_input = grad_output.clone()
+        
+        # ガウス関数の形状 (正規化定数は alpha に含めると考える)
+        # exp(-(alpha * x)^2)
+        grad = torch.exp(-((input * alpha).pow(2))) * alpha
+        
+        return grad_input * grad, None
+
 def surrogate_factory(name: str = 'atan', alpha: float = 2.0) -> nn.Module:
     """
     名前からサロゲート関数を生成して返すファクトリ
     
     Args:
-        name (str): 'atan', 'sigmoid', 'piecewise', 'fast_sigmoid', 'triangle'
+        name (str): 'atan', 'sigmoid', 'piecewise', 'fast_sigmoid', 'triangle', 'gaussian'
         alpha (float): 勾配の鋭さ (scale factor)
         
     Returns:
         nn.Module: サロゲート適用モジュール
     """
-    if name == 'atan':
-        class ATanModule(nn.Module):
-            def __init__(self, alpha): super().__init__(); self.alpha = alpha
-            def forward(self, x): return ATan.apply(x, self.alpha)
-        return ATanModule(alpha)
+    # マッピング辞書を使用してif-elseチェーンを簡略化
+    surrogates = {
+        'atan': ATan,
+        'sigmoid': Sigmoid,
+        'piecewise': PiecewiseLeakyReLU,
+        'fast_sigmoid': FastSigmoid,
+        'triangle': Triangle,
+        'gaussian': Gaussian
+    }
     
-    elif name == 'sigmoid':
-        class SigmoidModule(nn.Module):
-            def __init__(self, alpha): super().__init__(); self.alpha = alpha
-            def forward(self, x): return Sigmoid.apply(x, self.alpha)
-        return SigmoidModule(alpha)
+    if name not in surrogates:
+        raise ValueError(f"Unknown surrogate function: {name}. Available: {list(surrogates.keys())}")
     
-    elif name == 'piecewise':
-        class PiecewiseModule(nn.Module):
-            def __init__(self, alpha): super().__init__(); self.alpha = alpha
-            def forward(self, x): return PiecewiseLeakyReLU.apply(x, self.alpha)
-        return PiecewiseModule(alpha)
-        
-    elif name == 'fast_sigmoid':
-        class FastSigmoidModule(nn.Module):
-            def __init__(self, alpha): super().__init__(); self.alpha = alpha
-            def forward(self, x): return FastSigmoid.apply(x, self.alpha)
-        return FastSigmoidModule(alpha)
-
-    elif name == 'triangle':
-        class TriangleModule(nn.Module):
-            def __init__(self, alpha): super().__init__(); self.alpha = alpha
-            def forward(self, x): return Triangle.apply(x, self.alpha)
-        return TriangleModule(alpha)
+    func_cls = surrogates[name]
     
-    else:
-        raise ValueError(f"Unknown surrogate function: {name}")
+    class SurrogateModule(nn.Module):
+        def __init__(self, alpha_val):
+            super().__init__()
+            self.alpha = alpha_val
+            
+        def forward(self, x):
+            return func_cls.apply(x, self.alpha)
+            
+    return SurrogateModule(alpha)

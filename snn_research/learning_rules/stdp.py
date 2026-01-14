@@ -1,6 +1,8 @@
 # snn_research/learning_rules/stdp.py
-# Title: Vectorized STDP Learning Rule (Type Safe)
-# Description: BioLearningRuleを継承し、共通インターフェースに準拠。
+# Title: Advanced STDP with Homeostasis (Phase 2 Optimized)
+# Description: 
+#   Vectorized STDPに、Synaptic Scaling (Homeostasis) と Soft Bound を追加。
+#   学習安定性 95% 目標に向けた強化版。
 
 import torch
 import torch.nn as nn
@@ -9,7 +11,11 @@ from .base_rule import BioLearningRule
 
 class STDP(nn.Module, BioLearningRule):
     """
-    Vectorized Spike-Timing Dependent Plasticity (STDP).
+    Vectorized Spike-Timing Dependent Plasticity (STDP) with Homeostasis.
+    Phase 2 Features:
+    - Soft Bound Weight Update
+    - Synaptic Scaling (Normalization)
+    - Heterosynaptic Plasticity (Decay)
     """
 
     def __init__(
@@ -20,12 +26,14 @@ class STDP(nn.Module, BioLearningRule):
         dt: float = 1.0,
         w_min: float = 0.0,
         w_max: float = 1.0,
+        enable_homeostasis: bool = True,
+        homeostasis_rate: float = 0.001,
         **kwargs: Any
     ):
         super().__init__()
         if isinstance(learning_rate, float):
             self.lr_ltp = learning_rate
-            self.lr_ltd = -learning_rate
+            self.lr_ltd = -learning_rate * 0.8  # LTDは少し弱めにするのが一般的
         else:
             self.lr_ltp = learning_rate[0]
             self.lr_ltd = learning_rate[1]
@@ -35,6 +43,10 @@ class STDP(nn.Module, BioLearningRule):
         self.dt = dt
         self.w_min = w_min
         self.w_max = w_max
+        
+        # Homeostasis config
+        self.enable_homeostasis = enable_homeostasis
+        self.homeostasis_rate = homeostasis_rate
 
     def forward(
         self,
@@ -70,13 +82,38 @@ class STDP(nn.Module, BioLearningRule):
             pre_s = pre_spikes[t]
             post_s = post_spikes[t]
 
+            # Trace Update
             curr_pre_trace = curr_pre_trace * decay_pre + pre_s
             curr_post_trace = curr_post_trace * decay_post + post_s
 
-            ltp = torch.bmm(post_s.unsqueeze(2), curr_pre_trace.unsqueeze(1)).mean(dim=0)
-            ltd = torch.bmm(curr_post_trace.unsqueeze(2), pre_s.unsqueeze(1)).mean(dim=0)
+            # STDP Calculation
+            # LTP: Post fire & Pre trace (Causal)
+            # LTD: Pre fire & Post trace (Anti-causal)
+            # Shapes: (B, N_in, 1) x (B, 1, N_out) -> (B, N_in, N_out)
+            
+            # LTP: Post spikes occurred, look at Pre trace
+            # Weight shape: (N_out, N_in) or (N_in, N_out)?
+            # Usually nn.Linear is (Out, In).
+            # Assuming weight is (N_out, N_in).
+            
+            # post_s: (B, N_out), pre_trace: (B, N_in)
+            # ltp_map: (B, N_out, N_in)
+            ltp = torch.bmm(post_s.unsqueeze(2), curr_pre_trace.unsqueeze(1))
+            
+            # ltd_map: (B, N_out, N_in)
+            ltd = torch.bmm(curr_post_trace.unsqueeze(2), pre_s.unsqueeze(1))
+            
+            # Batch mean
+            ltp_mean = ltp.mean(dim=0)
+            ltd_mean = ltd.mean(dim=0)
 
-            delta_w += (self.lr_ltp * ltp + self.lr_ltd * ltd)
+            # Soft Bound Scaling
+            # Wに近いほど更新量を小さくする (w_max - w) for LTP, (w - w_min) for LTD
+            soft_bound_ltp = (self.w_max - weight) if self.w_max > 0 else 1.0
+            soft_bound_ltd = (weight - self.w_min) if self.w_min < 0 else weight
+
+            delta_w += (self.lr_ltp * soft_bound_ltp * ltp_mean + 
+                        self.lr_ltd * soft_bound_ltd * ltd_mean)
 
         return delta_w, curr_pre_trace, curr_post_trace
 
@@ -87,13 +124,22 @@ class STDP(nn.Module, BioLearningRule):
         weights: torch.Tensor,
         optional_params: Optional[Dict[str, Any]] = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """
-        BioLearningRule インターフェースの実装。
-        forward を呼び出し、インターフェース形式 (dw, credit) に合わせる。
-        """
-        # トレースの維持が必要な場合は optional_params から取得/保存する設計も可能だが
-        # ここではシンプルに毎回リセットするか、外部管理を想定
+        
         delta_w, _, _ = self.forward(weights, pre_spikes, post_spikes)
+        
+        # Heterosynaptic Plasticity / Synaptic Scaling
+        if self.enable_homeostasis:
+            # 重みの合計を一定に保つ方向へ微調整 (Multiplicative Scaling)
+            # W_new = W + dW
+            # Normalize: W_final = W_new * (Target_Sum / Current_Sum)
+            # 簡易実装: 重みの2乗和（エネルギー）に対する減衰項を追加
+            # dW -= alpha * W * sum(dW) など、ここではシンプルに Weight Decay 的なアプローチ
+            
+            # 全体の活動度が高い場合、全体的に重みを下げる
+            total_activity = post_spikes.mean()
+            decay_factor = self.homeostasis_rate * total_activity
+            delta_w -= decay_factor * weights
+
         return delta_w, None
 
     def update_weight(self, weight: torch.Tensor, delta_w: torch.Tensor) -> torch.Tensor:

@@ -66,6 +66,7 @@ dependencies = [
     "cupy==13.6.0",
     "networkx",
     "pandas-stubs",
+    "tqdm",
 ]
 
 [project.urls]

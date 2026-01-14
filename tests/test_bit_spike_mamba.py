@@ -1,5 +1,5 @@
 # ファイルパス: tests/test_bit_spike_mamba.py
-# 日本語タイトル: BitSpikeMamba Unit Tests
+# 日本語タイトル: BitSpikeMamba Unit Tests (Tuple Unpack Fix)
 # 目的・内容:
 #   BitSpikeLinearおよびBitSpikeMambaモデルの機能検証。
 #   量子化の正確性と推論パイプラインの整合性をチェックする。
@@ -25,20 +25,21 @@ class TestBitSpikeComponents(unittest.TestCase):
         weight = torch.randn(10, 10)
         
         # 量子化実行
-        quantized = bit_quantize_weight(weight)
+        # Update: bit_quantize_weight returns (quantized_weight, scale) tuple
+        quantized, scale = bit_quantize_weight(weight)
         
-        # 検証1: 値が離散化されているか（スケーリングを除く）
-        # bit_quantize_weightは gamma * round(w/gamma) を返すため、
-        # ユニークな値の数は多くなる可能性があるが、実質的には3値に近い分布になるはず。
-        # ここでは簡易的に、BitSpikeLinearのforward内での挙動に近いチェックを行う。
-        
-        gamma = torch.mean(torch.abs(weight))
-        scaled = quantized / gamma
-        unique_vals = torch.unique(torch.round(scaled))
+        # 検証1: 値が離散化されているか
+        # bit_quantize_weight は {-1, 0, 1} の値を返す (STEにより値は保持されるが、実数値としては丸められている)
+        unique_vals = torch.unique(torch.round(quantized))
         
         # {-1, 0, 1} の範囲に含まれているか
         self.assertTrue(torch.all(unique_vals >= -1))
         self.assertTrue(torch.all(unique_vals <= 1))
+        
+        # 検証2: スケールが正しく計算されているか
+        expected_scale = weight.abs().mean().clamp(min=1e-5)
+        # float精度の誤差を考慮して比較
+        self.assertTrue(torch.allclose(scale, expected_scale, atol=1e-6))
 
     def test_linear_layer_forward(self):
         """BitSpikeLinear層のForwardパステスト"""

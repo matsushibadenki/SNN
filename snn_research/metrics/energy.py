@@ -1,81 +1,99 @@
 # ファイルパス: snn_research/metrics/energy.py
-# 日本語タイトル: SNNエネルギー効率メトリクス (詳細版)
-# 機能説明:
-#   SNNのエネルギー消費を、スパイクコストと膜電位維持コスト(Leak)に分けて詳細に推定する。
-#   45nmプロセスを想定した物理パラメータを使用。
+# 日本語タイトル: Advanced SNN Energy Meter (Phase 2 / BitNet Optimized)
+# 目的: SNNのスパイク活動とBitNetの1.58bit演算によるエネルギー消費を推定する。
+#       FP32 MAC vs INT1 AC のコスト差を反映し、"1/100 Energy" 目標の達成度を測定する。
 
-from typing import Dict
+import torch
+import torch.nn as nn
+from typing import Dict, Any, Union
 
-# エネルギー消費係数 (Joules/Op) - 45nmプロセス推定
-ENERGY_PER_SNN_SYNOP = 0.9e-12  # スパイク受信時の加算 (0.9 pJ)
-ENERGY_PER_NEURON_UPDATE = 0.1e-12 # 膜電位のリーク更新 (0.1 pJ)
-ENERGY_PER_ANN_MAC = 4.6e-12    # ANNの積和演算 (4.6 pJ)
-
-class EnergyMetrics:
-    """SNNのエネルギー効率を測定する詳細メトリクス"""
+class EnergyMeter:
+    """
+    SNNおよびBitNetのエネルギー消費量を推定するクラス。
+    基準: 45nm CMOSプロセス (Horowitz et al. 2014 / BitNet b1.58 paper)
     
-    @staticmethod
-    def calculate_energy_consumption(
-        total_spikes: float,
-        num_neurons: int,
-        time_steps: int,
-        num_synapses: int = 0, # オプション: 接続数が分かればより正確
-    ) -> float:
+    Energy Cost (pJ):
+    - FP32 MAC (Multiply-Accumulate): 4.6 pJ
+    - FP32 AC (Accumulate): 0.9 pJ
+    - INT8 MAC: 0.2 pJ
+    - INT1/1.58bit AC (Accumulate only): 0.03 pJ (推計値: FP32 ACの約1/30)
+    
+    スパイク通信コスト (SOP):
+    - Spike Operation: 0.9 pJ (Accumulate相当)
+    """
+    
+    # Energy constants (pJ)
+    E_MAC_FP32 = 4.6
+    E_AC_FP32 = 0.9
+    E_AC_INT1 = 0.03  # BitNet Advantage
+    E_SOP = 0.9       # Spike Operation (Standard SNN)
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.total_energy_pj = 0.0
+        self.layer_counts = {
+            "fp32_mac": 0,
+            "int1_ac": 0,
+            "sop": 0
+        }
+
+    def register_spike_activity(self, spikes: torch.Tensor):
+        """スパイク活動によるエネルギー (SOP) を加算"""
+        num_spikes = spikes.sum().item()
+        energy = num_spikes * self.E_SOP
+        self.total_energy_pj += energy
+        self.layer_counts["sop"] += num_spikes
+
+    def register_layer_compute(self, module: nn.Module, input_shape: torch.Size, output_shape: torch.Size):
         """
-        推論あたりのエネルギー消費量（ジュール）を詳細に推定する。
+        レイヤーごとの演算コストを推定して加算
+        BitSpikeLayerの場合は INT1 AC として計算する。
+        """
+        # バッチサイズを除く演算回数概算
+        # Conv2d: H_out * W_out * C_out * (K*K*C_in)
+        # Linear: Out * In
         
-        Total Energy = (Spike Energy) + (Leak Energy)
-        - Spike Energy: 総スパイク数 * 平均ファンアウト * シナプス演算コスト
-        - Leak Energy:  総ニューロン数 * タイムステップ * 状態更新コスト
-
-        Args:
-            total_spikes (float): 推論全体での総スパイク数。
-            num_neurons (int): モデル内の総ニューロン数。
-            time_steps (int): シミュレーションステップ数。
-            num_synapses (int): 総シナプス数（接続数）。指定がない場合は平均ファンアウト100と仮定。
-
-        Returns:
-            float: 推定されたエネルギー消費量（ジュール）。
-        """
-        # 平均ファンアウトの推定
-        if num_synapses > 0 and num_neurons > 0:
-            avg_fan_out = num_synapses / num_neurons
-        else:
-            avg_fan_out = 100.0 # デフォルト
+        flops = 0.0
+        is_bitnet = getattr(module, "quantize_inference", False) or "BitSpike" in module.__class__.__name__
+        
+        if isinstance(module, (nn.Conv2d, nn.Conv1d, nn.Conv3d)):
+            # output volume * kernel volume
+            out_elements = output_shape[1:].numel() # C_out * H * W
+            kernel_ops = module.kernel_size[0] * module.kernel_size[1] * module.in_channels
+            # groups補正は省略（簡易計算）
+            flops = out_elements * kernel_ops
             
-        # 1. スパイクによる動的エネルギー (Synaptic Operations)
-        # スパイク1つにつき、接続先の数だけ加算が発生する
-        synops_energy = total_spikes * avg_fan_out * ENERGY_PER_SNN_SYNOP
-        
-        # 2. 膜電位維持による静的エネルギー (Neuron Updates)
-        # スパイクがなくても、毎ステップ全ニューロンでリーク計算などが発生する
-        leak_energy = num_neurons * time_steps * ENERGY_PER_NEURON_UPDATE
-        
-        total_energy = synops_energy + leak_energy
-        
-        return total_energy
+        elif isinstance(module, nn.Linear):
+            flops = module.in_features * module.out_features
+            
+        # エネルギー計算
+        if is_bitnet:
+            # BitNet: 乗算なし、加算のみ (Accumulate)
+            # さらに1.58bitなのでINT1相当のコスト
+            energy = flops * self.E_AC_INT1
+            self.layer_counts["int1_ac"] += flops
+        else:
+            # Standard: FP32 MAC
+            energy = flops * self.E_MAC_FP32
+            self.layer_counts["fp32_mac"] += flops
+            
+        self.total_energy_pj += energy
 
-    @staticmethod
-    def compare_with_ann(
-        snn_energy: float, 
-        ann_params: int, 
-        batch_size: int = 1
-    ) -> Dict[str, float]:
-        """
-        通常のANNと比較したエネルギー効率を推定。
-        ANNは全結合と仮定し、パラメータ数 * 1回の積和演算コストとする。
-        """
-        # ANNの総演算数 (MACs) ≈ 総パラメータ数 (全結合の場合)
-        ann_ops = float(ann_params * batch_size)
+    def report(self) -> Dict[str, Union[float, str]]:
+        """エネルギー効率レポートを作成"""
+        total_mj = self.total_energy_pj / 1e9  # pJ -> mJ
         
-        ann_energy = ann_ops * ENERGY_PER_ANN_MAC
+        # ANN換算 (全てFP32 MACで行った場合の想定コスト)
+        total_ops = self.layer_counts["fp32_mac"] + self.layer_counts["int1_ac"] + self.layer_counts["sop"]
+        ann_equivalent_pj = total_ops * self.E_MAC_FP32
         
-        energy_ratio = snn_energy / ann_energy if ann_energy > 0 else 0.0
-        efficiency_gain = (1.0 - energy_ratio) * 100 if ann_energy > 0 else 0.0
+        efficiency_ratio = ann_equivalent_pj / (self.total_energy_pj + 1e-9)
         
         return {
-            'snn_energy_joules': snn_energy,
-            'ann_energy_joules': ann_energy,
-            'energy_ratio': energy_ratio,
-            'efficiency_gain_percent': efficiency_gain
+            "Total Energy (mJ)": round(total_mj, 4),
+            "SOP Count": int(self.layer_counts["sop"]),
+            "BitNet Ops": int(self.layer_counts["int1_ac"]),
+            "Efficiency vs FP32 ANN": f"{efficiency_ratio:.2f}x"
         }
