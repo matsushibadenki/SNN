@@ -1,4 +1,4 @@
-# ファイルパス: scripts/report_sparsity_and_T.py
+# ファイルパス: scripts/utils/report_sparsity_and_T.py
 # Title: スパイク効率性レポート生成 (修正版v2)
 # Description: 指定されたモデル設定に基づいてSNNを構築し、スパイク率やタイムステップ数を計測する。
 #              学習済みモデルのロード、Vocab Sizeの指定、厳密でないロード(strict=False)に対応。
@@ -7,10 +7,11 @@ from snn_research.core.snn_core import SNNCore  # E402 fixed
 import sys
 import os
 import torch
+import torch.nn as nn # Added import
 from omegaconf import OmegaConf
 import argparse
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, cast # Added cast
 
 # プロジェクトルートの解決
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -89,7 +90,8 @@ def measure_efficiency(model_config_path: str, data_path: str, model_path: Optio
                             if hasattr(model, 'model'):
                                 logger.info(
                                     "Attempting direct load into inner model...")
-                                model.model.load_state_dict(
+                                # Cast to nn.Module to fix mypy error
+                                cast(nn.Module, model.model).load_state_dict(
                                     state_dict, strict=False)
                                 logger.info(
                                     "✅ Model weights loaded directly into inner model (strict=False).")

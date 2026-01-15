@@ -1,4 +1,4 @@
-# ファイルパス: scripts/run_ecg_analysis.py
+# ファイルパス: scripts/experiments/applications/run_ecg_analysis.py
 # (SOTAアーキテクチャ対応・Warning抑制版)
 # Title: ECG異常検出 デモアプリケーション
 # Description:
@@ -114,7 +114,8 @@ def load_snn_model(
 
     # vocab_sizeをクラス数として渡す
     model_container = SNNCore(config=cfg.model, vocab_size=num_classes)
-    model: nn.Module = model_container.model  # SNNCore内部の実際のモデルを取得
+    # Cast to nn.Module to fix mypy error
+    model: nn.Module = cast(nn.Module, model_container.model)  # SNNCore内部の実際のモデルを取得
 
     if model_path and Path(model_path).exists():
         logger.info(f"Loading trained model weights from: {model_path}")

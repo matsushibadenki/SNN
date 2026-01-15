@@ -5,7 +5,7 @@ import time
 import psutil
 import os
 import sys
-from typing import Dict, Any
+from typing import Dict, Any, cast # Added cast
 
 # Suppress Logs Early
 for lib in ['spikingjelly', 'spikingjelly.activation_based.base']:
@@ -46,8 +46,10 @@ class BenchmarkSuite:
         else:
             dummy_input = torch.randn(batch_size, *input_shape).to(self.device)
 
+        # check reset_state
         if hasattr(model, 'reset_state'):
-            model.reset_state()
+            # Cast model to Any to avoid mypy error "Tensor not callable"
+            cast(Any, model).reset_state()
 
         # Warmup
         for _ in range(10):

@@ -1,3 +1,4 @@
+# ファイルパス: snn_research/core/architecture_registry.py
 # snn_research/core/architecture_registry.py
 # Title: モデルアーキテクチャレジストリ (Bugfix: Added 'hybrid' registration)
 # Description:
@@ -113,9 +114,17 @@ def build_tskips_snn(config: Dict[str, Any], vocab_size: int) -> nn.Module:
 
 @ArchitectureRegistry.register("franken_moe")
 def build_franken_moe(config: Dict[str, Any], vocab_size: int) -> nn.Module:
-    from snn_research.models.experimental.moe_model import SpikingFrankenMoE
+    from snn_research.models.experimental.moe_model import SpikingFrankenMoE, ExpertContainer
+    
+    # Placeholder for required args 'experts' and 'gate' to satisfy signature
+    experts: List[ExpertContainer] = [] 
+    gate = nn.Linear(config.get('d_model', 128), len(config.get('expert_configs', [])) or 1)
+
     return SpikingFrankenMoE(
-        vocab_size=vocab_size,
+        experts=experts,
+        gate=gate,
+        config=config,
+        vocab_size=vocab_size, # Passed as kwargs
         d_model=config.get('d_model', 128),
         expert_configs=config.get('expert_configs', []),
         expert_checkpoints=config.get('expert_checkpoints', []),

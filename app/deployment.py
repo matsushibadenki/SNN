@@ -1,3 +1,4 @@
+# ファイルパス: app/deployment.py
 # matsushibadenki/snn4/snn_research/deployment.py
 # Title: SNN推論エンジン
 # Description: 訓練済みSNNモデルをロードし、テキスト生成のための推論を実行するクラス。
@@ -12,11 +13,12 @@
 #   確信度が閾値を超えた場合に早期終了するロジックを追加。
 
 import torch
+import torch.nn as nn # Added for type hint
 import torch.nn.functional as F  # ◾️◾️◾️ 追加 ◾️◾️◾️
 from pathlib import Path
 from transformers import AutoTokenizer
 # typing から time をインポート
-from typing import Iterator, Optional, Dict, Any, List, Tuple
+from typing import Iterator, Optional, Dict, Any, List, Tuple, cast # Added cast
 # import time  # time をインポート
 from omegaconf import DictConfig, OmegaConf
 from snn_research.core.snn_core import SNNCore  # SNNCoreをインポート
@@ -111,7 +113,8 @@ class SNNInferenceEngine:
                     new_state_dict = {
                         k.replace('model.', ''): v for k, v in state_dict_to_load.items()}
 
-                    missing_keys, unexpected_keys = self.model.model.load_state_dict(
+                    # Cast model.model to nn.Module to fix mypy error
+                    missing_keys, unexpected_keys = cast(nn.Module, self.model.model).load_state_dict(
                         new_state_dict, strict=False)
                     if missing_keys:
                         logger.warning(
