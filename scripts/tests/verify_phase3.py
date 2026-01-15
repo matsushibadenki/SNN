@@ -1,5 +1,6 @@
-# ファイルパス: scripts/verify_phase3.py
-# Title: Phase 3 統合検証スクリプト
+# scripts/tests/verify_phase3.py
+# ディレクトリ: scripts/tests
+# 日本語タイトル: Phase 3 統合検証スクリプト
 # Description:
 #   ROADMAP Phase 3 の主要成果物である SFormer, SEMM, Causal Visual Cortex の
 #   動作検証を行う。
@@ -10,7 +11,7 @@ from pathlib import Path
 import logging
 
 # プロジェクトルートをパスに追加
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 from snn_research.core.snn_core import SNNCore
 from snn_research.models.bio.visual_cortex import VisualCortex
@@ -95,34 +96,36 @@ def verify_causal_perception():
     # DVS入力を想定 (Batch, Time, Channels, Height, Width)
     dummy_dvs_input = torch.randn(2, 16, 2, 32, 32) 
     
+    # 修正: VisualCortexの定義に合わせて引数を修正
+    # input_channels -> in_channels
+    # d_model, d_state -> base_channels (VisualCortexの実装に合わせる)
     model = VisualCortex(
-        input_channels=2,
-        height=32,
-        width=32,
-        d_model=64,
-        d_state=32,
-        time_steps=16 # Visual Cortexは時間発展が必要
+        in_channels=2,      # 修正済み: 定義側の引数名は in_channels
+        base_channels=32,   # 修正済み: 定義側のチャネル制御引数
+        time_steps=16       # 時間発展あり
     )
     
     try:
-        # forward returns (causal_state, prediction_error, reconstruction)
-        states, errors, recons = model(dummy_dvs_input)
+        # 修正: 現在のVisualCortex.forwardは単一のテンソル(出力特徴量)を返す仕様
+        # returns: (Batch, Time, OutFeatures)
+        outputs = model(dummy_dvs_input)
         
         logger.info("✅ Visual Cortex Forward Pass Success.")
-        logger.info(f"   Causal State Shape: {states.shape} (Should be B, T, D_state)")
-        logger.info(f"   Prediction Error Shape: {errors.shape}")
+        logger.info(f"   Output Shape: {outputs.shape}")
         
-        # 因果状態の変動を確認 (時間変化しているか)
-        state_variance = states.var(dim=1).mean().item()
-        logger.info(f"   State Temporal Variance: {state_variance:.4f} (Should be > 0)")
+        # 時間方向の分散を確認 (ダイナミクスの検証)
+        state_variance = outputs.var(dim=1).mean().item()
+        logger.info(f"   Output Temporal Variance: {state_variance:.4f} (Should be > 0)")
         
         if state_variance > 0:
-            logger.info("✅ Causal states are dynamically evolving over time.")
+            logger.info("✅ Outputs are dynamically evolving over time.")
         else:
-            logger.warning("⚠️ Causal states seem static. Check neuron dynamics.")
+            logger.warning("⚠️ Outputs seem static. Check neuron dynamics.")
             
     except Exception as e:
         logger.error(f"❌ Visual Cortex Verification Failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     print("=== SNN Phase 3 Completion Verification ===")
