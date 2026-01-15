@@ -1,4 +1,4 @@
-# ファイルパス: scripts/verify_dsa_learning.py
+# ファイルパス: scripts/tests/verify_dsa_learning.py
 # 日本語タイトル: DSA学習能力検証スクリプト
 # 目的・内容:
 #   実装した DSASpikingTransformer が実際に学習（Lossの低下と精度の向上）
@@ -14,9 +14,15 @@ import os
 import matplotlib.pyplot as plt
 
 # プロジェクトルートをパスに追加
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# scripts/tests/ から見て ../../ がルート(snn_researchがある場所)と想定
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
-from snn_research.models.transformer.dsa_transformer import DSASpikingTransformer
+# パス調整のフォールバック (scripts/にsnn_researchがある場合など)
+try:
+    from snn_research.models.transformer.dsa_transformer import DSASpikingTransformer
+except ImportError:
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    from snn_research.models.transformer.dsa_transformer import DSASpikingTransformer
 
 def generate_dummy_data(num_samples=200, seq_len=20, input_dim=16, num_classes=2):
     """
@@ -50,14 +56,16 @@ def main():
     LR = 1e-3
     
     # モデルパラメータ (Phase 8-2: Sparse Attention)
+    # 修正: SpikingDSATransformer.__init__ の引数に合わせて修正
     model_config = {
         'input_dim': 16,
-        'output_dim': 2,
+        'num_classes': 2,       # 修正: output_dim -> num_classes
         'd_model': 32,
         'num_heads': 4,
         'num_layers': 2,
-        'top_k': 5, # 時間方向(20ステップ)に対してTop-5のみ注目
-        'max_len': 20
+        'dim_feedforward': 64,  # 追加: 必須引数
+        'time_window': 20,      # 修正: max_len -> time_window
+        # 'top_k': 5,           # 削除: 現在のモデル定義に存在しない引数
     }
     
     # データ準備
@@ -66,7 +74,12 @@ def main():
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     
     # モデル初期化
-    model = DSASpikingTransformer(**model_config).to(DEVICE)
+    try:
+        model = DSASpikingTransformer(**model_config).to(DEVICE)
+    except TypeError as e:
+        print(f"❌ Model initialization failed: {e}")
+        return
+
     optimizer = optim.AdamW(model.parameters(), lr=LR)
     criterion = nn.CrossEntropyLoss()
     
@@ -87,7 +100,9 @@ def main():
             batch_x, batch_y = batch_x.to(DEVICE), batch_y.to(DEVICE)
             
             # SNN状態リセット
-            model.reset_state()
+            # モデルにreset_stateが実装されている場合のみ呼び出す
+            if hasattr(model, 'reset_state'):
+                model.reset_state()
             
             # Forward
             outputs = model(batch_x)
@@ -125,6 +140,7 @@ def main():
 
     # 可視化画像を保存 (オプション)
     try:
+        os.makedirs("results", exist_ok=True)
         plt.figure(figsize=(10, 4))
         plt.subplot(1, 2, 1)
         plt.plot(loss_history, label='Loss')
@@ -138,9 +154,14 @@ def main():
         plt.xlabel('Epoch')
         plt.legend()
         
-        os.makedirs("results", exist_ok=True)
-        plt.savefig("workspace/results/dsa_verification_plot.png")
-        print("   Plot saved to results/dsa_verification_plot.png")
+        # 保存パスの調整
+        save_path = "results/dsa_verification_plot.png"
+        if os.path.exists("workspace"):
+            save_path = "workspace/results/dsa_verification_plot.png"
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            
+        plt.savefig(save_path)
+        print(f"   Plot saved to {save_path}")
     except Exception as e:
         print(f"   (Plotting skipped: {e})")
 

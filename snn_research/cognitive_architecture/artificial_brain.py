@@ -1,11 +1,9 @@
-# snn_research/cognitive_architecture/artificial_brain.py
-# Title: Artificial Brain v2.6.1 (Latency Optimized & Type Safe)
-# Description:
-#   推論レイテンシ削減のための最適化を実施しつつ、レガシーメソッドの互換性と型安全性を確保。
-#   - .item() によるGPU同期を排除し、非同期実行を促進。
-#   - 統計情報の収集を軽量化。
-#   - T=1 動作時のオーバーヘッドを削減。
-#   - mypyエラー修正 (型アノテーション、属性名修正、互換メソッド復元)。
+# ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
+# 日本語タイトル: Artificial Brain v2.6.3 (Method Fixed)
+# 目的・内容:
+#   統合脳モデルの中核クラス。
+#   修正: get_brain_status メソッドを追加し、デモスクリプトとの互換性を確保。
+#   最適化: デバイス管理とDIの不整合を解消。
 
 import torch
 import torch.nn as nn
@@ -37,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 class ArtificialBrain(nn.Module):
     """
-    SNNプロジェクトの中核となる統合脳モデル (Brain v2.6.1 Optimized).
+    SNNプロジェクトの中核となる統合脳モデル (Brain v2.6.3 Optimized).
     """
 
     def __init__(
@@ -70,13 +68,16 @@ class ArtificialBrain(nn.Module):
         self.config = config or {}
         feature_dim = self.config.get("feature_dim", 256)
 
-        logger.info("🧠 Initializing ArtificialBrain v2.6.1 (Type Safe & Optimized)...")
+        logger.info("🧠 Initializing ArtificialBrain v2.6.3 (Method Fixed)...")
 
         # --- Device Handling ---
         self.core_model = thinking_engine
         self.thinking_engine = thinking_engine
         self.device: Any = "cpu"
-        if self.core_model and hasattr(self.core_model, 'device'):
+        # kwargsからdeviceが渡されている場合はそれを使用
+        if "device" in kwargs:
+            self.device = kwargs["device"]
+        elif self.core_model and hasattr(self.core_model, 'device'):
             self.device = cast(Any, self.core_model).device
 
         # --- Core Systems ---
@@ -99,12 +100,21 @@ class ArtificialBrain(nn.Module):
         )
 
         # --- Perception ---
-        self.visual_cortex = visual_cortex or VisualPerception(
-            num_neurons=self.config.get("input_neurons", 784),
-            feature_dim=feature_dim,
-            workspace=self.global_workspace
-        )
+        # 修正: perception_cortex が指定されている場合はそれを visual_cortex として使用する
+        if visual_cortex is not None:
+            self.visual_cortex = visual_cortex
+        elif perception_cortex is not None and hasattr(perception_cortex, 'perceive'):
+            self.visual_cortex = perception_cortex  # type: ignore
+        else:
+            self.visual_cortex = VisualPerception(
+                num_neurons=self.config.get("input_neurons", 784),
+                feature_dim=feature_dim,
+                workspace=self.global_workspace,
+                device=self.device
+            )
+            
         self.perception = self.visual_cortex
+        self.perception_cortex = perception_cortex
 
         self.thalamus = thalamus or Thalamus(
             input_dim=feature_dim,
@@ -127,7 +137,6 @@ class ArtificialBrain(nn.Module):
         self.cerebellum = cerebellum
         self.causal_engine = causal_inference_engine
         self.symbol_grounding = symbol_grounding
-        self.perception_cortex = perception_cortex
 
         # --- Homeostasis ---
         self.astrocyte_network = astrocyte_network or AstrocyteNetwork(
@@ -158,6 +167,19 @@ class ArtificialBrain(nn.Module):
         self.step_count = 0
         self.monitor_stats = self.config.get("monitor_stats", False)
 
+        # DI components inject
+        if "meta_cognitive_snn" in kwargs:
+            self.meta_cognitive_snn = kwargs["meta_cognitive_snn"]
+        if "world_model" in kwargs:
+            self.world_model = kwargs["world_model"]
+        if "reflex_module" in kwargs:
+            self.reflex_module = kwargs["reflex_module"]
+        if "ethical_guardrail" in kwargs:
+            self.ethical_guardrail = kwargs["ethical_guardrail"]
+        if "reasoning_engine" in kwargs:
+            self.reasoning_engine = kwargs["reasoning_engine"]
+
+
     def set_core_model(self, model: nn.Module):
         """学習対象のコアモデルをセット"""
         self.core_model = model
@@ -178,10 +200,11 @@ class ArtificialBrain(nn.Module):
         self.step_count += 1
 
         # 0. アストロサイト更新 (軽量化)
-        self.astrocyte_network.step()
+        if self.astrocyte_network:
+            self.astrocyte_network.step()
         
         # エネルギーレベルチェック (頻度低減)
-        if self.step_count % 10 == 0:
+        if self.step_count % 10 == 0 and self.astrocyte_network:
             energy_status = self.astrocyte_network.get_energy_level()
             if energy_status < 0.05:
                 return {"action": None, "status": "exhausted"}
@@ -205,21 +228,19 @@ class ArtificialBrain(nn.Module):
                 raw_features = perception_output
 
             if raw_features is not None:
+                # Thalamus入力
                 thalamus_out = self.thalamus.forward(raw_features, top_down_attention=None)
                 visual_features = thalamus_out["relayed_output"]
 
                 if self.monitor_stats:
-                    # 非同期ログなどをここに配置可能
                     pass
 
         # 2. 動機付け (Motivation) - 軽量化
-        # [Mypy Fix] 明示的な型注釈を追加
         motivation_status: Dict[str, Any] = {}
         intrinsic_reward = 0.0
         
         # 3. 記憶 (Memory) - 頻度低減
         if self.step_count % 5 == 0:
-            # メモリ処理をスキップまたは簡易実行
             pass
 
         # 4. 意識 (GWT)
@@ -237,9 +258,7 @@ class ArtificialBrain(nn.Module):
             action_plan = self.pfc.plan(conscious_content)
             
             if action_plan is not None:
-                # [Mypy Fix] 属性名を修正: gating_threshold -> base_threshold
                 if self.basal_ganglia.base_threshold < 0.9: 
-                     # 簡易的なGoサイン
                      pass 
                 
                 # final_action_cmd = self.motor_cortex.generate_command(action_plan)
@@ -247,7 +266,8 @@ class ArtificialBrain(nn.Module):
         return {
             "action": final_action_cmd,
             "status": "active",
-            "step": self.step_count
+            "step": self.step_count,
+            "response": "Cognitive Cycle Completed" # デモ用のダックレスポンス
         }
 
     def should_sleep(self, internal_state: Dict[str, float]) -> bool:
@@ -257,9 +277,8 @@ class ArtificialBrain(nn.Module):
         self.is_sleeping = True
         self.state = "SLEEPING"
         
-        self.astrocyte_network.replenish_energy(amount=10.0 * cycles)
-        
-        # 実際の処理は重いのでここでは最小限
+        if self.astrocyte_network:
+            self.astrocyte_network.replenish_energy(amount=10.0 * cycles)
         
         self.is_sleeping = False
         self.state = "ACTIVE"
@@ -269,9 +288,6 @@ class ArtificialBrain(nn.Module):
         return self.process_step(x)
 
     # --- Compatibility Methods (Restore for Type Checkers) ---
-    # これらのメソッドが存在しないと、mypyはnn.Module.__getattr__の挙動により
-    # 未知の属性をTensorと誤認して "Tensor not callable" エラーを出す。
-
     def run_cognitive_cycle(self, sensory_input: Any) -> Dict[str, Any]:
         """Legacy script support."""
         return self.process_step(sensory_input)
@@ -283,9 +299,19 @@ class ArtificialBrain(nn.Module):
     def get_brain_status(self) -> Dict[str, Any]:
         """Return current status diagnostics."""
         # 簡易レポートを返す（計算コスト削減）
+        astro_energy = 0.0
+        if self.astrocyte_network:
+            # max_energyが0除算にならないようガード
+            max_e = self.astrocyte_network.max_energy if self.astrocyte_network.max_energy > 0 else 1.0
+            astro_energy = (self.astrocyte_network.energy / max_e) * 100
+
         return {
             "status": "SLEEPING" if self.is_sleeping else "ACTIVE",
-            "energy": self.astrocyte_network.get_energy_level(),
+            "astrocyte": {
+                "metrics": {
+                    "energy_percent": astro_energy
+                }
+            },
             "steps": self.step_count,
             "os": {}
         }

@@ -1,8 +1,8 @@
-# ファイルパス: scripts/runners/run_brain_v16_demo.py
-# Title: Brain v16.3 Integrated Demo (Type Safe)
+# ファイルパス: scripts/demos/brain/run_brain_v16_demo.py
+# Title: Brain v16.3 Integrated Demo (Type Safe & Device Correct)
 # Description:
 #   SCAL (Statistical Centroid Alignment Learning) 統合後の動作確認用デモ。
-#   [Fix] Mypyエラー(型への代入、常に真となる条件)を修正。
+#   [Fix] brain.to(device) を呼び出し、全てのサブモジュールをGPU/MPSへ転送。
 
 from snn_research.models.transformer.sformer import SFormer
 from snn_research.modules.reflex_module import ReflexModule
@@ -124,11 +124,32 @@ def build_demo_brain(device):
         device=device
     )
 
-    world_model = SpikingWorldModel(vocab_size=100, d_model=128).to(device)
+    # 世界モデルの初期化パラメータ設定
+    world_model_config = {
+        'vocab_size': 100,
+        'action_dim': 10,
+        'd_model': 128,
+        'd_state': 64,
+        'num_layers': 2,
+        'time_steps': 16,
+        'sensory_configs': {'vision': 784},
+        'neuron_config': {'type': 'LIF', 'v_th': 0.5, 'beta': 0.9}
+    }
+    
+    world_model = SpikingWorldModel(**world_model_config).to(device)
+    
     reflex = ReflexModule(input_dim=784, action_dim=10).to(device)
 
+    # メタ認知モジュールの初期化
+    meta_config = {
+        "uncertainty_threshold": 0.4,
+        "patience": 10,
+        "sensitivity": 0.1
+    }
     meta_cognition = MetaCognitiveSNN(
-        d_model=128, uncertainty_threshold=0.4).to(device)
+        d_model=128,
+        config=meta_config
+    ).to(device)
 
     # 脳の構築 (DI)
     brain = ArtificialBrain(
@@ -149,6 +170,9 @@ def build_demo_brain(device):
         ethical_guardrail=guardrail,
         device=device
     )
+    
+    # [Fix] Brain全体をデバイスへ転送 (内部モジュールも再帰的に移動)
+    brain.to(device)
 
     return brain
 
@@ -170,10 +194,6 @@ def run_scenario(brain, scenario_name, description, input_data):
     duration = time.time() - start_time
     logger.info(f"⏱️ Duration: {duration:.3f}s")
 
-    # 結果表示
-    # action = report.get("action", "None")
-    # motor_out = report.get("motor_output", "None")
-
     # モード判定 (System 1 vs 2) - 簡易ロジック
     mode = "System 1 (Fast)" if duration < 0.5 else "System 2 (Slow)"
     logger.info(f"🧠 Mode: {mode}")
@@ -184,7 +204,9 @@ def run_scenario(brain, scenario_name, description, input_data):
 
     # ヘルスチェック
     health = brain.get_brain_status()
-    energy = health['astrocyte']['metrics'].get('energy_percent', 0)
+    # 修正: ネストされたキーアクセスの安全性を向上
+    astro_metrics = health.get('astrocyte', {}).get('metrics', {})
+    energy = astro_metrics.get('energy_percent', 0)
     logger.info(f"🏥 Health: Energy={energy:.1f}%, ...")
 
     return report
@@ -198,6 +220,8 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if torch.backends.mps.is_available():
         device = "mps"
+    
+    logger.info(f"Using device: {device}")
 
     brain = build_demo_brain(device)
 

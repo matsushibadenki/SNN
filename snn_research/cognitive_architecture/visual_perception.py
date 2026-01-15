@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/cognitive_architecture/visual_perception.py
-# 日本語タイトル: 視覚知覚モジュール (DIコンテナ対応版)
-# 修正: クラス名をVisualPerceptionに変更し、ImportErrorを解消。
+# 日本語タイトル: 視覚知覚モジュール (DIコンテナ対応版 & Device Safe)
+# 修正: クラス名をVisualPerceptionに変更し、ImportErrorを解消。perceiveでのデバイス自動同期を追加。
 
 import torch
 import torch.nn as nn
@@ -56,6 +56,12 @@ class VisualPerception(nn.Module):
             self.projector = nn.Linear(num_neurons, feature_dim).to(device)
 
     def perceive(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        # デバイス同期 (入力テンソルをモデルのパラメータと同じデバイスへ移動)
+        if isinstance(self.projector, nn.Module):
+             param = next(self.projector.parameters(), None)
+             if param is not None and x.device != param.device:
+                 x = x.to(param.device)
+
         features = self.projector(x)
         return {"features": features}
 
