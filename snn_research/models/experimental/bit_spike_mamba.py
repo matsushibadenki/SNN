@@ -1,5 +1,6 @@
 # snn_research/models/experimental/bit_spike_mamba.py
 # 修正: d_model, d_state などの引数を受け入れるように __init__ を拡張
+# 修正: norm と output_projection を追加して mypy エラーを回避
 
 import torch
 import torch.nn as nn
@@ -31,7 +32,7 @@ class BitSpikeMambaModel(nn.Module):
                  num_layers: int = 2,
                  time_steps: int = 16,
                  neuron_config: Any = None,
-                 **kwargs):
+                 **kwargs: Any):
         super().__init__()
         
         # 引数の優先順位処理
@@ -42,18 +43,25 @@ class BitSpikeMambaModel(nn.Module):
         self.layers = nn.ModuleList([
             BitLinear(self.dim, self.dim) for _ in range(self.depth)
         ])
+        
+        # Mamba構造に必要な正規化層と射影層を追加
+        self.norm = nn.LayerNorm(self.dim)
         self.head = BitLinear(self.dim, vocab_size)
+        self.output_projection = self.head
         
         # 内部状態シミュレーション用
         self.time_steps = time_steps
 
-    def forward(self, x: torch.Tensor, return_spikes: bool = False, **kwargs) -> Any:
+    def forward(self, x: torch.Tensor, return_spikes: bool = False, **kwargs: Any) -> Any:
         # x: (Batch, Seq)
         x_emb = self.embedding(x)
         out = x_emb
         for layer in self.layers:
             out = layer(out)
-        logits = self.head(out)
+        
+        # 正規化と射影
+        out = self.norm(out)
+        logits = self.output_projection(out)
         
         if return_spikes:
             # ダミーのスパイクと膜電位を返す

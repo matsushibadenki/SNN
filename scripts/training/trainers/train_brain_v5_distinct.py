@@ -63,8 +63,9 @@ class SimpleLIFNeuron(base.MemoryModule):
 
 
 class FixedBitSpikeMamba(BitSpikeMamba):
-    # [Fix] Aligned signature with parent (input_ids instead of x)
-    def forward(self, input_ids: torch.Tensor, return_spikes: bool = False, **kwargs: Any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    # [Fix] Aligned signature with parent (x instead of input_ids)
+    def forward(self, x: torch.Tensor, return_spikes: bool = False, **kwargs: Any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        input_ids = x # Alias for compatibility
         functional.reset_net(self)
 
         # Use embedding based on input type check (as done in parent)
@@ -78,22 +79,23 @@ class FixedBitSpikeMamba(BitSpikeMamba):
                 cast(Any, layer).set_stateful(True)
 
         for _ in range(self.time_steps):
-            x = x_embed
+            x_internal = x_embed
             for layer in self.layers:
-                x = layer(x)
-            x_out = x
+                x_internal = layer(x_internal)
+            x_out = x_internal
 
         # [Fix] キャストして mypy エラー回避
         for layer in self.layers:
             if hasattr(layer, 'set_stateful'):
                 cast(Any, layer).set_stateful(False)
 
+        # 親クラスに追加した self.norm と self.output_projection を使用
         logits = self.output_projection(self.norm(x_out))
 
         # Return tuple matching signature
         device = input_ids.device
         return logits, torch.tensor(0.0, device=device), torch.tensor(0.0, device=device)
-
+        
 
 def force_replace_components(model, device):
     for name, module in model.named_modules():

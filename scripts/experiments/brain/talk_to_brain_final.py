@@ -55,10 +55,10 @@ class SimpleLIFNeuron(base.MemoryModule):
 
 
 class FixedBitSpikeMamba(BitSpikeMamba):
-    # [Fix] 親クラス(SpikingMamba)とシグネチャを合わせるために return_spikes を追加
-    # [Fix] 戻り値の型が異なる(Tuple[Tensor, Tensor, Tensor] vs tuple)ため ignore を付与
+    # [Fix] 親クラス(SpikingMamba)とシグネチャを合わせる
     # type: ignore[override]
-    def forward(self, input_ids: torch.Tensor, return_spikes: bool = False, **kwargs: Any) -> tuple:
+    def forward(self, x: torch.Tensor, return_spikes: bool = False, **kwargs: Any) -> tuple:
+        input_ids = x
         functional.reset_net(self)
         x_embed = self.embedding(input_ids)
         x_out = x_embed
@@ -69,10 +69,10 @@ class FixedBitSpikeMamba(BitSpikeMamba):
                 cast(Any, layer).set_stateful(True)
 
         for _ in range(self.time_steps):
-            x = x_embed
+            x_step = x_embed
             for layer in self.layers:
-                x = layer(x)
-            x_out = x
+                x_step = layer(x_step)
+            x_out = x_step
 
         # [Fix] 同上
         for layer in self.layers:

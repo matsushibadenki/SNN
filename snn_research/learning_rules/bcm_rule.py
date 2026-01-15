@@ -3,6 +3,7 @@
 # Description:
 #   Objective.mdの目標発火率(0.1-2Hz)に基づき、恒常性維持とスパース性を極大化。
 #   ニューロン間の競合(Lateral Inhibition)要素を擬似的に導入。
+#   [Fix] BioLearningRuleのシグネチャ変更に対応 (optional_params追加)
 
 import torch
 from typing import Dict, Any, Optional, Tuple, cast
@@ -45,7 +46,8 @@ class BCMLearningRule(BioLearningRule):
         pre_spikes: torch.Tensor,
         post_spikes: torch.Tensor,
         weights: torch.Tensor,
-        optional_params: Optional[Dict[str, Any]] = None
+        optional_params: Optional[Dict[str, Any]] = None,
+        **kwargs: Any
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         
         # バッチ平均の取得

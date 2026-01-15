@@ -3,6 +3,7 @@
 # Description: 
 #   Vectorized STDPに、Synaptic Scaling (Homeostasis) と Soft Bound を追加。
 #   学習安定性 95% 目標に向けた強化版。
+#   [Fix] BioLearningRuleのシグネチャ変更に対応 (optional_params追加)
 
 import torch
 import torch.nn as nn
@@ -87,20 +88,7 @@ class STDP(nn.Module, BioLearningRule):
             curr_post_trace = curr_post_trace * decay_post + post_s
 
             # STDP Calculation
-            # LTP: Post fire & Pre trace (Causal)
-            # LTD: Pre fire & Post trace (Anti-causal)
-            # Shapes: (B, N_in, 1) x (B, 1, N_out) -> (B, N_in, N_out)
-            
-            # LTP: Post spikes occurred, look at Pre trace
-            # Weight shape: (N_out, N_in) or (N_in, N_out)?
-            # Usually nn.Linear is (Out, In).
-            # Assuming weight is (N_out, N_in).
-            
-            # post_s: (B, N_out), pre_trace: (B, N_in)
-            # ltp_map: (B, N_out, N_in)
             ltp = torch.bmm(post_s.unsqueeze(2), curr_pre_trace.unsqueeze(1))
-            
-            # ltd_map: (B, N_out, N_in)
             ltd = torch.bmm(curr_post_trace.unsqueeze(2), pre_s.unsqueeze(1))
             
             # Batch mean
@@ -108,7 +96,6 @@ class STDP(nn.Module, BioLearningRule):
             ltd_mean = ltd.mean(dim=0)
 
             # Soft Bound Scaling
-            # Wに近いほど更新量を小さくする (w_max - w) for LTP, (w - w_min) for LTD
             soft_bound_ltp = (self.w_max - weight) if self.w_max > 0 else 1.0
             soft_bound_ltd = (weight - self.w_min) if self.w_min < 0 else weight
 
@@ -122,20 +109,14 @@ class STDP(nn.Module, BioLearningRule):
         pre_spikes: torch.Tensor,
         post_spikes: torch.Tensor,
         weights: torch.Tensor,
-        optional_params: Optional[Dict[str, Any]] = None
+        optional_params: Optional[Dict[str, Any]] = None,
+        **kwargs: Any
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         
         delta_w, _, _ = self.forward(weights, pre_spikes, post_spikes)
         
         # Heterosynaptic Plasticity / Synaptic Scaling
         if self.enable_homeostasis:
-            # 重みの合計を一定に保つ方向へ微調整 (Multiplicative Scaling)
-            # W_new = W + dW
-            # Normalize: W_final = W_new * (Target_Sum / Current_Sum)
-            # 簡易実装: 重みの2乗和（エネルギー）に対する減衰項を追加
-            # dW -= alpha * W * sum(dW) など、ここではシンプルに Weight Decay 的なアプローチ
-            
-            # 全体の活動度が高い場合、全体的に重みを下げる
             total_activity = post_spikes.mean()
             decay_factor = self.homeostasis_rate * total_activity
             delta_w -= decay_factor * weights

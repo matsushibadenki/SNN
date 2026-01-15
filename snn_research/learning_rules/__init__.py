@@ -1,16 +1,13 @@
 # snn_research/learning_rules/__init__.py
-# 修正: 引数シグネチャを緩和
+# 修正: ProbabilisticHebbian を正しいモジュールからインポート
 
 from typing import Dict, Any
 from .base_rule import BioLearningRule
 from .reward_modulated_stdp import RewardModulatedSTDP, EmotionModulatedSTDP
 from .causal_trace import CausalTraceCreditAssignmentEnhancedV2 
+from .probabilistic_hebbian import ProbabilisticHebbian
 
-class ProbabilisticHebbian(BioLearningRule):
-    def update(self, weights, pre, post, **kwargs):
-        return weights
-
-def get_bio_learning_rule(rule_name: str = "reward_modulated_stdp", config: Dict[str, Any] = {}, **kwargs) -> BioLearningRule:
+def get_bio_learning_rule(rule_name: str = "reward_modulated_stdp", config: Dict[str, Any] = {}, **kwargs: Any) -> BioLearningRule:
     """
     Args:
         rule_name: 学習則の名前 (位置引数またはキーワード引数)
@@ -35,7 +32,7 @@ def get_bio_learning_rule(rule_name: str = "reward_modulated_stdp", config: Dict
         return CausalTraceCreditAssignmentEnhancedV2(**combined)
         
     elif rule_name == "probabilistic_hebbian":
-        return ProbabilisticHebbian()
+        return ProbabilisticHebbian(**params)
     
     else:
         return RewardModulatedSTDP()
