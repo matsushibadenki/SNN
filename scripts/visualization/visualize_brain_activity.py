@@ -205,7 +205,7 @@ class BrainVisualizer:
         ax4.set_xlabel("Time (ms)")
         ax4.set_ylabel("Active Neurons")
 
-        save_path = "brain_activity.png"
+        save_path = "workspace/brain_activity.png"
         plt.tight_layout()
         plt.savefig(save_path)
         print(f"\n>> Visualization saved to '{save_path}'")

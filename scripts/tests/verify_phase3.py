@@ -16,13 +16,13 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../../"))
 try:
     from snn_research.models.transformer.sformer import SFormer
 except ImportError:
-    SFormer = None
+    SFormer = None  # type: ignore
 
 # SEMM (SEMMModel) のインポート
 try:
     from snn_research.models.experimental.semm_model import SEMMModel
 except ImportError:
-    SEMMModel = None
+    SEMMModel = None  # type: ignore
 
 # ロギング設定
 logging.basicConfig(level=logging.INFO)

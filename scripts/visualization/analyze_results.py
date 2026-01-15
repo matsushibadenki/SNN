@@ -48,7 +48,7 @@ logger: logging.Logger = logging.getLogger("P5-5_Analysis_Script")
 
 
 def analyze_hpo_results(
-    study_name: str = "snn4_hpo_study",
+    study_name: str = "snn_hpo_study",
     storage_url: str = "sqlite:///hpo_study.db",
     output_dir: str = "hpo_analysis"
 ) -> None:
@@ -156,7 +156,7 @@ if __name__ == "__main__":
     # P5-4 (Optuna) の結果を分析
     analyze_hpo_results(
         # (P5-4 のスクリプトがこの設定で実行されたと仮定)
-        study_name="snn4_hpo_study",
+        study_name="snn_hpo_study",
         storage_url="sqlite:///hpo_study.db"
     )
 

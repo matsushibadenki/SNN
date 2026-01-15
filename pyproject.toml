@@ -67,6 +67,7 @@ dependencies = [
     "networkx",
     "pandas-stubs",
     "tqdm",
+    "plotly",
 ]
 
 [project.urls]
