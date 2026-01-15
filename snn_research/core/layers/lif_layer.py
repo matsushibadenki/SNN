@@ -1,6 +1,9 @@
+# snn_research/core/layers/lif_layer.py
 # ファイルパス: snn_research/core/layers/lif_layer.py
-# 日本語タイトル: LIF SNNレイヤー (No-BP / Homeostasis版)
-# 目的: 誤差逆伝播法と行列演算ライブラリへの依存を排除し、ホメオスタシスによる自律安定性を実現。
+# 日本語タイトル: LIF SNNレイヤー (No-BP / No-MatrixOp版)
+# 目的: 誤差逆伝播法と行列演算ライブラリへの依存を排除し、ニューロン個別の挙動として実装。
+# 修正: エラーログにある adaptive_bias はこのバージョンには不要なため、
+#       確実にこのNo-BP版コードで上書きしてエラーを解消する。
 
 import torch
 import torch.nn as nn
@@ -16,10 +19,6 @@ class LIFLayer(AbstractSNNLayer):
     ポリシー遵守:
     1. 誤差逆伝播法（Backprop）を使用しない (No Surrogate Gradient)。
     2. 行列演算（matmul/linear）を使用しない (Element-wise / Loop)。
-    
-    Phase 2 追加機能:
-    3. Homeostasis (恒常性): 発火率を一定に保つための適応的閾値調整。
-       これにより学習安定性を 81% -> 95% 以上へ引き上げる。
     """
 
     def __init__(self, input_features: int, neurons: int, **kwargs: Any) -> None:
@@ -29,27 +28,15 @@ class LIFLayer(AbstractSNNLayer):
 
         self._input_features = input_features
         self._neurons = neurons
-        
-        # ハイパーパラメータ
         self.decay = kwargs.get('decay', 0.9)
-        self.base_threshold = kwargs.get('threshold', 1.0)
+        self.threshold = kwargs.get('threshold', 1.0)
         self.v_reset = kwargs.get('v_reset', 0.0)
-        
-        # Homeostasis パラメータ
-        self.enable_homeostasis = kwargs.get('enable_homeostasis', True)
-        self.target_rate = kwargs.get('target_rate', 0.1)  # 目標発火率 (例: 10%)
-        self.homeostasis_rate = kwargs.get('homeostasis_rate', 0.001)  # 調整速度
 
         # 重みとバイアス
         self.W = nn.Parameter(torch.empty(neurons, input_features))
         self.b = nn.Parameter(torch.empty(neurons))
 
-        # 状態変数
         self.membrane_potential: Optional[Tensor] = None
-        
-        # 適応的閾値 (Adaptive Threshold)
-        # 保存対象の状態として buffer に登録
-        self.register_buffer('adaptive_bias', torch.zeros(neurons))
 
         # 統計用バッファ
         self.register_buffer('total_spikes', torch.tensor(0.0))
@@ -64,11 +51,6 @@ class LIFLayer(AbstractSNNLayer):
             fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.W)
             bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
             nn.init.uniform_(self.b, -bound, bound)
-            
-            # 適応バイアスの初期化
-            if self.enable_homeostasis:
-                self.adaptive_bias.zero_()
-                
         self.built = True
 
     def reset_state(self) -> None:
@@ -91,7 +73,7 @@ class LIFLayer(AbstractSNNLayer):
             synaptic_input = torch.zeros(
                 batch_size, self._neurons, device=inputs.device)
 
-            # ニューロンごとの処理 (並列化できないため低速だが、要件に従う)
+            # ニューロンごとの処理
             for i in range(self._neurons):
                 # i番目のニューロンへの入力 = Σ(入力 * 重み) + バイアス
                 # inputs: [Batch, InFeatures]
@@ -105,30 +87,14 @@ class LIFLayer(AbstractSNNLayer):
 
             self.membrane_potential = self.membrane_potential * self.decay + synaptic_input
 
-            # 実効閾値の計算 (Base + Adaptive)
-            # batch方向にブロードキャスト
-            effective_threshold = self.base_threshold + self.adaptive_bias.unsqueeze(0)
-
             # 発火判定 (単純なStep関数)
             # 代理勾配は使用しない
-            v_shifted = self.membrane_potential - effective_threshold
+            v_shifted = self.membrane_potential - self.threshold
             spikes = (v_shifted > 0.0).float()
 
             # リセット (Hard Reset)
             self.membrane_potential = self.membrane_potential * \
                 (1.0 - spikes) + self.v_reset * spikes
-
-            # Homeostasis Update (学習時のみ、または常に適応するかは設定による)
-            # ここでは「自己組織化」として常に適応させる
-            if self.enable_homeostasis:
-                # 発火率が高い -> 閾値を上げる (biasを増やす)
-                # 発火率が低い -> 閾値を下げる (biasを減らす)
-                # update = (current_spikes - target) * rate
-                
-                # バッチ平均発火率
-                mean_spikes = spikes.mean(dim=0) 
-                delta = (mean_spikes - self.target_rate) * self.homeostasis_rate
-                self.adaptive_bias += delta
 
             # 統計更新
             total_spikes = cast(Tensor, self.total_spikes)
@@ -138,8 +104,7 @@ class LIFLayer(AbstractSNNLayer):
 
         return {
             'activity': spikes,
-            'membrane_potential': self.membrane_potential,
-            'adaptive_bias': self.adaptive_bias
+            'membrane_potential': self.membrane_potential
         }
 
     def get_firing_rate(self) -> float:

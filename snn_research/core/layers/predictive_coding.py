@@ -1,8 +1,6 @@
+# snn_research/core/layers/predictive_coding.py
 # ファイルパス: snn_research/core/layers/predictive_coding.py
-# 日本語タイトル: 予測符号化レイヤー (Predictive Coding Layer - BitNet Optimized)
-# 機能説明:
-#   推論プロセスを「反復的な緩和過程」として実装。
-#   【Update】1.58bit量子化 (BitNet) を統合し、推論時の計算コストを劇的に削減。
+# 修正内容: mypy型エラー修正（eps引数を位置引数に変更）
 
 import torch
 import torch.nn as nn
@@ -94,7 +92,6 @@ class PredictiveCodingLayer(nn.Module):
     def _filter_params(self, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any]) -> Dict[str, Any]:
         """指定されたニューロンクラスが受け入れるパラメータのみを抽出する"""
         valid_params: List[str] = []
-        # (パラメータフィルタリングロジックは変更なし)
         if neuron_class == AdaptiveLIFNeuron:
             valid_params = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength',
                             'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step', 'v_reset']
@@ -171,14 +168,12 @@ class PredictiveCodingLayer(nn.Module):
 
             if self.weight_tying:
                 # 重み共有時の転置行列計算
-                # BitNetの場合、forward内で量子化が行われるため、
-                # ここでは手動で量子化関数を呼ぶか、BitSpikeLinearの仕様に合わせる必要がある。
-                # 最も安全な方法は、BitSpikeLinearと同じ量子化ロジックを通すこと。
-
                 if self.use_bitnet and hasattr(self.generative_fc, 'weight'):
                     from snn_research.core.layers.bit_spike_layer import bit_quantize_weight
+                    # mypy修正: epsをキーワード引数ではなく位置引数として渡す
+                    # (bit_spike_layerの実装に準拠)
                     w_quant = bit_quantize_weight(
-                        self.generative_fc.weight, eps=1e-5)
+                        self.generative_fc.weight, 1e-5)
                     bu_input = F.linear(norm_error, w_quant.t())
                 else:
                     bu_input = F.linear(
