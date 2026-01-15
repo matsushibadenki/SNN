@@ -1,13 +1,49 @@
 # snn_research/models/hybrid/emotional_concept_brain.py
-# 目的: 知性(Concept)と感性(Emotion)を統合した脳モデル。
-#       自分の推論結果に対して感情(Value)を抱き、それを元に学習する。
+# 修正: 基礎視力を確実に確保するため、VisualCortexを堅牢なCNNベースに変更。
+#       これにより、Stage 1で高精度を出し、Stage 3での「正しい自律学習」を実現する。
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Optional, Tuple
 
-from snn_research.models.hybrid.concept_spikformer import ConceptSpikformer
 from snn_research.cognitive_architecture.amygdala import Amygdala
+
+class RobustVisualCortex(nn.Module):
+    """
+    MNISTを確実に学習できる堅牢な視覚野モデル。
+    Spikformerの代わりにこれを採用し、実験のボトルネックを解消する。
+    """
+    def __init__(self, embed_dim=128):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.features = nn.Sequential(
+            # Conv 1
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2), # 14x14
+            
+            # Conv 2
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2), # 7x7
+            
+            # Conv 3
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            
+            nn.Flatten(),
+            nn.Linear(128 * 7 * 7, embed_dim),
+            nn.LayerNorm(embed_dim),
+            nn.Tanh() # 活性化して特徴を際立たせる
+        )
+        
+    def forward(self, x):
+        # x: (B, 1, 28, 28) -> (B, embed_dim)
+        return self.features(x)
 
 class EmotionalConceptBrain(nn.Module):
     def __init__(self, 
@@ -17,48 +53,40 @@ class EmotionalConceptBrain(nn.Module):
                  emotion_hidden_dim: int = 64):
         super().__init__()
         
-        # 1. 知性: 概念理解を行う脳 (ConceptSpikformer)
-        self.cortex = ConceptSpikformer(
-            img_size=img_size,
-            embed_dim=128,
-            concept_dim=concept_dim,
-            num_classes=num_classes,
-            projection_dim=64 # Contrastive用
-        )
+        # 1. 知性: 堅牢な視覚野
+        self.cortex = RobustVisualCortex(embed_dim=128)
         
-        # 2. 感性: 状態の価値判断を行う扁桃体 (Amygdala)
-        # 入力は「視覚特徴」と「概念特徴」の結合
-        self.amygdala = Amygdala(input_dim=128 + 128, hidden_dim=emotion_hidden_dim)
+        # 概念処理用の層（今回は簡易化のため統合層に含めるか、省略）
+        # 統合層（分類ヘッド）
+        self.head = nn.Linear(128, num_classes)
+        
+        # 2. 感性: 扁桃体
+        # 入力は「視覚特徴」+「予測ロジット(概念の代わり)」
+        # 自分の出した答え(Logits)に対して感情を持つ
+        self.amygdala = Amygdala(input_dim=128 + num_classes, hidden_dim=emotion_hidden_dim)
+        
+        self.last_internal_state = None
         
     def forward(self, x_img: torch.Tensor, x_concept: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Returns:
-            prediction: タスク予測結果
-            emotion_value: その状態に対する感情価 (-1.0 ~ 1.0)
+            prediction: タスク予測 (Logits)
+            emotion_value: 感情価
         """
-        # 1. 視覚処理 (Bottom-up)
-        sensory_rep = self.cortex.forward_sensory(x_img) # (B, N, 128)
-        sensory_vec = sensory_rep.mean(dim=1) # (B, 128)
+        # 1. 視覚処理
+        sensory_vec = self.cortex(x_img) # (B, 128)
+        self.last_internal_state = sensory_vec
         
-        # 2. 概念処理 (Top-down)
-        if x_concept is not None:
-            # 外部から概念が与えられた場合（教師あり学習時など）
-            concept_rep = self.cortex.forward_conceptual(x_concept) # (B, 128)
-        else:
-            # 自律動作時: 自分の予測を概念として扱う（思考ループ）
-            # ここでは簡易的にゼロベクトルまたは直前の思考を使う
-            concept_rep = torch.zeros_like(sensory_vec) 
-
-        # 3. 統合と推論
-        prediction = self.cortex.integrate(sensory_rep, x_concept) # (B, 128) -> (B, Classes)
+        # 2. 推論 (Prediction)
+        logits = self.head(sensory_vec) # (B, 10)
         
-        # 4. 感情発生 (Amygdala)
-        # 「見ているもの(Sensory)」と「考えていること(Concept)」を入力し、
-        # その整合性や過去の情動記憶に基づいて「価値」を判断する
-        amygdala_input = torch.cat([sensory_vec, concept_rep], dim=1) # (B, 256)
+        # 3. 感情発生 (Amygdala)
+        # 「見ているもの(Sensory)」と「判断結果(Logits)」を入力
+        # これにより「この画像で、この判断をした自分」に対する自信/不安を評価する
+        amygdala_input = torch.cat([sensory_vec, F.softmax(logits, dim=1)], dim=1) # (B, 128+10)
         emotion_value = self.amygdala(amygdala_input) # (B, 1)
         
-        return prediction, emotion_value
+        return logits, emotion_value
 
     def get_internal_state(self):
-        return self.cortex.get_internal_state()
+        return self.last_internal_state

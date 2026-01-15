@@ -1,66 +1,72 @@
 # snn_research/learning_rules/causal_trace.py
-# Title: Causal Trace Credit Assignment (Fixed)
-# Description: 親クラス RewardModulatedSTDP の修正に対応。
+# 修正: updateメソッドの引数順序と型を親クラス(RewardModulatedSTDP)に準拠させる。
 
 import torch
-from typing import Dict, Any, Optional, Tuple, List
-from .reward_modulated_stdp import RewardModulatedSTDP
+from typing import Dict, Any, Optional
+from snn_research.learning_rules.reward_modulated_stdp import RewardModulatedSTDP
 
 class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
     """
-    メタ認知機能を統合した因果学習則。
+    因果トレースを用いた高度な信用割当学習則。
     """
-    def __init__(self, **kwargs: Any):
-        super().__init__(
-            learning_rate=kwargs.get('learning_rate', 0.01),
-            a_plus=kwargs.get('a_plus', 0.01),
-            a_minus=kwargs.get('a_minus', 0.008),
-            tau_trace=kwargs.get('tau_trace', 20.0),
-            tau_eligibility=kwargs.get('tau_eligibility', 100.0)
-        )
-        self.causal_contribution: Optional[torch.Tensor] = None
-        self.uncertainty_buffer: List[float] = []
-        self.uncertainty_threshold: float = 0.7
-        self.deep_thinking_multiplier: float = 2.5
+    def __init__(self, 
+                 learning_rate: float = 0.01, 
+                 a_plus: float = 0.01, 
+                 a_minus: float = 0.008, 
+                 tau_trace: float = 20.0, 
+                 tau_eligibility: float = 100.0,
+                 **kwargs):
+        
+        # 親クラス初期化
+        super().__init__(learning_rate=learning_rate, **kwargs)
+        
+        self.a_plus = a_plus
+        self.a_minus = a_minus
+        self.tau_trace = tau_trace
+        self.tau_eligibility = tau_eligibility
+        
+        # 追加の内部状態
+        self.pre_trace: Optional[torch.Tensor] = None
+        self.post_trace: Optional[torch.Tensor] = None
 
-    def update(
-        self,
-        pre_spikes: torch.Tensor,
-        post_spikes: torch.Tensor,
-        weights: torch.Tensor,
-        optional_params: Optional[Dict[str, Any]] = None
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        
-        params = optional_params or {}
-        uncertainty = float(params.get("uncertainty", 0.5))
-        
-        # メタ認知による学習率変調
-        meta_lr_factor = self.deep_thinking_multiplier if uncertainty > self.uncertainty_threshold else 1.0
-        
-        # 既存のrewardを取得し、変調を加える
-        base_reward = float(params.get("reward", 0.0))
-        modulated_reward = base_reward * meta_lr_factor
-        
-        # 親クラスへの引数を構築 (新しい params 辞書を作成)
-        new_params = params.copy()
-        new_params["reward"] = modulated_reward
-        
-        # 親クラスの update を呼び出す (正しい辞書型を渡す)
-        dw, backward_credit = super().update(pre_spikes, post_spikes, weights, new_params)
-        
-        # backward_credit の形状保証
-        if backward_credit is None or backward_credit.shape[-1] != pre_spikes.shape[-1]:
-            # backward_credit が None の場合は生成 (親クラスは None を返すため)
-            backward_credit = torch.zeros_like(pre_spikes)
-            
-        # 因果貢献度の記録
-        if self.causal_contribution is None or self.causal_contribution.shape != weights.shape:
-            self.causal_contribution = torch.zeros_like(weights)
-            
-        with torch.no_grad():
-            self.causal_contribution = self.causal_contribution * 0.99 + torch.abs(dw) * 0.01
-            
-        return dw, backward_credit
+    def update(self, 
+               weights: torch.Tensor, 
+               pre_spikes: torch.Tensor, 
+               post_spikes: torch.Tensor, 
+               reward: float = 0.0) -> torch.Tensor:
+        """
+        親クラスとシグネチャを統一: (weights, pre, post, reward)
+        """
+        batch_size = pre_spikes.size(0)
 
-    def get_causal_contribution(self) -> Optional[torch.Tensor]:
-        return self.causal_contribution
+        # トレース初期化
+        if self.pre_trace is None:
+            self.pre_trace = torch.zeros_like(pre_spikes)
+        if self.post_trace is None:
+            self.post_trace = torch.zeros_like(post_spikes)
+        if self.eligibility_trace is None:
+            self.eligibility_trace = torch.zeros_like(weights)
+
+        # トレース更新 (指数減衰 + スパイク)
+        # decay factors
+        alpha_pre = torch.exp(torch.tensor(-1.0 / self.tau_trace))
+        alpha_post = torch.exp(torch.tensor(-1.0 / self.tau_trace))
+        alpha_eligibility = torch.exp(torch.tensor(-1.0 / self.tau_eligibility))
+
+        self.pre_trace = self.pre_trace * alpha_pre + pre_spikes
+        self.post_trace = self.post_trace * alpha_post + post_spikes
+
+        # STDP計算: Pre * Post_trace - Post * Pre_trace (簡易版)
+        # (Out, In)
+        potentiate = torch.matmul(post_spikes.t(), self.pre_trace)
+        depress = torch.matmul(self.post_trace.t(), pre_spikes)
+        
+        stdp_update = self.a_plus * potentiate - self.a_minus * depress
+        
+        # 適合度トレース更新
+        self.eligibility_trace = self.eligibility_trace * alpha_eligibility + stdp_update
+        
+        # 報酬による重み更新
+        delta_w = self.lr * self.eligibility_trace * reward
+        
+        return weights + delta_w

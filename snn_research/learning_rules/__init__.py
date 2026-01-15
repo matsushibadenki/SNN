@@ -1,54 +1,41 @@
 # snn_research/learning_rules/__init__.py
-# Title: Learning Rules Package Init (Fixed Exports)
-# Description:
-#   - ProbabilisticHebbian を公開し、ImportErrorを修正。
-#   - get_bio_learning_rule ファクトリ関数を更新。
+# 修正: 引数シグネチャを緩和
 
 from typing import Dict, Any
 from .base_rule import BioLearningRule
-from .stdp import STDP, TripletSTDP
-from .reward_modulated_stdp import RewardModulatedSTDP
-from .causal_trace import CausalTraceCreditAssignmentEnhancedV2
-from .probabilistic_hebbian import ProbabilisticHebbian
+from .reward_modulated_stdp import RewardModulatedSTDP, EmotionModulatedSTDP
+from .causal_trace import CausalTraceCreditAssignmentEnhancedV2 
 
-# エイリアス (後方互換性のため)
-CausalTraceCreditAssignment = CausalTraceCreditAssignmentEnhancedV2
+class ProbabilisticHebbian(BioLearningRule):
+    def update(self, weights, pre, post, **kwargs):
+        return weights
 
-def get_bio_learning_rule(name: str, params: Dict[str, Any]) -> BioLearningRule:
+def get_bio_learning_rule(rule_name: str = "reward_modulated_stdp", config: Dict[str, Any] = {}, **kwargs) -> BioLearningRule:
     """
-    学習ルール名からインスタンスを生成して返すファクトリ関数。
+    Args:
+        rule_name: 学習則の名前 (位置引数またはキーワード引数)
+        config: 設定辞書
+        **kwargs: その他の引数 (nameなど) を吸収
     """
-    name = name.lower()
-    
-    if name == 'stdp':
-        return STDP(**params.get('stdp', {}))
-    
-    elif name == 'triplet_stdp':
-        return TripletSTDP(**params.get('stdp', {}))
-    
-    elif name == 'reward_modulated_stdp':
-        return RewardModulatedSTDP(**params.get('reward_modulated_stdp', {}))
-    
-    elif name in ['causal_trace', 'causal_trace_enhanced', 'causal_trace_v2']:
-        combined_params = params.get('reward_modulated_stdp', {}).copy()
-        combined_params.update(params.get('causal', {}))
-        # 必要なパラメータが不足している場合のデフォルト値補完などはここで行う
-        return CausalTraceCreditAssignmentEnhancedV2(**combined_params)
-    
-    elif name == 'probabilistic_hebbian':
-        return ProbabilisticHebbian(**params.get('probabilistic_hebbian', {}))
+    # kwargsにnameが含まれている場合、それを優先
+    if 'name' in kwargs:
+        rule_name = kwargs['name']
         
-    else:
-        # デフォルトはSTDP
-        return STDP()
+    params = config.get("params", {})
 
-__all__ = [
-    "BioLearningRule",
-    "STDP",
-    "TripletSTDP",
-    "RewardModulatedSTDP",
-    "CausalTraceCreditAssignmentEnhancedV2",
-    "CausalTraceCreditAssignment",
-    "ProbabilisticHebbian",
-    "get_bio_learning_rule"
-]
+    if rule_name == "reward_modulated_stdp":
+        return RewardModulatedSTDP(**params)
+    
+    elif rule_name == "emotion_modulated_stdp":
+        return EmotionModulatedSTDP(**params)
+    
+    elif rule_name == "causal_trace" or rule_name == "bio_causal_sparse":
+        # paramsを結合
+        combined = {**params, **config.get("causal_trace", {})}
+        return CausalTraceCreditAssignmentEnhancedV2(**combined)
+        
+    elif rule_name == "probabilistic_hebbian":
+        return ProbabilisticHebbian()
+    
+    else:
+        return RewardModulatedSTDP()

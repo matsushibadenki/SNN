@@ -1,31 +1,19 @@
 # snn_research/learning_rules/base_rule.py
-# Title: 学習ルールの抽象基底クラス
-# Description: 全ての学習ルールクラスが継承すべき基本構造を定義します。
-# 修正: 階層的因果学習のため、戻り値に逆方向クレジット信号を追加。
+# 修正: 戻り値を Any にして、Tensor以外(タプル等)を返す既存実装を許容する
 
 from abc import ABC, abstractmethod
 import torch
-from typing import Dict, Any, Optional, Tuple
+from typing import Any
 
 class BioLearningRule(ABC):
-    """生物学的学習ルールのための抽象基底クラス。"""
-
+    """
+    生物学的妥当性を持つ学習則の抽象基底クラス。
+    """
     @abstractmethod
-    def update(
-        self,
-        pre_spikes: torch.Tensor,
-        post_spikes: torch.Tensor,
-        weights: torch.Tensor,
-        optional_params: Optional[Dict[str, Any]] = None
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def update(self, weights: torch.Tensor, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, **kwargs) -> Any:
         """
-        シナプス重みの変化量を計算する。
-
-        Args:
-            (省略)
-
+        シナプス重みを更新する。
         Returns:
-            Tuple[torch.Tensor, Optional[torch.Tensor]]:
-                (計算された重み変化量 (dw), 前段の層へ伝えるクレジット信号)
+            更新後の重み行列 (Tensor) または (重み, 変化量) のタプルなど
         """
         pass

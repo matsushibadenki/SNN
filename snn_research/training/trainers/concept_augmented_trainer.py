@@ -1,8 +1,5 @@
 # snn_research/training/trainers/concept_augmented_trainer.py
-# ファイルパス: snn_research/training/trainers/concept_augmented_trainer.py
-# 日本語タイトル: 概念拡張トレーナー v3 (Prototype-based Contrastive)
-# 修正: バッチ内Contrastiveだけでなく、概念プロトタイプ（固定アンカー）との照合を行うことで、
-#       概念のマッピングズレを防ぎ、収束を安定化させる。
+# 修正: Mypyの型不一致エラー(float + Tensor)を修正。
 
 import torch
 import torch.nn as nn
@@ -16,10 +13,7 @@ from snn_research.cognitive_architecture.neuro_symbolic_bridge import NeuroSymbo
 logger = logging.getLogger(__name__)
 
 class ConceptAugmentedTrainer:
-    """
-    具体データ（木）と抽象概念（森）を同時に学習させるトレーナークラス。
-    v3: Prototype Anchoring
-    """
+    # ... (__init__等は変更なし) ...
 
     def __init__(
         self, 
@@ -35,70 +29,50 @@ class ConceptAugmentedTrainer:
         self.device = device
         self.concept_loss_weight = concept_loss_weight
         self.temperature = temperature
-
+        
         self.trainable_model: Any = model.model if isinstance(model, SNNCore) else model
         self.trainable_model.to(self.device)
-
         self.optimizer = torch.optim.Adam(self.trainable_model.parameters(), lr=learning_rate)
         
         self.task_loss_fn = nn.CrossEntropyLoss()
         
-        # 概念プロトタイプ（移動平均で更新される正解ベクトル）
-        # まだ初期化しない（最初のバッチで初期化）
         self.concept_prototypes: Dict[str, torch.Tensor] = {}
         self.momentum = 0.9
 
-        logger.info(f"ConceptAugmentedTrainer v3 (Prototype) initialized on {self.device}")
-
     def update_prototypes(self, concepts: List[str], features: torch.Tensor):
-        """概念ごとのプロトタイプベクトルを更新"""
         with torch.no_grad():
             for i, concept in enumerate(concepts):
                 feat = features[i].detach()
                 if concept not in self.concept_prototypes:
                     self.concept_prototypes[concept] = feat
                 else:
-                    # 移動平均で更新 (Momentum Update)
                     self.concept_prototypes[concept] = (
                         self.momentum * self.concept_prototypes[concept] + 
                         (1 - self.momentum) * feat
                     )
-                    
-                # 正規化を維持
                 self.concept_prototypes[concept] = F.normalize(
                     self.concept_prototypes[concept], p=2, dim=0
                 )
 
     def prototype_loss(self, features: torch.Tensor, concepts: List[str]) -> torch.Tensor:
-        """
-        現在の画像特徴と、対応する概念プロトタイプとの距離を近づける損失
-        """
-        loss = 0.0
+        # 初期値をTensorにする (Mypy対策)
+        loss = torch.tensor(0.0, device=self.device)
         valid_count = 0
         
         features = F.normalize(features, p=2, dim=1)
         
         for i, concept in enumerate(concepts):
             if concept in self.concept_prototypes:
-                # プロトタイプを取得
-                proto = self.concept_prototypes[concept] # (Dim,)
-                
-                # Cosine Similarityを最大化 = 1 - CosSim を最小化
+                proto = self.concept_prototypes[concept]
                 sim = torch.dot(features[i], proto)
-                loss += (1.0 - sim)
+                loss = loss + (1.0 - sim) # In-place add (+=) may cause issues with gradients sometimes
                 valid_count += 1
                 
         if valid_count > 0:
             return loss / valid_count
-        return torch.tensor(0.0, device=self.device, requires_grad=True)
+        return loss # 0.0 tensor
 
-    def train_step(
-        self, 
-        specific_data: torch.Tensor, 
-        abstract_concepts: List[str], 
-        targets: torch.Tensor
-    ) -> Dict[str, float]:
-        
+    def train_step(self, specific_data: torch.Tensor, abstract_concepts: List[str], targets: torch.Tensor) -> Dict[str, float]:
         self.trainable_model.train()
         self.optimizer.zero_grad()
         
@@ -106,15 +80,14 @@ class ConceptAugmentedTrainer:
         targets = targets.to(self.device)
         batch_size = specific_data.size(0)
 
-        # 1. Sensory Stream
+        # 1. Sensory
         if hasattr(self.trainable_model, 'forward_sensory'):
             sensory_output = self.trainable_model.forward_sensory(specific_data)
         else:
             sensory_output = self.trainable_model(specific_data)
 
-        # 2. Conceptual Stream
+        # 2. Conceptual
         concept_spikes = self.bridge.symbol_to_spike(abstract_concepts, batch_size=batch_size).to(self.device)
-        
         if hasattr(self.trainable_model, 'forward_conceptual'):
             conceptual_output = self.trainable_model.forward_conceptual(concept_spikes)
         else:
@@ -128,36 +101,34 @@ class ConceptAugmentedTrainer:
 
         loss_task = self.task_loss_fn(integrated_output, targets)
 
-        # 4. Concept Loss (Prototype-based)
-        loss_concept: Union[torch.Tensor, float] = 0.0
+        # 4. Concept Loss
+        # Mypy対策: 初期化をTensorに
+        loss_concept: torch.Tensor = torch.tensor(0.0, device=self.device)
         
         if hasattr(self.trainable_model, 'get_internal_state'):
             visual_proj = self.trainable_model.get_internal_state()
-            
             if hasattr(self.trainable_model, 'get_concept_projection'):
                 concept_proj = self.trainable_model.get_concept_projection(conceptual_output)
             else:
                 concept_proj = conceptual_output
 
-            # A. 従来のContrastive Loss (バッチ内)
-            # 次元チェック
             if visual_proj.shape == concept_proj.shape:
                 visual_norm = F.normalize(visual_proj, p=2, dim=1)
                 concept_norm = F.normalize(concept_proj, p=2, dim=1)
                 logits = torch.matmul(visual_norm, concept_norm.T) / self.temperature
                 labels = torch.arange(batch_size).to(self.device)
-                loss_contrastive = F.cross_entropy(logits, labels)
+                
+                # contrastive_loss メソッドをクラス内に追加するか、ここで計算
+                # 簡易化のためここで計算
+                loss_i2c = F.cross_entropy(logits, labels)
+                loss_c2i = F.cross_entropy(logits.T, labels)
+                loss_contrastive = (loss_i2c + loss_c2i) / 2
             else:
-                loss_contrastive = 0.0
+                loss_contrastive = torch.tensor(0.0, device=self.device)
 
-            # B. プロトタイプ更新と損失計算
-            # 概念側の射影結果をプロトタイプとして登録
             self.update_prototypes(abstract_concepts, concept_proj)
-            
-            # 画像特徴をプロトタイプに引き寄せる
             loss_proto = self.prototype_loss(visual_proj, abstract_concepts)
             
-            # 2つの損失を合算
             loss_concept = loss_contrastive + 0.5 * loss_proto
 
         total_loss = loss_task + (self.concept_loss_weight * loss_concept)
@@ -168,5 +139,5 @@ class ConceptAugmentedTrainer:
         return {
             "total_loss": total_loss.item(),
             "task_loss": loss_task.item(),
-            "concept_loss": loss_concept.item() if isinstance(loss_concept, torch.Tensor) else float(loss_concept)
+            "concept_loss": loss_concept.item()
         }
