@@ -1,8 +1,8 @@
 # ファイルパス: snn_research/io/universal_encoder.py
-# Title: Universal Spike Encoder (Video Support Fixed)
+# Title: Universal Spike Encoder (Video Support Fixed & Alias Added)
 # 修正内容:
-# 1. _encode_image に 5次元入力(Batch, Time, C, H, W)のサポートを追加。
-#    時間次元を潰さずに処理することで、MultimodalProjectorとの整合性を確保。
+# 1. 'vision' を 'image' のエイリアスとして追加し、ValueErrorを回避。
+# 2. _encode_image に 5次元入力(Batch, Time, C, H, W)のサポートを維持。
 
 import torch
 import torch.nn as nn
@@ -27,6 +27,12 @@ class UniversalSpikeEncoder(nn.Module):
         """
         if data.device != torch.device(self.device):
             data = data.to(self.device)
+
+        # モダリティのエイリアス処理
+        if modality == 'vision':
+            modality = 'image'
+        elif modality == 'auditory':
+            modality = 'audio'
 
         if modality == 'image':
             return self._encode_image(data, method)

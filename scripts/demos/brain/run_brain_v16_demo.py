@@ -1,8 +1,10 @@
 # ファイルパス: scripts/demos/brain/run_brain_v16_demo.py
-# Title: Brain v16.3 Integrated Demo (Type Safe & Device Correct)
+# Title: Brain v16.4 Integrated Demo (Stable CPU Mode)
 # Description:
 #   SCAL (Statistical Centroid Alignment Learning) 統合後の動作確認用デモ。
-#   [Fix] GlobalWorkspaceの次元を256に設定し、Perceptionと整合させる。
+#   [Fix] 動作安定性のためデフォルトデバイスをCPUに変更 (MPSクラッシュ回避)。
+#   [Fix] 初期化プロセスの詳細ログを追加。
+#   [Fix] GlobalWorkspaceとHybridPerceptionCortexの次元整合性を維持。
 
 import sys
 import os
@@ -29,7 +31,7 @@ from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwo
 from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
 from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
 
-# [Fix] Type-safe optional import
+# Type-safe optional import
 HAS_TRANSFORMERS = False
 try:
     from transformers import AutoTokenizer  # type: ignore
@@ -38,8 +40,11 @@ except ImportError:
     AutoTokenizer = None  # type: ignore
 
 # ログ設定
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    force=True  # ログ設定を強制適用
+)
 logger = logging.getLogger("SNN_Project")
 
 
@@ -69,9 +74,10 @@ class MockVisualCortex(MockComponent):
 
 
 def build_demo_brain(device):
-    logger.info("🧠 Initializing Artificial Brain v16.3 components...")
+    logger.info(f"🧠 Initializing Artificial Brain components on {device}...")
 
     # 1. 基礎コンポーネント
+    logger.info("  - Building Core Systems (Workspace, Astrocyte)...")
     # [Fix] 次元を256に設定 (知覚野の出力次元に合わせる)
     workspace = GlobalWorkspace(dim=256)
     astrocyte = AstrocyteNetwork()
@@ -79,6 +85,7 @@ def build_demo_brain(device):
     motivation = IntrinsicMotivationSystem()
 
     # 2. 認知モジュール
+    logger.info("  - Building Perception Modules...")
     # 視覚野 (Hybrid)
     perception = HybridPerceptionCortex(
         workspace=workspace,
@@ -93,11 +100,17 @@ def build_demo_brain(device):
     cortex = MockComponent("Cortex")
 
     # 3. 意思決定
+    logger.info("  - Building Decision Making Modules (BasalGanglia, PFC)...")
     basal_ganglia = BasalGanglia(workspace=workspace)
-    pfc = PrefrontalCortex(workspace=workspace, motivation_system=motivation)
+    
+    # PFCの初期化（ここで落ちる可能性があったためログ強化）
+    logger.info("    > Initializing Prefrontal Cortex...")
+    pfc = PrefrontalCortex(workspace=workspace, motivation_system=motivation, device=device)
+    
     motor = MotorCortex()
 
     # 4. 高次機能
+    logger.info("  - Building Higher Functions (Reasoning, WorldModel)...")
     # SFormerの初期化 (ReasoningEngine用)
     sformer_model = SFormer(
         vocab_size=50257,  # GPT-2 default
@@ -108,7 +121,7 @@ def build_demo_brain(device):
         max_seq_len=128
     ).to(device)
 
-    # [Fix] Tokenizerの初期化 (安全な条件分岐)
+    # Tokenizerの初期化 (安全な条件分岐)
     tokenizer = None
     if HAS_TRANSFORMERS and AutoTokenizer is not None:
         try:
@@ -154,6 +167,7 @@ def build_demo_brain(device):
     ).to(device)
 
     # 脳の構築 (DI)
+    logger.info("  - Assembling Artificial Brain...")
     brain = ArtificialBrain(
         global_workspace=workspace,
         astrocyte_network=astrocyte,
@@ -173,9 +187,11 @@ def build_demo_brain(device):
         device=device
     )
     
-    # [Fix] Brain全体をデバイスへ転送 (内部モジュールも再帰的に移動)
+    # Brain全体をデバイスへ転送
+    logger.info(f"  - Transferring Brain to {device}...")
     brain.to(device)
 
+    logger.info("🧠 Brain Build Complete.")
     return brain
 
 
@@ -191,7 +207,11 @@ def run_scenario(brain, scenario_name, description, input_data):
     start_time = time.time()
 
     # 認知サイクルの実行
-    report = brain.run_cognitive_cycle(input_data)
+    try:
+        report = brain.run_cognitive_cycle(input_data)
+    except Exception as e:
+        logger.error(f"❌ Error during cognitive cycle: {e}", exc_info=True)
+        return None
 
     duration = time.time() - start_time
     logger.info(f"⏱️ Duration: {duration:.3f}s")
@@ -206,7 +226,7 @@ def run_scenario(brain, scenario_name, description, input_data):
 
     # ヘルスチェック
     health = brain.get_brain_status()
-    # 修正: ネストされたキーアクセスの安全性を向上
+    # ネストされたキーアクセスの安全性を向上
     astro_metrics = health.get('astrocyte', {}).get('metrics', {})
     energy = astro_metrics.get('energy_percent', 0)
     logger.info(f"🏥 Health: Energy={energy:.1f}%, ...")
@@ -216,16 +236,25 @@ def run_scenario(brain, scenario_name, description, input_data):
 
 def main():
     logger.info("============================================================")
-    logger.info("🤖 SNN Artificial Brain v16.3 - Integrated Demo")
+    logger.info("🤖 SNN Artificial Brain v16.4 - Integrated Demo (Stable)")
     logger.info("============================================================")
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if torch.backends.mps.is_available():
-        device = "mps"
+    # [Important] MPS (Metal Performance Shaders) は一部の演算で不安定になり
+    # エラーなしでプロセスが終了する原因となるため、安定動作のために 'cpu' を推奨します。
+    # 必要であれば 'mps' に戻してください。
+    device = "cpu"
+    # if torch.cuda.is_available():
+    #     device = "cuda"
+    # elif torch.backends.mps.is_available():
+    #     device = "mps" 
     
     logger.info(f"Using device: {device}")
 
-    brain = build_demo_brain(device)
+    try:
+        brain = build_demo_brain(device)
+    except Exception as e:
+        logger.error(f"❌ Critical Error during Brain Initialization: {e}", exc_info=True)
+        return
 
     # 1. 挨拶 (System 1)
     run_scenario(
