@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/cognitive_architecture/global_workspace.py
-# 日本語タイトル: Global Workspace (Consciousness Hub) v1.2
-# 修正内容: DIコンテナからの model_registry 注入に対応し、テスト用の get_information を追加。
+# 日本語タイトル: Global Workspace (Consciousness Hub) v1.3 (Dim Fix)
+# 修正内容: 1次元テンソル入力時のスライスエラー(IndexError)を修正。
 
 import torch
 import torch.nn as nn
@@ -45,7 +45,7 @@ class GlobalWorkspace(nn.Module):
         self.subscribers: List[Callable[[str, Any], None]] = []
         self.current_content: Dict[str, Any] = {}
 
-        logger.info("👁️ Global Workspace (Consciousness) initialized.")
+        logger.info(f"👁️ Global Workspace (Consciousness) initialized (Dim: {dim}).")
 
     def subscribe(self, callback: Callable[[str, Any], None]):
         """他のモジュールが意識の放送を受信するために登録する"""
@@ -57,6 +57,10 @@ class GlobalWorkspace(nn.Module):
             if isinstance(data, dict) and "vector_state" in data:
                 vec = data["vector_state"]
                 if isinstance(vec, torch.Tensor):
+                    # 次元合わせ
+                    if vec.dim() == 1:
+                         vec = vec.unsqueeze(0)
+                    
                     if vec.shape[-1] == self.dim:
                         self.workspace_state = vec.detach()
 
@@ -73,8 +77,9 @@ class GlobalWorkspace(nn.Module):
 
         if tensor_inputs:
             result = self.forward(tensor_inputs)
-            self._broadcast_to_subscribers(
-                str(result["winner"]), result["broadcast"])
+            if result["winner"] is not None:
+                self._broadcast_to_subscribers(
+                    str(result["winner"]), result["broadcast"])
             return result["broadcast"]
 
         return self.workspace_state
@@ -112,32 +117,55 @@ class GlobalWorkspace(nn.Module):
         names = []
 
         for name, tensor in inputs.items():
-            if tensor.dim() > 2:
-                flat_tensor = tensor.mean(dim=1)
-            else:
-                flat_tensor = tensor
+            flat_tensor = tensor
+            
+            # 時間次元の集約 (Batch, Time, Dim) -> (Batch, Dim)
+            if flat_tensor.dim() > 2:
+                flat_tensor = flat_tensor.mean(dim=1)
+            
+            # [Fix] 1次元入力 (Dim,) の場合、バッチ次元を追加して (1, Dim) にする
+            if flat_tensor.dim() == 1:
+                flat_tensor = flat_tensor.unsqueeze(0)
 
-            if flat_tensor.shape[-1] != self.dim:
-                if flat_tensor.shape[-1] < self.dim:
-                    pad = self.dim - flat_tensor.shape[-1]
+            # 次元調整 (Feature Dim mismatch handling)
+            current_dim = flat_tensor.shape[-1]
+            if current_dim != self.dim:
+                if current_dim < self.dim:
+                    # パディング
+                    pad = self.dim - current_dim
                     flat_tensor = F.pad(flat_tensor, (0, pad))
                 else:
+                    # 切り捨て（スライス）
+                    # flat_tensorは必ず2次元以上になっているため安全
                     flat_tensor = flat_tensor[:, :self.dim]
 
             candidates.append(flat_tensor)
             names.append(name)
 
         if not candidates:
-            return {"broadcast": self.workspace_state, "winner": None}
+            return {"broadcast": self.workspace_state, "winner": None, "salience": None}
 
-        stack = torch.cat(candidates, dim=0)
-        scores = self.selector(stack).squeeze(-1)
+        # スタック: (NumInputs, Batch, Dim) -> (Batch*NumInputs, Dim) or similar mechanism needed?
+        # ここでは単純化して、すべての候補をバッチ方向に結合して比較する (競合学習)
+        # inputs are (Batch, Dim). Assuming Batch=1 for simplicity in demo.
+        stack = torch.cat(candidates, dim=0) # (TotalBatch, Dim)
+        
+        scores = self.selector(stack).squeeze(-1) # (TotalBatch,)
+        
+        # 数値安定性のためのノイズ
         noise = torch.randn_like(scores) * 0.1
         probs = F.softmax(scores + noise, dim=0)
 
         winner_idx = int(torch.argmax(probs).item())
         winner_name = names[winner_idx]
         winner_content = candidates[winner_idx]
+
+        # 状態更新 (Exponential Moving Average)
+        # winner_content shape: (1, Dim) assuming batch size 1
+        if winner_content.shape[0] != self.workspace_state.shape[0]:
+             # バッチサイズ不一致時の単純なリサイズまたはブロードキャスト
+             if winner_content.shape[0] == 1:
+                 winner_content = winner_content.expand_as(self.workspace_state)
 
         new_state = (1 - self.decay) * winner_content + \
             self.decay * self.workspace_state

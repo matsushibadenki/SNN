@@ -2,7 +2,17 @@
 # Title: Brain v16.3 Integrated Demo (Type Safe & Device Correct)
 # Description:
 #   SCAL (Statistical Centroid Alignment Learning) 統合後の動作確認用デモ。
-#   [Fix] brain.to(device) を呼び出し、全てのサブモジュールをGPU/MPSへ転送。
+#   [Fix] GlobalWorkspaceの次元を256に設定し、Perceptionと整合させる。
+
+import sys
+import os
+import torch
+import logging
+import time
+
+# パス設定
+sys.path.append(os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "../../../")))
 
 from snn_research.models.transformer.sformer import SFormer
 from snn_research.modules.reflex_module import ReflexModule
@@ -18,16 +28,6 @@ from snn_research.safety.ethical_guardrail import EthicalGuardrail
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
 from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
-import sys
-import os
-import torch
-import logging
-import time
-
-# パス設定
-sys.path.append(os.path.abspath(os.path.join(
-    os.path.dirname(__file__), "../../../")))
-
 
 # [Fix] Type-safe optional import
 HAS_TRANSFORMERS = False
@@ -72,7 +72,8 @@ def build_demo_brain(device):
     logger.info("🧠 Initializing Artificial Brain v16.3 components...")
 
     # 1. 基礎コンポーネント
-    workspace = GlobalWorkspace()
+    # [Fix] 次元を256に設定 (知覚野の出力次元に合わせる)
+    workspace = GlobalWorkspace(dim=256)
     astrocyte = AstrocyteNetwork()
     guardrail = EthicalGuardrail()
     motivation = IntrinsicMotivationSystem()
@@ -82,7 +83,8 @@ def build_demo_brain(device):
     perception = HybridPerceptionCortex(
         workspace=workspace,
         num_neurons=784,
-        feature_dim=256
+        feature_dim=256,
+        som_map_size=(16, 16)  # 16*16 = 256 neurons
     )
 
     # デモの軽量化のためにMockを使う

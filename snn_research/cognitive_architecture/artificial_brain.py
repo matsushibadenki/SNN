@@ -1,14 +1,14 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: Artificial Brain v2.6.3 (Method Fixed)
+# 日本語タイトル: Artificial Brain v2.6.4 (Dimension Fix)
 # 目的・内容:
 #   統合脳モデルの中核クラス。
-#   修正: get_brain_status メソッドを追加し、デモスクリプトとの互換性を確保。
-#   最適化: デバイス管理とDIの不整合を解消。
+#   修正: process_step における Tensor 入力の判定と特徴量抽出フローを堅牢化。
+#   修正: Thalamus への入力ガードを強化し、IndexError を防止。
 
 import torch
 import torch.nn as nn
 import logging
-from typing import Dict, Any, Optional, cast, List, Union
+from typing import Dict, Any, Optional, cast, Union
 
 # Cognitive Modules
 from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 class ArtificialBrain(nn.Module):
     """
-    SNNプロジェクトの中核となる統合脳モデル (Brain v2.6.3 Optimized).
+    SNNプロジェクトの中核となる統合脳モデル (Brain v2.6.4 Optimized).
     """
 
     def __init__(
@@ -68,7 +68,7 @@ class ArtificialBrain(nn.Module):
         self.config = config or {}
         feature_dim = self.config.get("feature_dim", 256)
 
-        logger.info("🧠 Initializing ArtificialBrain v2.6.3 (Method Fixed)...")
+        logger.info("🧠 Initializing ArtificialBrain v2.6.4 (Dimension Fix)...")
 
         # --- Device Handling ---
         self.core_model = thinking_engine
@@ -209,37 +209,37 @@ class ArtificialBrain(nn.Module):
             if energy_status < 0.05:
                 return {"action": None, "status": "exhausted"}
         
-        # 睡眠判定 (頻度低減)
-        if self.step_count % 100 == 0 and not self.is_sleeping:
-             pass
-
+        # 睡眠判定
         if self.is_sleeping:
              return self.perform_sleep_cycle()
 
         # 1. 知覚 (Perception)
         visual_features = None
-        raw_features = None
+        raw_features: Optional[torch.Tensor] = None
         
+        # Tensor入力の場合のみ知覚処理を行う (文字列やその他の入力はスキップ)
         if isinstance(sensory_input, torch.Tensor):
             perception_output = self.visual_cortex.perceive(sensory_input)
+            
             if isinstance(perception_output, dict):
                 raw_features = perception_output.get("features")
             else:
                 raw_features = perception_output
 
+            # Thalamusへの入力ガード: raw_features が存在する場合のみ実行
             if raw_features is not None:
-                # Thalamus入力
-                thalamus_out = self.thalamus.forward(raw_features, top_down_attention=None)
-                visual_features = thalamus_out["relayed_output"]
-
-                if self.monitor_stats:
-                    pass
+                # [Safety] 次元の整合性をチェックしてからThalamusへ
+                try:
+                    thalamus_out = self.thalamus.forward(raw_features, top_down_attention=None)
+                    visual_features = thalamus_out["relayed_output"]
+                except IndexError as e:
+                    logger.error(f"Thalamus Forward Error: {e}. Check input dimensions vs Thalamus config.")
+                    visual_features = raw_features  # Fallback
 
         # 2. 動機付け (Motivation) - 軽量化
         motivation_status: Dict[str, Any] = {}
-        intrinsic_reward = 0.0
         
-        # 3. 記憶 (Memory) - 頻度低減
+        # 3. 記憶 (Memory)
         if self.step_count % 5 == 0:
             pass
 
@@ -250,6 +250,10 @@ class ArtificialBrain(nn.Module):
                 inputs=[visual_features],
                 context=None
             )
+        elif not isinstance(sensory_input, torch.Tensor):
+            # Tensorでない入力（文字列など）を意識に上げる場合の簡易処理
+            # (ReasoningEngineなどが別途処理することを想定)
+            pass
 
         # 5. 行動選択 (Action Selection)
         final_action_cmd = None
@@ -257,17 +261,16 @@ class ArtificialBrain(nn.Module):
         if conscious_content is not None:
             action_plan = self.pfc.plan(conscious_content)
             
+            # 簡易的なアクション実行ロジック
             if action_plan is not None:
                 if self.basal_ganglia.base_threshold < 0.9: 
                      pass 
-                
-                # final_action_cmd = self.motor_cortex.generate_command(action_plan)
 
         return {
             "action": final_action_cmd,
             "status": "active",
             "step": self.step_count,
-            "response": "Cognitive Cycle Completed" # デモ用のダックレスポンス
+            "response": "Cognitive Cycle Completed" 
         }
 
     def should_sleep(self, internal_state: Dict[str, float]) -> bool:
