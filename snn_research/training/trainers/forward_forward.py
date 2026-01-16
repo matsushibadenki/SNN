@@ -1,13 +1,13 @@
 # ファイルパス: snn_research/training/trainers/forward_forward.py
 # 日本語タイトル: forward_forward
-# 目的: デバッグ情報の追加とGoodnessスケールの適正化
+# 目的: Device不一致エラー修正（生成したレイヤーを明示的にto(device)する）
 
 from snn_research.training.base_trainer import AbstractTrainer
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from typing import Optional, List, Union, Dict, Any
+from typing import Optional, List, Union, Dict, Any, Tuple
 from pathlib import Path
 from tqdm import tqdm
 import logging
@@ -41,7 +41,7 @@ class SpikingLayer(nn.Module):
         self.reset_mechanism = reset_mechanism
         self.spike_fn = SurrogateHeaviside.apply
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         input_dims = x.dim()
         if not ((input_dims == 3) or (input_dims == 5)):
             out_static = self.layer(x)
@@ -55,22 +55,25 @@ class SpikingLayer(nn.Module):
 
         v_mem = torch.zeros_like(current[:, 0])
         spikes_list = []
-        
+        v_mem_list = []
+
         for t in range(self.time_steps):
-            v_mem = v_mem * self.tau + current[:, t]
+            v_mem.mul_(self.tau).add_(current[:, t])
             spike = self.spike_fn(v_mem - self.v_threshold)
             
             if self.reset_mechanism == "subtract":
-                v_mem = v_mem - spike * self.v_threshold
+                v_mem.sub_(spike * self.v_threshold)
             else:
-                v_mem = v_mem * (1.0 - spike)
+                v_mem.mul_(1.0 - spike)
                 
             spikes_list.append(spike)
+            v_mem_list.append(v_mem.clone())
             
-        return torch.stack(spikes_list, dim=1)
+        return torch.stack(spikes_list, dim=1), torch.stack(v_mem_list, dim=1)
+
 
 class SpikingForwardForwardLayer(nn.Module):
-    def __init__(self, forward_block, threshold=2.0, learning_rate=0.001, time_steps=20, tau=0.5, v_threshold=1.0, reset_mechanism="subtract"):
+    def __init__(self, forward_block, learning_rate=0.001, time_steps=20, tau=0.5, v_threshold=1.0, reset_mechanism="subtract"):
         super().__init__()
         self.block = SpikingLayer(
             forward_block, 
@@ -79,40 +82,47 @@ class SpikingForwardForwardLayer(nn.Module):
             v_threshold=v_threshold,
             reset_mechanism=reset_mechanism
         )
-        self.threshold = threshold
         self.optimizer = torch.optim.Adam(
             self.block.parameters(), lr=learning_rate)
+        
+        # Bufferとして登録（モデル移動時に一緒に動くようにする）
+        self.register_buffer("running_threshold", torch.tensor(2.0))
+        self.threshold_momentum = 0.01
 
     def forward(self, x):
         return self.block(x)
 
-    def compute_goodness(self, hidden: torch.Tensor) -> torch.Tensor:
-        # hidden: [Batch, Time, Features]
-        if hidden.dim() == 3:
-            activity = hidden.mean(dim=1) # 時間平均
+    def compute_goodness(self, hidden_spikes: torch.Tensor, hidden_v_mem: torch.Tensor = None) -> torch.Tensor:
+        if hidden_v_mem is not None:
+            return hidden_v_mem.pow(2).mean(dim=1).mean(dim=1)
         else:
-            activity = hidden
-        
-        # Mean Squared: 値は小さくなる (例: 0.1^2 = 0.01)
-        goodness = (activity ** 2).mean(dim=1)
-        return goodness
+            return hidden_spikes.mean(dim=1).mean(dim=1)
 
     def train_step(self, x_pos, x_neg):
         self.optimizer.zero_grad()
-        sp_pos, sp_neg = self(x_pos), self(x_neg)
+        
+        sp_pos, v_pos = self(x_pos)
+        sp_neg, v_neg = self(x_neg)
 
-        g_pos = self.compute_goodness(sp_pos)
-        g_neg = self.compute_goodness(sp_neg)
+        g_pos = self.compute_goodness(sp_pos, v_pos)
+        g_neg = self.compute_goodness(sp_neg, v_neg)
 
-        # Loss計算
-        loss = F.softplus(-(g_pos - self.threshold)).mean() + \
-            F.softplus(g_neg - self.threshold).mean()
+        if self.training:
+            with torch.no_grad():
+                mean_pos_g = g_pos.mean()
+                # deviceエラー回避のため、計算に使用するスカラもTensorであることを意識
+                self.running_threshold.mul_(1 - self.threshold_momentum).add_(mean_pos_g * self.threshold_momentum)
+
+        current_threshold = self.running_threshold.item()
+        
+        loss = F.softplus(-(g_pos - current_threshold)).mean() + \
+            F.softplus(g_neg - current_threshold).mean()
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.block.parameters(), max_norm=1.0)
         self.optimizer.step()
-        
         return loss.item(), g_pos.mean().item(), g_neg.mean().item()
+
 
 class ForwardForwardLayer(nn.Module):
     def __init__(self, forward_block, threshold=2.0, learning_rate=0.001):
@@ -153,6 +163,7 @@ class ForwardForwardLayer(nn.Module):
         self.optimizer.step()
         return loss.item(), g_pos.mean().item(), g_neg.mean().item()
 
+
 class ForwardForwardTrainer(AbstractTrainer):
     def __init__(self, model: nn.Sequential, device: str = "cpu", config: Optional[Dict[str, Any]] = None, num_classes: int = 10, save_dir: str = "results"):
         super().__init__(model, None, None, device, save_dir)
@@ -172,13 +183,11 @@ class ForwardForwardTrainer(AbstractTrainer):
         for layer in model.children():
             if isinstance(layer, (nn.Linear, nn.Conv2d)):
                 lr = self.config.get("learning_rate", 0.001)
-                threshold = self.config.get("ff_threshold", 2.0)
-
+                
                 ff: Union[SpikingForwardForwardLayer, ForwardForwardLayer]
                 if self.use_snn:
                     ff = SpikingForwardForwardLayer(
                         nn.Sequential(layer),
-                        threshold=threshold,
                         learning_rate=lr,
                         time_steps=self.time_steps,
                         tau=self.snn_tau,
@@ -186,8 +195,12 @@ class ForwardForwardTrainer(AbstractTrainer):
                         reset_mechanism=self.snn_reset
                     )
                 else:
+                    threshold = self.config.get("ff_threshold", 2.0)
                     ff = ForwardForwardLayer(nn.Sequential(
                         layer), threshold=threshold, learning_rate=lr)
+
+                # 【重要】 ここで生成した層を明示的にデバイスへ転送する
+                ff = ff.to(device)
 
                 self.ff_layers.append(ff)
                 self.execution_pipeline.append(ff)
@@ -197,7 +210,7 @@ class ForwardForwardTrainer(AbstractTrainer):
     def overlay_y_on_x(self, x, y):
         x_mod = x.clone()
         y_oh = F.one_hot(y, self.num_classes).float().to(self.device)
-        scale_factor = 2.5 # 少し強める
+        scale_factor = 2.5
         
         if x_mod.dim() == 4:
             x_mod[:, 0, 0, :min(self.num_classes, x_mod.shape[3])] = y_oh[:, :min(
@@ -220,7 +233,11 @@ class ForwardForwardTrainer(AbstractTrainer):
             data, target = data.to(self.device), target.to(self.device)
 
             x_pos = self.overlay_y_on_x(data, target)
-            x_neg = self.overlay_y_on_x(data, (target + 1) % self.num_classes)
+            
+            # Hard Negative Mining
+            x_neg_base = data.roll(shifts=1, dims=0)
+            x_neg_base = x_neg_base + 0.1 * torch.randn_like(x_neg_base)
+            x_neg = self.overlay_y_on_x(x_neg_base, (target + 1) % self.num_classes)
 
             batch_loss = 0.0
             batch_pos_g = 0.0
@@ -234,21 +251,28 @@ class ForwardForwardTrainer(AbstractTrainer):
                     batch_neg_g += g_neg
 
                     with torch.no_grad():
-                        x_pos = layer(x_pos).detach()
-                        x_neg = layer(x_neg).detach()
+                        out_pos = layer(x_pos)
+                        out_neg = layer(x_neg)
+                        
+                        if isinstance(out_pos, tuple):
+                            x_pos = out_pos[0].detach() 
+                            x_neg = out_neg[0].detach()
+                        else:
+                            x_pos = out_pos.detach()
+                            x_neg = out_neg.detach()
                 else:
                     x_pos = layer(x_pos)
                     x_neg = layer(x_neg)
 
             total_loss += batch_loss
-            total_pos_goodness += (batch_pos_g / len(self.ff_layers))
-            total_neg_goodness += (batch_neg_g / len(self.ff_layers))
+            total_pos_goodness += (batch_pos_g / max(1, len(self.ff_layers)))
+            total_neg_goodness += (batch_neg_g / max(1, len(self.ff_layers)))
             num_batches += 1
 
         return {
-            "train_loss": total_loss / num_batches,
-            "avg_pos_goodness": total_pos_goodness / num_batches,
-            "avg_neg_goodness": total_neg_goodness / num_batches
+            "train_loss": total_loss / max(1, num_batches),
+            "avg_pos_goodness": total_pos_goodness / max(1, num_batches),
+            "avg_neg_goodness": total_neg_goodness / max(1, num_batches)
         }
 
     def validate(self, val_loader: DataLoader) -> Dict[str, float]:
@@ -278,9 +302,16 @@ class ForwardForwardTrainer(AbstractTrainer):
                 for layer in self.execution_pipeline:
                     if isinstance(layer, (ForwardForwardLayer, SpikingForwardForwardLayer)):
                         out = layer(current_x)
-                        g = layer.compute_goodness(out)
+                        
+                        if isinstance(layer, SpikingForwardForwardLayer):
+                            spikes, v_mem = out
+                            g = layer.compute_goodness(spikes, v_mem)
+                            current_x = spikes.detach()
+                        else:
+                            g = layer.compute_goodness(out)
+                            current_x = out.detach()
+
                         total_goodness += g
-                        current_x = out.detach()
                     else:
                         current_x = layer(current_x)
 
